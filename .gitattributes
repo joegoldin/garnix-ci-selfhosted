@@ -1,0 +1,3 @@
+# Don’t render generated files by default in GitHub diffs
+backend/garnix.cabal linguist-generated
+nix/packages/garnix.nix linguist-generated

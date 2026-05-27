@@ -1,0 +1,42 @@
+.root {
+  position: relative;
+  display: block;
+  width: 54px;
+  cursor: pointer;
+
+  & input {
+    position: absolute;
+    opacity: 0;
+  }
+
+  .toggle {
+    position: relative;
+    overflow: hidden;
+    background: var(--color-stone-400);
+    border: 2px solid var(--color-stone-900);
+    height: 25px;
+    width: 50px;
+    border-radius: 50px;
+    transition: background ease 200ms;
+
+    &::before {
+      content: "";
+      position: absolute;
+      top: -2px;
+      left: -2px;
+      width: 29px;
+      height: 29px;
+      border-radius: 25px;
+      background: var(--color-stone-900);
+      transition: left ease 200ms;
+    }
+  }
+
+  & input:checked + .toggle {
+    background: #cfe5ec;
+  }
+
+  & input:checked + .toggle::before {
+    left: 23px;
+  }
+}

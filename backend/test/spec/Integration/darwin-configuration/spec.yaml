@@ -1,0 +1,12 @@
+description: Handles darwinConfigurations
+repo: "garnix-io/garnix-lib"
+results:
+  - name: "darwinConfig failing"
+    index: Last
+    outputLocation: Github
+    outputRegex: "error: The option `boot.loader.grub.device' has conflicting definition values:"
+    result: failure
+  - name: "darwinConfig succeeding"
+    index: Last
+    outputLocation: Github
+    result: success

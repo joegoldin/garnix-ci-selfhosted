@@ -1,0 +1,61 @@
+.inlineCode {
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+.codeBlock {
+  margin: 10px;
+  padding: 10px;
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+}
+
+.table {
+  width: 95%;
+  margin: 40px auto;
+}
+
+.small {
+  color: var(--color-primary-4);
+  font-size: 14px;
+  padding: 10px;
+  & a {
+    font-weight: 800;
+    text-decoration: underline;
+  }
+}
+
+.generateTokenModal a {
+  font-weight: 800;
+  text-decoration: underline;
+}
+
+.nameField {
+  min-height: 40px;
+}
+
+.scopeTitle {
+  margin: 30px 24px 0 0;
+}
+
+.scopeToggle {
+  display: flex;
+  gap: 16px;
+  border: 1px solid var(--color-stone-300);
+  margin: 20px 0;
+  padding: 8px;
+  min-height: 40px;
+  align-items: center;
+}
+
+.error {
+  color: red;
+  margin-bottom: 10px;
+}

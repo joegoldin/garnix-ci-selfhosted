@@ -1,0 +1,18 @@
+builds:
+  include:
+    - "*.x86_64-linux.*"
+    - defaultPackage.x86_64-linux
+    - nixosConfigurations.*
+    - "checks.aarch64-darwin.macMini1"
+    - "checks.aarch64-darwin.macMini2"
+  exclude: []
+
+servers:
+  - configuration: website-pr-qa
+    deployment:
+      type: on-pull-request
+
+actions:
+  - on: push
+    run: backend_specs
+    sandboxType: shared-resources

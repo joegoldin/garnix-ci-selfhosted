@@ -1,0 +1,72 @@
+.log {
+  margin-bottom: 4px;
+  background-color: var(--color-stone-50);
+  padding: 8px;
+
+  .logHead {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .logBody {
+    overflow: hidden;
+    font-size: 15px;
+    line-height: 130%;
+    color: var(--color-stone-600);
+    overflow: auto;
+    text-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .logBodyInner {
+    border-left: 1px solid var(--color-stone-300);
+    padding-left: 4px;
+  }
+
+  &.open .logHead {
+    border-bottom: 1px solid var(--color-stone-200);
+    padding-bottom: 8px;
+  }
+}
+
+.log:hover {
+  background-color: var(--color-stone-100);
+}
+
+.otherBuilds {
+  margin-top: 15px;
+}
+
+.otherBuilds a {
+  display: inline-flex;
+  padding: 5px;
+  margin: 5px;
+  background: var(--color-stone-100);
+
+  & > *:first-child {
+    margin-right: 5px;
+  }
+}
+
+.loading {
+  padding: 40px 0;
+}
+
+@media only screen and (max-width: 850px) {
+  .log {
+    gap: 8px;
+
+    &.open .logBody {
+      text-wrap: nowrap;
+      overflow-x: scroll;
+      padding-bottom: 12px;
+    }
+  }
+
+  .icon {
+    margin: 0;
+    top: 0;
+  }
+}

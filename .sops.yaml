@@ -1,0 +1,9 @@
+keys:
+  # This is generated from nix/data/ssh-key-for-local-dev-secrets.pub:
+  - &local-dev age1kekrcc4ulyy5xperfq03dpqqd6d56k43sp5jj4jq7jp4rqha5atsc979n4
+
+creation_rules:
+  - path_regex: secrets/dev.yaml$
+    key_groups:
+      - age:
+          - *local-dev

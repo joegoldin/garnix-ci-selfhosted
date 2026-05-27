@@ -1,0 +1,26 @@
+.root {
+  display: flex;
+
+  & button {
+    white-space: nowrap;
+  }
+}
+
+.encrypted {
+  display: flex;
+  align-items: center;
+  padding: 10px 20px;
+  gap: 10px;
+  background: var(--color-stone-100);
+  white-space: nowrap;
+  overflow: hidden;
+
+  & img {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+.error {
+  color: var(--color-error);
+}

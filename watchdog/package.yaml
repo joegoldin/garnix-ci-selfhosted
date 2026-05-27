@@ -1,0 +1,73 @@
+name: watchdog
+executables:
+  watchdog:
+    main: Main.hs
+    source-dirs:
+      - src
+
+ghc-options:
+  - -Wall
+  - -Werror
+  - -Wno-name-shadowing
+  - -fno-warn-star-is-type
+  - -j
+  - -threaded
+
+dependencies:
+  - aeson
+  - async
+  - base
+  - containers
+  - cradle
+  - directory
+  - filepath
+  - getopt-generics
+  - http-client
+  - lens
+  - prometheus
+  - random
+  - safe-exceptions
+  - string-conversions
+  - temporary
+  - text
+  - time
+  - transformers
+  - wai-extra
+  - warp
+  - wreq
+
+default-extensions:
+  - BangPatterns
+  - ConstraintKinds
+  - DataKinds
+  - DeriveAnyClass
+  - DeriveFunctor
+  - DeriveGeneric
+  - DeriveTraversable
+  - DerivingStrategies
+  - DerivingVia
+  - FlexibleContexts
+  - FlexibleInstances
+  - FunctionalDependencies
+  - GADTs
+  - GeneralizedNewtypeDeriving
+  - InstanceSigs
+  - LambdaCase
+  - MultiParamTypeClasses
+  - MultiWayIf
+  - NamedFieldPuns
+  - NoImplicitPrelude
+  - OverloadedLabels
+  - OverloadedRecordDot
+  - OverloadedStrings
+  - PolyKinds
+  - QuantifiedConstraints
+  - QuasiQuotes
+  - RankNTypes
+  - RecordWildCards
+  - ScopedTypeVariables
+  - StandaloneDeriving
+  - TupleSections
+  - TypeApplications
+  - TypeFamilies
+  - TypeOperators

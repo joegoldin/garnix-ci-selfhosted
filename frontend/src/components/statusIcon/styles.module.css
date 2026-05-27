@@ -1,0 +1,30 @@
+@keyframes spin {
+  0% {
+    transform: rotateZ(90deg);
+  }
+  25% {
+    transform: rotateZ(180deg);
+  }
+  50% {
+    transform: rotateZ(270deg);
+  }
+  100% {
+    transform: rotateZ(270deg);
+  }
+}
+
+.icon {
+  user-select: none;
+}
+
+.cancelled {
+  filter: invert(74%) sepia(1%) saturate(0%) hue-rotate(194deg) brightness(82%)
+    contrast(92%);
+}
+
+.pending {
+  animation-name: spin;
+  animation-iteration-count: infinite;
+  animation-duration: 2s;
+  animation-timing-function: linear;
+}

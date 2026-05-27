@@ -1,0 +1,42 @@
+.codeBlock {
+  margin: 10px;
+  padding: 10px;
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+  max-height: 400px;
+  overflow: auto;
+}
+
+.inlineCode {
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+.link {
+  font-weight: 800;
+  color: #000;
+  text-decoration: underline;
+}
+
+.mainModalSection {
+  line-height: 20px;
+
+  & strong {
+    font-weight: 600;
+  }
+
+  & p {
+    padding: 10px 0;
+  }
+}
+
+.steps {
+  list-style-type: decimal;
+  padding: 10px 40px;
+
+  & li {
+    padding: 10px 5px;
+  }
+}

@@ -1,0 +1,19 @@
+.box {
+  border: 1px solid var(--color-stone-300);
+  margin: 8px 0;
+  padding: 8px;
+  position: relative;
+  min-height: 40px;
+}
+
+.moduleName {
+  margin: 8px 0;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.toggle {
+  position: absolute !important;
+  top: 15px;
+  right: 20px;
+}

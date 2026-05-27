@@ -1,0 +1,22 @@
+# node
+/node_modules
+npm-debug.log*
+
+# next.js
+/.next/
+/out/
+/build
+
+# typescript
+*.tsbuildinfo
+
+# nix
+pg-tmp
+
+# emailing
+/email/.react-email/
+/email/out/
+
+# linked artifacts (see default.nix)
+/legal/terms.md
+/src/age-wasm-compiled

@@ -1,0 +1,55 @@
+@keyframes arrowBounce {
+  0% {
+    right: 1.5rem;
+  }
+  50% {
+    right: 1rem;
+  }
+  100% {
+    right: 1.5rem;
+  }
+}
+
+.container {
+  color: inherit;
+  align-items: center;
+  position: relative;
+}
+
+.text:hover {
+  text-decoration: underline;
+}
+
+.arrow {
+  font-size: 24px;
+  line-height: 40px;
+  text-transform: uppercase;
+  padding-right: 3rem;
+
+  .arrowIcon {
+    transition: transform 0.3s;
+    position: absolute;
+    top: 50%;
+    right: 1.5rem;
+    transform: translateY(-50%);
+    margin-top: -2px;
+  }
+}
+
+.arrow:hover {
+  .content {
+    text-decoration: underline;
+  }
+
+  .arrowIcon {
+    animation: arrowBounce 1.5s infinite;
+    animation-timing-function: linear;
+  }
+}
+
+@media only screen and (max-width: 850px) {
+  .arrow {
+    font-size: 16px;
+    line-height: 28px;
+  }
+}

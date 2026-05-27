@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "tags": ["-lintignore"],
+  "ignoreExportsUsedInFile": true,
+  "ignoreFiles": [
+    "age-wasm/**",
+    "src/utils/dev.tsx",
+    "src/utils/featureFlags.ts"
+  ],
+  "ignoreDependencies": [".*"],
+  "ignoreBinaries": ["nixos-compose"]
+}

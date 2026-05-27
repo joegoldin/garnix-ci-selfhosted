@@ -1,0 +1,4 @@
+.root {
+  transition: height ease 300ms;
+  overflow: hidden;
+}

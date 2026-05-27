@@ -1,0 +1,28 @@
+.usageTable {
+  width: 95%;
+  margin: 40px auto;
+}
+
+.error {
+  color: red;
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+
+.small {
+  color: var(--color-primary-4);
+  font-size: 14px;
+  padding: 10px;
+}
+
+.errorSmall {
+  font-size: 14px;
+}
+
+.manageButton {
+  display: block;
+  width: 34px;
+  height: 34px;
+  background: #fff;
+  border: 1px solid #000;
+}

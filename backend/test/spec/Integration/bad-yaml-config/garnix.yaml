@@ -1,0 +1,5 @@
+builds:
+  include:
+    - packages.x86_64-linux.*
+  exclude: []
+    - packages.x86_64-linux.b

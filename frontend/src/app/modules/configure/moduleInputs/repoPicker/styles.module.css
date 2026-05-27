@@ -1,0 +1,42 @@
+.ghIcon {
+  fill: var(--color-stone-700);
+}
+
+.chosen {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.repo {
+  display: flex;
+  align-items: center;
+  padding: 10px 20px;
+  gap: 10px;
+  background: var(--color-stone-100);
+}
+
+.loading {
+  text-align: center;
+  & div {
+    transform: scale(0.5);
+  }
+}
+
+.repoList {
+  height: 200px;
+  overflow: scroll;
+}
+
+.repoRow {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--color-stone-400);
+  gap: 10px;
+
+  & span {
+    flex-grow: 1;
+  }
+}

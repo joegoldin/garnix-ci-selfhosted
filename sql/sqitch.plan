@@ -1,0 +1,4 @@
+%syntax-version=1.0.0
+%project=garnix
+
+init 2026-05-20T00:00:00Z Julian K. Arni <julian.arni@artificial.io> # Initialize tables

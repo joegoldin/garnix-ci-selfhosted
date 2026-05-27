@@ -1,0 +1,36 @@
+.nixPkgsSearchInput {
+  width: 100% !important;
+  margin-bottom: 20px;
+}
+
+.nixPkgsSearchResults {
+  height: 300px;
+  margin-top: 10px;
+  padding: 5px;
+  border: 1px solid var(--color-stone-400);
+  overflow: scroll;
+}
+
+.loading {
+  text-align: center;
+  & > div {
+    transform: scale(0.5);
+  }
+}
+
+.pkg {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--color-stone-400);
+
+  & span {
+    font-weight: 800;
+  }
+}
+
+.tooManyMatches {
+  text-align: center;
+  padding: 30px 0;
+}

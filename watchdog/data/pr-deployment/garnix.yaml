@@ -1,0 +1,4 @@
+servers:
+  - configuration: watchdog-pr-deployment-server
+    deployment:
+      type: on-pull-request

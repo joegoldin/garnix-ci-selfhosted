@@ -1,0 +1,6 @@
+:root {
+  --menu-width: 300px;
+  --max-content-width: 1216px;
+  --size-static-header-height: 72px;
+  --size-static-header-height-mobile: 48px;
+}

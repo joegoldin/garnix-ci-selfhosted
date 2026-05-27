@@ -1,0 +1,15 @@
+.body {
+  margin: 60px;
+}
+
+.body :is(button, h1) {
+  margin: 12px 0;
+}
+
+.body h1 {
+  font-size: 32px;
+}
+
+.body h2 {
+  font-size: 20px;
+}

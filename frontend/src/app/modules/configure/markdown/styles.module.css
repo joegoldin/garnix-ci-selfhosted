@@ -1,0 +1,16 @@
+.markdown {
+  color: var(--color-stone-600);
+  font-weight: 400;
+  font-size: 18px;
+  line-height: 24px;
+}
+
+.markdown a {
+  color: var(--color-stone-600);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.markdown p {
+  margin: 24px;
+}

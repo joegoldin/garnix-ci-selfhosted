@@ -1,0 +1,27 @@
+.container {
+  overflow-x: auto;
+}
+
+.container table {
+  width: 100%;
+}
+
+.container thead {
+  font-weight: 800;
+}
+
+.container tfoot td {
+  padding-top: 40px;
+}
+
+.container th,
+.container td {
+  min-width: 70px;
+  text-align: center;
+  padding: 12px 24px;
+  vertical-align: middle;
+}
+
+.container tbody tr:nth-child(odd) {
+  background: #f2f2f2;
+}

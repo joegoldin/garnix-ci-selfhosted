@@ -1,0 +1,67 @@
+.container {
+  padding: 24px;
+}
+
+.error {
+  padding: 20px;
+  line-height: 20px;
+}
+
+.containerZeroState {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+
+  .h1 {
+    font-size: 24px;
+    line-height: 32px;
+    margin-bottom: 24px;
+  }
+
+  .p {
+    margin-bottom: 24px;
+  }
+
+  .videoIcon {
+    display: inline-block;
+  }
+}
+
+.h1 {
+  font-size: 32px;
+  line-height: 130%;
+  margin-bottom: 24px;
+}
+
+.link {
+  text-decoration: underline;
+}
+
+.build {
+  margin: -1px 0;
+}
+
+.build:first-child {
+  margin: 0 0 -1px;
+}
+
+.build:last-child {
+  margin: -1px 0 0;
+}
+
+@media only screen and (max-width: 850px) {
+  .container {
+    padding: 0 16px;
+
+    .h1 {
+      font-size: 28px;
+      margin-bottom: 16px;
+    }
+  }
+
+  .containerZeroState {
+    display: block;
+    padding: 0 16px;
+  }
+}
