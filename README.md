@@ -56,3 +56,19 @@ npm run dev
 ```
 
 Then point your browser to [localhost:3000](http://localhost:3000).
+
+
+# Acknowledgments
+
+We erased git history when open sourcing, so we'll be explicit here about our
+debt to everyone who contributed before the project became open source:
+
+Alex David
+Evie Ciobanu
+Greg Pfeil
+Jean-François Roche
+Julian Kirsten Arni
+Ramses de Norre
+Sönke Hahn
+
+Thanks very very much!
