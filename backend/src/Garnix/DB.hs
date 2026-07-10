@@ -86,6 +86,16 @@ newUser ghLogin email' sub agreeToEmails' = do
     [] -> throw $ UserAlreadyExists ghLogin
     _ -> throw $ OtherError "impossible: more than two users created"
 
+setSubscriptionType :: UserId -> SubscriptionType -> M ()
+setSubscriptionType userId sub =
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE users
+          SET subscription_type = ${sub}
+          WHERE id = ${userId}
+      |]
+
 getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-

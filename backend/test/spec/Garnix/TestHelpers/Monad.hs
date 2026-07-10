@@ -283,6 +283,8 @@ withTestEnvironment tempDir action = do
                   baseUrl = "https://garnix.io",
                   cacheUrl = "https://cache.garnix.io",
                   cachePublicKey = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=",
+                  selfHostMode = False,
+                  adminGroupName = "garnix-admins",
                   logger = defaultLogger,
                   buildLogsDir = buildLogsDir,
                   hetznerToken = "hetzner-token",

@@ -82,6 +82,16 @@ in
           type = lib.types.str;
           default = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=";
         };
+        selfHostMode = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "Run as a single-tenant self-hosted instance: disable all billing limits and gate login behind an authenticating reverse proxy that injects the X-Auth-Request-Groups header.";
+        };
+        adminGroup = lib.mkOption {
+          type = lib.types.str;
+          default = "garnix-admins";
+          description = "In self-host mode, membership of this proxy-injected group sets a user's subscription_type to admin on each login.";
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -331,6 +341,10 @@ in
           "S3_CACHE_PUBLIC_BUCKET=${config.services.garnixServer.s3Cache.publicBucket}"
           "S3_CACHE_PUBLIC_BASE_URL=${config.services.garnixServer.s3Cache.publicBaseUrl}"
           "S3_CACHE_PRIVATE_BUCKET=${config.services.garnixServer.s3Cache.privateBucket}"
+        ]
+        ++ lib.optionals config.services.garnixServer.selfHostMode [
+          "GARNIX_SELF_HOST_MODE=1"
+          "GARNIX_ADMIN_GROUP=${config.services.garnixServer.adminGroup}"
         ];
         SupplementaryGroups = [ config.users.groups.keys.name ];
         ExecStartPre = [

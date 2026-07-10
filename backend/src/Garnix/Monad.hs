@@ -82,6 +82,8 @@ data Env = Env
     baseUrl :: Text,
     cacheUrl :: Text,
     cachePublicKey :: Text,
+    selfHostMode :: Bool,
+    adminGroupName :: Text,
     sshUserHostingKeys :: [FilePath],
     s3CacheEnv :: S3CacheEnv,
     action :: ActionEnv,

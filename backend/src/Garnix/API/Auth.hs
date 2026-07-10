@@ -1,6 +1,7 @@
 module Garnix.API.Auth where
 
 import Control.Lens
+import Data.Text qualified as T
 import Garnix.AccessToken
 import Garnix.AccessToken.Types
 import Garnix.DB qualified as DB
@@ -41,6 +42,55 @@ whoAmIAPI (Authenticated ((^. #user) -> user)) = do
       (user ^. email)
       (user ^. subscriptionType == Admin)
 whoAmIAPI _ = pure Nothing
+
+-- * Self-host mode login gate + admin mapping
+--
+-- In self-host mode the backend listens on 127.0.0.1 only and sits behind an
+-- authenticating gateway (oauth2-proxy/Authentik) that injects the
+-- @X-Auth-Request-Groups@ header on every browser request. The header is
+-- therefore trustworthy, and it is the sole authority for who may log in and
+-- who is an admin.
+
+-- | Whether a login attempt is allowed to proceed. In self-host mode the
+-- gateway must have injected the groups header; a request without it did not
+-- come through the gateway and is rejected. Outside self-host mode logins are
+-- always allowed here.
+selfHostLoginAllowed :: Bool -> Maybe Text -> Bool
+selfHostLoginAllowed selfHost mGroupsHeader = not selfHost || isJust mGroupsHeader
+
+-- | Map the gateway's comma-separated groups header to a subscription type:
+-- membership of the admin group grants 'Admin', everything else is
+-- 'FreeSubscription'. Group names are trimmed of surrounding whitespace.
+subscriptionTypeForGroups :: Text -> Maybe Text -> SubscriptionType
+subscriptionTypeForGroups adminGroup mGroupsHeader =
+  case mGroupsHeader of
+    Just groups
+      | adminGroup `elem` map T.strip (T.splitOn "," groups) -> Admin
+    _ -> FreeSubscription
+
+-- | Reject a login that did not come through the authenticating gateway when
+-- running in self-host mode. A no-op otherwise.
+requireSelfHostAuth :: Maybe Text -> M ()
+requireSelfHostAuth mGroupsHeader = do
+  selfHost <- view #selfHostMode
+  unless (selfHostLoginAllowed selfHost mGroupsHeader)
+    $ throw
+    $ ForbiddenWithMessage "Login requires the authentication gateway."
+
+-- | In self-host mode, recompute the user's subscription type from the gateway
+-- groups header on every login and persist it, returning the user with the
+-- updated subscription type so the freshly minted session reflects it. A no-op
+-- outside self-host mode.
+applySelfHostSubscription :: User -> Maybe Text -> M User
+applySelfHostSubscription user mGroupsHeader = do
+  selfHost <- view #selfHostMode
+  if not selfHost
+    then pure user
+    else do
+      adminGroup <- view #adminGroupName
+      let sub = subscriptionTypeForGroups adminGroup mGroupsHeader
+      DB.setSubscriptionType (user ^. id) sub
+      pure $ user & subscriptionType .~ sub
 
 data AuthJwtAPI route = AuthJwtAPI
   { jwt :: route :- Header "Authorization" Text :> Auth '[JWT, Cookie] AuthJwtPayload :> Post '[JSON] AuthJwtDto
@@ -108,6 +158,7 @@ data LoginAPI route = LoginAPI
       route
         :- "cb"
         :> QueryParam "code" OAuthCode
+        :> Header "X-Auth-Request-Groups" Text
         :> Get
              '[JSON]
              ( Headers
@@ -125,6 +176,7 @@ data SignupAPI route = SignupAPI
       route
         :- "fill"
         :> QueryParam "code" OAuthCode
+        :> Header "X-Auth-Request-Groups" Text
         :> Get
              '[JSON]
              ( Headers
@@ -137,6 +189,7 @@ data SignupAPI route = SignupAPI
       route
         :- Auth '[Cookie] (CreatingUser GhToken)
         :> ReqBody '[JSON] CreateUser
+        :> Header "X-Auth-Request-Groups" Text
         :> Post
              '[JSON]
              ( Headers
@@ -193,35 +246,40 @@ signup = do
 
 loginCallback ::
   Maybe OAuthCode ->
+  Maybe Text ->
   M
     ( Headers
         '[Header "Set-Cookie" SetCookie, Header "Set-Cookie" SetCookie]
         GhLogin
     )
-loginCallback code = do
+loginCallback code mGroupsHeader = do
+  requireSelfHostAuth mGroupsHeader
   (login', _, token) <- callbackHelper githubOauthLogin code
   cookieSettings' <- view #cookieSettings
   jwtSettings' <- view #jwtSettings
   user <- DB.getUser login' <?> "calling getUser"
+  user' <- applySelfHostSubscription user mGroupsHeader
   mApplyCookies <-
-    liftIO (acceptLogin cookieSettings' jwtSettings' (WebSession user token))
+    liftIO (acceptLogin cookieSettings' jwtSettings' (WebSession user' token))
       <?> "calling acceptLogin"
   case mApplyCookies of
     Nothing -> throw Unauthorized
     Just applyCookies ->
       return
         $ applyCookies
-        $ user
+        $ user'
         ^. githubLogin
 
 signupCallback ::
   Maybe OAuthCode ->
+  Maybe Text ->
   M
     ( Headers
         '[Header "Set-Cookie" SetCookie, Header "Set-Cookie" SetCookie]
         (CreatingUser ())
     )
-signupCallback code = do
+signupCallback code mGroupsHeader = do
+  requireSelfHostAuth mGroupsHeader
   (login', email', token) <- callbackHelper githubOauthSignup code
   eUser <- try $ DB.getUser login' <?> "calling getUser"
   creatingUser <- case eUser of
@@ -244,9 +302,11 @@ signupCallback code = do
     Left e -> throwError e
   cookieSettings' <- view #cookieSettings
   jwtSettings' <- view #jwtSettings
-  mApplyCookies <- liftIO $ case eUser of
-    Right user -> acceptLogin cookieSettings' jwtSettings' (WebSession user token)
-    _ -> acceptLogin cookieSettings' jwtSettings' creatingUser
+  mApplyCookies <- case eUser of
+    Right user -> do
+      user' <- applySelfHostSubscription user mGroupsHeader
+      liftIO $ acceptLogin cookieSettings' jwtSettings' (WebSession user' token)
+    _ -> liftIO $ acceptLogin cookieSettings' jwtSettings' creatingUser
   case mApplyCookies of
     Nothing -> throw Unauthorized
     Just applyCookies -> return $ applyCookies (void creatingUser)
@@ -287,8 +347,10 @@ callbackHelper githubOauth (Just (OAuthCode code)) = do
 finishSignup ::
   AuthResult (CreatingUser GhToken) ->
   CreateUser ->
+  Maybe Text ->
   M (Headers '[Header "Set-Cookie" SetCookie, Header "Set-Cookie" SetCookie] GhLogin)
-finishSignup (Authenticated cUser) addenda = do
+finishSignup (Authenticated cUser) addenda mGroupsHeader = do
+  requireSelfHostAuth mGroupsHeader
   -- The things in AuthResult we can trust, because we put them there
   user <-
     DB.newUser
@@ -296,13 +358,14 @@ finishSignup (Authenticated cUser) addenda = do
       (addenda ^. email)
       (addenda ^. subscriptionType)
       (addenda ^. agreeToEmails)
+  user' <- applySelfHostSubscription user mGroupsHeader
   cookieSettings' <- view #cookieSettings
   jwtSettings' <- view #jwtSettings
-  mApplyCookies <- liftIO $ acceptLogin cookieSettings' jwtSettings' (WebSession user (cUser ^. githubToken))
+  mApplyCookies <- liftIO $ acceptLogin cookieSettings' jwtSettings' (WebSession user' (cUser ^. githubToken))
   case mApplyCookies of
     Nothing -> throw Unauthorized
-    Just applyCookies -> return $ applyCookies $ user ^. githubLogin
-finishSignup _ _ = throw $ OtherError "Did not receive expected user info"
+    Just applyCookies -> return $ applyCookies $ user' ^. githubLogin
+finishSignup _ _ _ = throw $ OtherError "Did not receive expected user info"
 
 githubOauthLogin :: M OA.OAuth2
 githubOauthLogin = do

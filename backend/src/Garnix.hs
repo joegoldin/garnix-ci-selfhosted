@@ -220,6 +220,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
     lookupEnv "GARNIX_CACHE_PUBLIC_KEY" >>= \case
       Nothing -> pure "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
       Just k -> pure (cs k)
+  selfHostMode' <- isJust <$> lookupEnv "GARNIX_SELF_HOST_MODE"
+  adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   hetznerTok <-
     lookupEnv "HETZNER_TOKEN"
       >>= maybe (BSC.readFile "/run/secrets/hetzner-token") (pure . cs)
@@ -254,15 +256,17 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   nixEvalPool <- Garnix.Monad.Pool.newPool 50 metrics #evalQueueWaitTime #evalQueueLen
   s3UploadPool <- Garnix.Monad.Pool.newPool 100 metrics #s3QueueWaitTime #s3QueueLen
   stripe <- do
-    publishableKey <-
-      lookupEnv "STRIPE_PUBLISHABLE_KEY"
-        >>= maybe (T.readFile "/run/secrets/stripe-publishable-key") (pure . cs)
-    secretKey <-
-      lookupEnv "STRIPE_SECRET_KEY"
-        >>= maybe (T.readFile "/run/secrets/stripe-secret-key") (pure . cs)
-    webhookSecret <-
-      lookupEnv "STRIPE_WEBHOOK_SECRET"
-        >>= maybe (T.readFile "/run/secrets/stripe-webhook-secret") (pure . cs)
+    -- In self-host mode there is no billing, so the Stripe secrets are optional:
+    -- fall back to a dummy value when neither the env var nor the secrets file
+    -- is present, so startup never crashes for want of billing credentials.
+    let readStripeSecret envVar secretFile =
+          lookupEnv envVar
+            >>= maybe
+              (if selfHostMode' then pure "dummy-unused" else T.readFile secretFile)
+              (pure . cs)
+    publishableKey <- readStripeSecret "STRIPE_PUBLISHABLE_KEY" "/run/secrets/stripe-publishable-key"
+    secretKey <- readStripeSecret "STRIPE_SECRET_KEY" "/run/secrets/stripe-secret-key"
+    webhookSecret <- readStripeSecret "STRIPE_WEBHOOK_SECRET" "/run/secrets/stripe-webhook-secret"
     pure
       $ StripeEnv
         { publishableKey,
@@ -308,6 +312,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               baseUrl = cs burl,
               cacheUrl = cacheUrl',
               cachePublicKey = cachePublicKey',
+              selfHostMode = selfHostMode',
+              adminGroupName = adminGroupName',
               logger = defaultLogger,
               buildLogsDir = buildLogsDir',
               hetznerToken = hetznerTok,

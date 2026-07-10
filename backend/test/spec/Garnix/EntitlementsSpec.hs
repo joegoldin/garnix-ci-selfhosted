@@ -80,6 +80,18 @@ spec =
             void $ addTestBuild "testUser" (addTime (fromMinutes @Int 1) now) (fromMinutes @Int 15)
             test (Entitlements.hasRemainingCiTime "testUser") True
 
+        it "never runs out of CI time in self-host mode, even with no products and exhausted usage" $ do
+          now <- liftIO getCurrentTime
+          -- Only the free plan (20 minutes) applies, and we log 100 minutes of
+          -- usage, so in normal mode the CI quota is exhausted.
+          Entitlements.addDefaultEntitlements "testUser"
+          void $ addTestBuild "testUser" (subTime (fromMinutes @Int 10) now) (fromMinutes @Int 100)
+          test (Entitlements.hasRemainingCiTime "testUser") False
+          -- In self-host mode there is no billing, so the same exhausted user
+          -- always has remaining CI time.
+          local (#selfHostMode .~ True)
+            $ test (Entitlements.hasRemainingCiTime "testUser") True
+
 test :: (HasCallStack, Show a, Eq a) => M a -> a -> M ()
 test action expected = do
   result <- action

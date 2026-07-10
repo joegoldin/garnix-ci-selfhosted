@@ -10,6 +10,7 @@ import Data.Aeson.Lens
 import Data.ByteString.Base64 qualified as Base64
 import Data.String.Interpolate (i)
 import Garnix.AccessToken.Types
+import Garnix.API.Auth (selfHostLoginAllowed, subscriptionTypeForGroups)
 import Garnix.Build (buildFlake)
 import Garnix.DB qualified as DB
 import Garnix.Monad
@@ -27,7 +28,34 @@ import Servant.Auth.Server (validationKeys)
 import Test.Hspec
 
 spec :: Spec
-spec = inM $ beforeM_ truncateDBM $ aroundM_ suppressLogs $ do
+spec = do
+  describe "self-host login gate + admin mapping" selfHostDecisionSpec
+  authServerSpec
+
+selfHostDecisionSpec :: Spec
+selfHostDecisionSpec = do
+  describe "selfHostLoginAllowed" $ do
+    it "allows any login when self-host mode is off" $ do
+      selfHostLoginAllowed False Nothing `shouldBe` True
+      selfHostLoginAllowed False (Just "any-groups") `shouldBe` True
+    it "rejects a login without the gateway header in self-host mode" $
+      selfHostLoginAllowed True Nothing `shouldBe` False
+    it "allows a login carrying the gateway header in self-host mode" $
+      selfHostLoginAllowed True (Just "") `shouldBe` True
+  describe "subscriptionTypeForGroups" $ do
+    it "grants admin when the admin group is present" $
+      subscriptionTypeForGroups "garnix-admins" (Just "users,garnix-admins,staff") `shouldBe` Admin
+    it "trims surrounding whitespace around group names" $
+      subscriptionTypeForGroups "garnix-admins" (Just " users , garnix-admins ") `shouldBe` Admin
+    it "grants free when the admin group is absent" $
+      subscriptionTypeForGroups "garnix-admins" (Just "users,staff") `shouldBe` FreeSubscription
+    it "grants free when there is no groups header" $
+      subscriptionTypeForGroups "garnix-admins" Nothing `shouldBe` FreeSubscription
+    it "does not treat a substring match as membership" $
+      subscriptionTypeForGroups "admin" (Just "administrators,users") `shouldBe` FreeSubscription
+
+authServerSpec :: Spec
+authServerSpec = inM $ beforeM_ truncateDBM $ aroundM_ suppressLogs $ do
   describe "/api/auth/jwt" $ do
     let encodeAuthHeader :: Text -> Text -> Text
         encodeAuthHeader username password = cs $ "Basic " <> Base64.encode (cs username <> ":" <> cs password)

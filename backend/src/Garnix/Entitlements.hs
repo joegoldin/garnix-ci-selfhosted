@@ -88,6 +88,13 @@ data Hosting = Hosting
 
 getHosting :: GhRepoOwner -> M Hosting
 getHosting repoOwner = do
+  selfHost <- view #selfHostMode
+  if selfHost
+    then pure selfHostHosting
+    else getHostingFromDb repoOwner
+
+getHostingFromDb :: GhRepoOwner -> M Hosting
+getHostingFromDb repoOwner = do
   hosts :: [(Maybe Int64, Maybe Int64, Maybe Bool)] <-
     DB.pgQuery
       [pgSQL|
@@ -148,9 +155,50 @@ queryCiTimeEntitlements repoOwner = do
 
 hasRemainingCiTime :: GhRepoOwner -> M Bool
 hasRemainingCiTime owner = do
-  total <- queryCiTimeEntitlements owner
-  used <- DB.getCurrentMonthUsage owner
-  pure $ total >= used
+  selfHost <- view #selfHostMode
+  if selfHost
+    then -- Self-host mode has no billing: CI time is never exhausted.
+      pure True
+    else do
+      total <- queryCiTimeEntitlements owner
+      used <- DB.getCurrentMonthUsage owner
+      pure $ total >= used
+
+-- | A duration long enough (100 years) that no monthly quota can be exhausted.
+-- Used in self-host mode, where there is no billing.
+selfHostGenerousDuration :: Duration
+selfHostGenerousDuration = fromDays @Int 36500
+
+-- | A hosting spend far above any realistic monthly deployment cost, so that
+-- deployments are never blocked for billing reasons in self-host mode.
+selfHostGenerousSpend :: MonetaryCost
+selfHostGenerousSpend = usd (maxBound `div` 100)
+
+-- | The plan returned in self-host mode: unlimited on every billing dimension,
+-- but preserving the evaluation/build timeouts, which are safety limits.
+selfHostPlan :: ProductPlan -> ProductPlan
+selfHostPlan plan =
+  plan
+    & maximumPackagesPerFlake .~ maxBound
+    & baseCiTime .~ selfHostGenerousDuration
+    & maximumPrDeploymentTime .~ selfHostGenerousDuration
+    & includedBranchDeploymentHosts .~ maxBound
+    & extraUsage
+      .~ ExtraUsageLimits
+        { ciTime = selfHostGenerousDuration,
+          prDeployTime = selfHostGenerousDuration,
+          hostingSpend = selfHostGenerousSpend
+        }
+
+-- | Hosting entitlements returned in self-host mode: unlimited.
+selfHostHosting :: Hosting
+selfHostHosting =
+  Hosting
+    { planIncludedBranchDeploymentHosts = maxBound,
+      extraBranchHostingSpend = selfHostGenerousSpend,
+      maxPrDeploymentTime = selfHostGenerousDuration,
+      largerServers = True
+    }
 
 -- * products
 
@@ -207,7 +255,9 @@ getPlan :: GhRepoOwner -> M ProductPlan
 getPlan repoOwner =
   Map.lookup repoOwner <$> getPlans [repoOwner] >>= \case
     Nothing -> throw $ OtherError $ "Impossible: no plan found for " <> getGhLogin (getGhRepoOwner repoOwner)
-    Just plan -> pure plan
+    Just plan -> do
+      selfHost <- view #selfHostMode
+      pure $ if selfHost then selfHostPlan plan else plan
 
 getPlans :: [GhRepoOwner] -> M (Map GhRepoOwner ProductPlan)
 getPlans orgs = do
