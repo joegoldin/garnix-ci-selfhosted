@@ -134,7 +134,7 @@ in
       cfg.allowedIPs;
 
     sops = {
-      secrets = {
+      secrets = lib.mkIf config.garnix.manageSecretsWithSops {
         database-password = {
           mode = "0440";
         };
@@ -147,8 +147,8 @@ in
     systemd.services.postgresql-setup = {
       serviceConfig = {
         LoadCredential = [
-          "database-password:${config.sops.secrets.database-password.path}"
-          "database-monitoring-pgpass:${config.sops.secrets.database-monitoring-pgpass.path}"
+          "database-password:/run/secrets/database-password"
+          "database-monitoring-pgpass:/run/secrets/database-monitoring-pgpass"
         ];
       };
 
@@ -354,7 +354,7 @@ in
       '';
       serviceConfig = {
         PrivateTmp = true;
-        LoadCredential = [ "db_password:${config.sops.secrets.database-monitoring-pgpass.path}" ];
+        LoadCredential = [ "db_password:/run/secrets/database-monitoring-pgpass" ];
         Environment = [
           "PGPASSFILE=/tmp/db_password"
         ];

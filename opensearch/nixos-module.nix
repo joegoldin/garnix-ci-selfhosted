@@ -42,7 +42,7 @@ in
         default = [
           {
             username = "garnix";
-            passwordFile = config.sops.secrets.opensearch-garnix.path;
+            passwordFile = "/run/secrets/opensearch-garnix";
           }
         ];
       };
@@ -87,7 +87,7 @@ in
   config = lib.mkIf cfg.enable {
     networking.firewall.allowedTCPPorts = [ 80 443 ];
 
-    sops.secrets = {
+    sops.secrets = lib.mkIf config.garnix.manageSecretsWithSops {
       opensearch-garnix = { };
     };
 

@@ -61,6 +61,12 @@ let
 in
 {
   options = {
+    garnix.manageSecretsWithSops = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Declare sops.secrets (upstream behavior). Set false when secrets are provided externally at /run/secrets/<name> (e.g. agenix).";
+    };
+
     services = {
       garnixServer = {
         enable = lib.mkEnableOption "garnix server";
@@ -404,7 +410,7 @@ in
       SystemMaxFiles=1000
     '';
 
-    sops.secrets = {
+    sops.secrets = lib.mkIf config.garnix.manageSecretsWithSops {
       database-password = {
         mode = "0440";
         group = config.users.users.garnix.name;
