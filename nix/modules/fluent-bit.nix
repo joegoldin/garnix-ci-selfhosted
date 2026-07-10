@@ -164,7 +164,7 @@ in
           };
           passwordFile = lib.mkOption {
             type = lib.types.str;
-            default = config.sops.secrets.opensearch-garnix.path;
+            default = "/run/secrets/opensearch-garnix";
           };
         };
       };
@@ -269,7 +269,7 @@ in
         };
       };
 
-    sops.secrets = {
+    sops.secrets = lib.mkIf config.garnix.manageSecretsWithSops {
       opensearch-garnix = { };
     };
 

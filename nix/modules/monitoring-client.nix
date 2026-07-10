@@ -60,7 +60,7 @@ in
       };
       passwordFile = lib.mkOption {
         type = lib.types.str;
-        default = config.sops.secrets.prometheus-node-exporter-1.path;
+        default = "/run/secrets/prometheus-node-exporter-1";
       };
     };
   };
@@ -75,7 +75,9 @@ in
     else
       lib.mkMerge [
         {
-          sops.secrets.prometheus-node-exporter-1 = { };
+          sops.secrets = lib.mkIf config.garnix.manageSecretsWithSops {
+            prometheus-node-exporter-1 = { };
+          };
 
           services.prometheus.exporters = {
             node = {
