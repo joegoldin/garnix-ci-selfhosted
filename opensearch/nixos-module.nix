@@ -30,6 +30,12 @@ in
         description = "The FQDN to reach the opensearch service";
       };
 
+      exposeViaNginx = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether to expose OpenSearch via a local nginx vhost with basic auth. Disable when a reverse proxy elsewhere is responsible for this.";
+      };
+
       basicAuths = lib.mkOption {
         description =
           "List of authentication credentials for the OpenSearch service";
@@ -150,14 +156,14 @@ in
         ];
       };
 
-      nginx = {
+      nginx = lib.mkIf cfg.exposeViaNginx {
         enable = true;
         recommendedProxySettings = true;
         recommendedOptimisation = true;
         # This is needed for long domain names
         serverNamesHashBucketSize = 128;
         proxyTimeout = "600s";
-        virtualHosts."opensearch.garnix.io" = config.garnix.devMode.withDevCerts {
+        virtualHosts."${cfg.fqdn}" = config.garnix.devMode.withDevCerts {
           forceSSL = !config.garnix.devMode.enable;
           enableACME = !config.garnix.devMode.enable;
           locations."/" = {
@@ -223,7 +229,7 @@ in
           '';
         };
 
-      nginx = {
+      nginx = lib.mkIf cfg.exposeViaNginx {
         serviceConfig = {
           StateDirectory = "nginx";
           LoadCredential = builtins.map

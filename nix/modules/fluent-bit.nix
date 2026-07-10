@@ -157,6 +157,16 @@ in
           type = lib.types.str;
           default = config.garnix.opensearch.fqdn;
         };
+        port = lib.mkOption {
+          type = lib.types.int;
+          default = 443;
+          description = "Port used to reach the OpenSearch output.";
+        };
+        tls = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Whether to use TLS when reaching the OpenSearch output.";
+        };
         basicAuth = {
           username = lib.mkOption {
             type = lib.types.str;

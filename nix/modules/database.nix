@@ -25,6 +25,11 @@ let
     chown postgres:postgres ${psqlSslPrivateKeyPath}
     chmod 600 ${psqlSslPrivateKeyPath}
   '');
+  usesAcme = !config.garnix.devMode.enable && cfg.certDir == null;
+  certDir =
+    if config.garnix.devMode.enable then devCerts
+    else if cfg.certDir != null then cfg.certDir
+    else config.security.acme.certs.${cfg.fqdn}.directory;
 in
 
 {
@@ -71,16 +76,25 @@ in
         description = "The list of IPs ranges that are allowed to connect to the database";
       };
 
+      certDir = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Directory containing cert.pem and key.pem for postgres TLS. When set, ACME/nginx integration is disabled.";
+      };
+
+      zfsSnapshots = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+      };
+
       ssl = {
         mode = lib.mkOption {
           type = lib.types.str;
           default = "verify-full";
-          readOnly = true;
         };
         rootCert = lib.mkOption {
           type = lib.types.str;
           default = "/etc/ssl/certs/ca-certificates.crt";
-          readOnly = true;
         };
       };
 
@@ -103,11 +117,7 @@ in
       settings = {
         port = cfg.dbPort;
         ssl = true;
-        ssl_cert_file =
-          if config.garnix.devMode.enable then
-            "${devCerts}/cert.pem"
-          else
-            "${config.security.acme.certs."${cfg.fqdn}".directory}/cert.pem";
+        ssl_cert_file = "${certDir}/cert.pem";
         ssl_key_file = psqlSslPrivateKeyPath;
       };
       initialScript = pkgs.writeText "psql-initscript" ''
@@ -181,13 +191,9 @@ in
 
     systemd.services.postgresql = {
       preStart = ''
-        ${setUpSslForPsql (
-          if config.garnix.devMode.enable
-            then devCerts
-            else config.security.acme.certs.${cfg.fqdn}.directory
-        )}
+        ${setUpSslForPsql certDir}
       '';
-    } // lib.optionalAttrs (!config.garnix.devMode.enable) {
+    } // lib.optionalAttrs usesAcme {
       after = [ "acme-selfsigned-${cfg.fqdn}.service" ];
       before = [ "acme-${cfg.fqdn}.service" ];
       wants = [ "acme-finished-${cfg.fqdn}.target" ];
@@ -205,7 +211,7 @@ in
       startAt = "*-*-* 0,6,12,18:00:00";
     };
 
-    services.zfs.autoSnapshot = {
+    services.zfs.autoSnapshot = lib.mkIf cfg.zfsSnapshots {
       hourly = 6;
       daily = 3;
       weekly = 1;
@@ -365,7 +371,7 @@ in
       "${cfg.exporter.fqdn}" = lib.mkIf cfg.exporter.enable {
         webroot = "/var/lib/acme/acme-challenge";
       };
-      "${cfg.fqdn}" = {
+      "${cfg.fqdn}" = lib.mkIf usesAcme {
         webroot = "/var/lib/acme/acme-challenge";
         group = "postgres";
         postRun = ''
@@ -387,7 +393,7 @@ in
           inherit (config.garnix.monitoring-client.nginx) basicAuthFile;
           locations."/".proxyPass = "http://127.0.0.1:${toString config.services.prometheus.exporters.sql.port}";
         });
-      } // lib.optionalAttrs (! config.garnix.devMode.enable) {
+      } // lib.optionalAttrs usesAcme {
         "${cfg.fqdn}" = {
           locations."/.well-known/acme-challenge".root =
             config.security.acme.certs.${cfg.fqdn}.webroot;

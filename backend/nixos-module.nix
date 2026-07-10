@@ -115,6 +115,16 @@ in
           default = 0;
           description = "max-jobs for local builds in production mode (0 = never build locally, farm everything to buildMachines)";
         };
+        enableNginx = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Whether to configure the built-in nginx vhosts for the server/frontend. Disable when an external reverse proxy handles this instead.";
+        };
+        journaldMaxUse = lib.mkOption {
+          type = lib.types.str;
+          default = "100G";
+          description = "SystemMaxUse setting for journald.";
+        };
         buildMachines = lib.mkOption {
           type = lib.types.listOf (lib.types.submodule {
             options = {
@@ -235,8 +245,8 @@ in
             Name = "opensearch";
             Match = tag;
             Host = config.garnix.fluent-bit.opensearch.fqdn;
-            Port = 443;
-            Tls = "On";
+            Port = config.garnix.fluent-bit.opensearch.port;
+            Tls = if config.garnix.fluent-bit.opensearch.tls then "On" else "Off";
             "Tls.verify" = if config.garnix.devMode.enable then "Off" else "On";
             HTTP_User = config.garnix.fluent-bit.opensearch.basicAuth.username;
             HTTP_Passwd = ''''${OPENSEARCH_PASSWORD}'';
@@ -366,7 +376,7 @@ in
       };
     };
 
-    services.nginx = {
+    services.nginx = lib.mkIf config.services.garnixServer.enableNginx {
       enable = true;
       recommendedProxySettings = true;
       recommendedOptimisation = true;
@@ -406,7 +416,7 @@ in
     };
 
     services.journald.extraConfig = ''
-      SystemMaxUse=100G
+      SystemMaxUse=${config.services.garnixServer.journaldMaxUse}
       SystemMaxFiles=1000
     '';
 
