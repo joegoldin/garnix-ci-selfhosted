@@ -1,6 +1,7 @@
 module Garnix.Build.Helpers
   ( withPrivateNixXdgCache,
     withInternalCacheToken,
+    cacheHostFromUrl,
   )
 where
 
@@ -24,7 +25,7 @@ withPrivateNixXdgCache action = do
 withInternalCacheToken :: GhLogin -> M a -> M a
 withInternalCacheToken reqUser cont = do
   token <- DB.getUserInternalToken reqUser
-  cacheHost <- T.replace "https://" "" . T.replace "http://" "" <$> view #cacheUrl
+  cacheHost <- cacheHostFromUrl <$> view #cacheUrl
   (path, handle) <- safeSystemTempFile "garnix-netrc"
   liftIO $ do
     hPutStrLn handle
@@ -36,3 +37,10 @@ withInternalCacheToken reqUser cont = do
     hClose handle
   local (#userNixConfig %~ ((NixConfig.fromNetRcFile . NetRcFile $ path) <>)) $ do
     withTextSpan ("internal_token", show reqUser) cont
+
+-- | Bare host for a netrc @machine@ entry: scheme and any path stripped.
+-- A netrc @machine@ token is a hostname, so a cache URL with a trailing
+-- slash or path (e.g. @https://cache.example.com/foo@) must not leak those
+-- segments into the entry.
+cacheHostFromUrl :: Text -> Text
+cacheHostFromUrl = T.takeWhile (/= '/') . T.replace "https://" "" . T.replace "http://" ""

@@ -101,9 +101,9 @@ renderNormalizedFlakeWithHelpersSpec = describe "renderNormalizedFlakeWithHelper
   let mkStorePath p = either error identity (Nix.parseStorePath @Text p)
       foo = "/nix/store/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-foo"
       bar = "/nix/store/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-bar"
-  it "renders simple normalized flakes"
+  it "renders simple normalized flakes with the cache url threaded through"
     $ renderNormalizedFlakeWithHelpers
-      "https://cache.garnix.io"
+      "https://custom-cache.example.com"
       "emptyDir"
       ( mempty
           & at (TypePackage, IsSystem X8664Linux, "foo")
@@ -116,7 +116,7 @@ renderNormalizedFlakeWithHelpersSpec = describe "renderNormalizedFlakeWithHelper
             {
               packages.x86_64-linux.foo.intermediates = builtins.fetchClosure {
                 inputAddressed = true;
-                fromStore = "https://cache.garnix.io";
+                fromStore = "https://custom-cache.example.com";
                 fromPath = "#{foo}";
               };
               .*

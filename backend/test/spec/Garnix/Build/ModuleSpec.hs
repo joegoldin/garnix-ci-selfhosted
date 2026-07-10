@@ -157,6 +157,88 @@ spec = inM $ do
                 |]
       contents `shouldBeM` expected
 
+    it "threads a custom cache url and public key from the Env into nixConfig" $ do
+      1 <-
+        DB.pgExec
+          [pgSQL|
+            INSERT INTO modules
+              (repo_user, repo_name, git_commit, enabled, name, schema)
+              VALUES
+              ('garnix-io', 'test-module', 'test-module-commit', true, 'testModule', '"test schema"')
+          |]
+      let moduleConfig =
+            [aesonQQ|
+              {
+                "repo_user": "",
+                "repo_name": "",
+                "user_config": [{
+                  "module_name": "testModule",
+                  "git_commit": "",
+                  "values": {
+                    "tag": "set",
+                    "value": {
+                      "testModule": {
+                        "tag": "set",
+                        "value": {
+                          "foo": {
+                            "tag": "string",
+                            "value": "foo"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }],
+                "modules": [{
+                  "name": "testModule",
+                  "repo_user": "garnix-io",
+                  "repo_name": "test-module",
+                  "git_commit": "",
+                  "schema": {},
+                  "description": ""
+                }]
+              }
+            |]
+      contents <-
+        local
+          ( (#cacheUrl .~ "https://custom-cache.example.com")
+              . (#cachePublicKey .~ "custom-cache.example.com:AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJKKK=")
+          )
+          $ generateFlakeNix (Branch "test")
+          $ either (error . cs) identity
+          $ Aeson.parseEither Aeson.parseJSON moduleConfig
+      let expected =
+            cs
+              $ unindent
+                [i|
+                  {
+                    inputs = {
+                      garnix-lib.url = "github:garnix-io/garnix-lib";
+                      testModule.url = "github:garnix-io/test-module";
+                    };
+
+                    nixConfig = {
+                      extra-substituters = [ "https://custom-cache.example.com" ];
+                      extra-trusted-public-keys = [ "custom-cache.example.com:AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJKKK=" ];
+                    };
+
+                    outputs = inputs: inputs.garnix-lib.lib.mkModules {
+                      modules = [
+                        inputs.testModule.garnixModules.default
+                      ];
+
+                      config = { pkgs, ... }: {
+                        testModule = {
+                          foo = "foo";
+                        };
+
+                        garnix.deployBranch = "test";
+                      };
+                    };
+                  }
+                |]
+      contents `shouldBeM` expected
+
     it "handles multi-modules correctly" $ do
       2 <-
         DB.pgExec

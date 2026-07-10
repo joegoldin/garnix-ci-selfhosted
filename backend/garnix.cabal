@@ -734,6 +734,7 @@ test-suite spec
       Garnix.AttributeSpec
       Garnix.Build.CheckoutSpec
       Garnix.Build.FodCheckSpec
+      Garnix.Build.HelpersSpec
       Garnix.Build.ModuleSpec
       Garnix.BuildSpec
       Garnix.DB.FeatureFlagsSpec
