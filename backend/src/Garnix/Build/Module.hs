@@ -120,6 +120,8 @@ generateFlakeNix branch values = do
 
 toFlakeFile :: Branch -> [(ModuleValues.Module, ModuleValues.ModuleConfig)] -> M Text
 toFlakeFile branch modulesAndValues = do
+  cacheUrl <- view #cacheUrl
+  cachePublicKey <- view #cachePublicKey
   pure
     $ cs
     $ unindent
@@ -130,8 +132,8 @@ toFlakeFile branch modulesAndValues = do
   };
 
   nixConfig = {
-    extra-substituters = [ "https://cache.garnix.io" ];
-    extra-trusted-public-keys = [ "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=" ];
+    extra-substituters = [ "#{cacheUrl}" ];
+    extra-trusted-public-keys = [ "#{cachePublicKey}" ];
   };
 
   outputs = inputs: inputs.garnix-lib.lib.mkModules {

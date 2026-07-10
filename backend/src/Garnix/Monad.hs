@@ -80,6 +80,8 @@ data Env = Env
     jwtSettings :: JWTSettings,
     dbConn :: DatabaseConnection,
     baseUrl :: Text,
+    cacheUrl :: Text,
+    cachePublicKey :: Text,
     sshUserHostingKeys :: [FilePath],
     s3CacheEnv :: S3CacheEnv,
     action :: ActionEnv,

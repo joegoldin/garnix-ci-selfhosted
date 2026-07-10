@@ -68,6 +68,14 @@ in
           type = lib.types.str;
           default = "https://app.garnix.io";
         };
+        cacheUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "https://cache.garnix.io";
+        };
+        cachePublicKey = lib.mkOption {
+          type = lib.types.str;
+          default = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=";
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -298,6 +306,8 @@ in
           "TPG_USER=${config.garnix.database.dbUser}"
           "TPG_DB=${config.garnix.database.dbName}"
           "GARNIX_URL=${config.services.garnixServer.url}"
+          "GARNIX_CACHE_URL=${config.services.garnixServer.cacheUrl}"
+          "GARNIX_CACHE_PUBLIC_KEY=${config.services.garnixServer.cachePublicKey}"
           "GITHUB_APP_NAME=${config.services.garnixServer.githubAppName}"
           "OPENSEARCH_URL=${config.services.garnixServer.opensearchUrl}"
           "S3_CACHE_REGION=${config.services.garnixServer.s3Cache.region}"

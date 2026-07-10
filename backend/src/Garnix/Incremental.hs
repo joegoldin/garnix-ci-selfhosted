@@ -32,7 +32,8 @@ withIntermediatesFlake build action = do
       action Nothing
     _ -> do
       emptyDir' <- view #emptyDir
-      flakeContents <- liftIO . renderNormalizedFlakeWithHelpers emptyDir' =<< makeNormalizedFlake builds
+      cacheUrl <- view #cacheUrl
+      flakeContents <- liftIO . renderNormalizedFlakeWithHelpers cacheUrl emptyDir' =<< makeNormalizedFlake builds
       log Informational $ "Using the following flake file for garnix-incrementalize:\n "
         <> flakeContents
       withSystemTempDirectory "incremental-build" $ \fp -> do
@@ -68,8 +69,8 @@ makeNormalizedFlake = foldM go mempty
                 )
               .~ storePath
 
-renderNormalizedFlakeWithHelpers :: FilePath -> NormalizedFlake -> IO Text
-renderNormalizedFlakeWithHelpers emptyDir' (NormalizedFlake f) = cs <$> rendered
+renderNormalizedFlakeWithHelpers :: Text -> FilePath -> NormalizedFlake -> IO Text
+renderNormalizedFlakeWithHelpers cacheUrl emptyDir' (NormalizedFlake f) = cs <$> rendered
   where
     renderSingle :: (PackageType, MaybeSystem, PackageName) -> Nix.StorePath -> Text -> Text
     renderSingle (typ, sys, PackageName name) s prev =
@@ -87,7 +88,7 @@ renderNormalizedFlakeWithHelpers emptyDir' (NormalizedFlake f) = cs <$> rendered
         <> ".intermediates"
         <> " = builtins.fetchClosure { "
         <> "     inputAddressed = true;" -- Is this worth changing?
-        <> "     fromStore = \"https://cache.garnix.io\"; "
+        <> "     fromStore = \"" <> cacheUrl <> "\"; "
         <> "     fromPath = \""
         <> cs s
         <> "\";"

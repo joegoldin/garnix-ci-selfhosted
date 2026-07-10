@@ -103,6 +103,7 @@ renderNormalizedFlakeWithHelpersSpec = describe "renderNormalizedFlakeWithHelper
       bar = "/nix/store/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-bar"
   it "renders simple normalized flakes"
     $ renderNormalizedFlakeWithHelpers
+      "https://cache.garnix.io"
       "emptyDir"
       ( mempty
           & at (TypePackage, IsSystem X8664Linux, "foo")
@@ -125,6 +126,7 @@ renderNormalizedFlakeWithHelpersSpec = describe "renderNormalizedFlakeWithHelper
 
   it "renders multiple attributes correctly"
     $ renderNormalizedFlakeWithHelpers
+      "https://cache.garnix.io"
       "emptyDir"
       ( mempty
           & at (TypePackage, IsSystem X8664Linux, "foo")
@@ -154,6 +156,7 @@ renderNormalizedFlakeWithHelpersSpec = describe "renderNormalizedFlakeWithHelper
 
   it "renders the correct suffix for nixosConfigurations"
     $ renderNormalizedFlakeWithHelpers
+      "https://cache.garnix.io"
       "emptyDir"
       ( mempty
           & at (TypeNixosConfiguration, NoSystem, "foo")

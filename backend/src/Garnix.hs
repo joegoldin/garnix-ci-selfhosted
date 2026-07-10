@@ -212,6 +212,14 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
     lookupEnv "GARNIX_URL" >>= \case
       Nothing -> pure "https://app.garnix.io"
       Just u -> pure u
+  cacheUrl' <-
+    lookupEnv "GARNIX_CACHE_URL" >>= \case
+      Nothing -> pure "https://cache.garnix.io"
+      Just u -> pure (cs u)
+  cachePublicKey' <-
+    lookupEnv "GARNIX_CACHE_PUBLIC_KEY" >>= \case
+      Nothing -> pure "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
+      Just k -> pure (cs k)
   hetznerTok <-
     lookupEnv "HETZNER_TOKEN"
       >>= maybe (BSC.readFile "/run/secrets/hetzner-token") (pure . cs)
@@ -298,6 +306,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               dbConn = dbConnectionPool,
               manager = mgr,
               baseUrl = cs burl,
+              cacheUrl = cacheUrl',
+              cachePublicKey = cachePublicKey',
               logger = defaultLogger,
               buildLogsDir = buildLogsDir',
               hetznerToken = hetznerTok,

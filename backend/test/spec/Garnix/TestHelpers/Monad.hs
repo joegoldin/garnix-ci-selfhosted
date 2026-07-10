@@ -281,6 +281,8 @@ withTestEnvironment tempDir action = do
                   dbConn = ConnectionPool pgConn,
                   manager = mgr,
                   baseUrl = "https://garnix.io",
+                  cacheUrl = "https://cache.garnix.io",
+                  cachePublicKey = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=",
                   logger = defaultLogger,
                   buildLogsDir = buildLogsDir,
                   hetznerToken = "hetzner-token",

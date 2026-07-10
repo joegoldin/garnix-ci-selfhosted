@@ -4,6 +4,7 @@ module Garnix.Build.Helpers
   )
 where
 
+import Data.Text qualified as T
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Monad.ForkT (safeSystemTempDirectory, safeSystemTempFile)
@@ -23,11 +24,12 @@ withPrivateNixXdgCache action = do
 withInternalCacheToken :: GhLogin -> M a -> M a
 withInternalCacheToken reqUser cont = do
   token <- DB.getUserInternalToken reqUser
+  cacheHost <- T.replace "https://" "" . T.replace "http://" "" <$> view #cacheUrl
   (path, handle) <- safeSystemTempFile "garnix-netrc"
   liftIO $ do
     hPutStrLn handle
       . unlines
-      $ [ "machine cache.garnix.io",
+      $ [ "machine " <> cs cacheHost,
           "login " <> cs (getGhLogin reqUser),
           "password " <> cs (getInternalCacheToken token)
         ]
