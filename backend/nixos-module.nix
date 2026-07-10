@@ -96,6 +96,29 @@ in
           type = lib.types.bool;
           default = false;
         };
+        maxLocalJobs = lib.mkOption {
+          type = lib.types.int;
+          default = 0;
+          description = "max-jobs for local builds in production mode (0 = never build locally, farm everything to buildMachines)";
+        };
+        buildMachines = lib.mkOption {
+          type = lib.types.listOf (lib.types.submodule {
+            options = {
+              hostName = lib.mkOption { type = lib.types.str; };
+              hostAddress = lib.mkOption { type = lib.types.str; };
+              sshUser = lib.mkOption { type = lib.types.str; default = "nix-ssh"; };
+              sshKey = lib.mkOption { type = lib.types.str; default = "/run/secrets/garnix_server_remote_builder_ssh"; };
+              protocol = lib.mkOption { type = lib.types.str; default = "ssh-ng"; };
+              systems = lib.mkOption { type = lib.types.listOf lib.types.str; };
+              maxJobs = lib.mkOption { type = lib.types.int; default = 4; };
+              speedFactor = lib.mkOption { type = lib.types.int; default = 1; };
+              supportedFeatures = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "big-parallel" ]; };
+              mandatoryFeatures = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+            };
+          });
+          default = [ ];
+          description = "Remote builders. Replaces upstream's hardcoded fleet.";
+        };
         s3Cache = {
           publicBucket = lib.mkOption {
             type = lib.types.str;
@@ -143,46 +166,12 @@ in
       startAgent = true;
       extraConfig = ''
         AddKeysToAgent yes
-        Host macMini1
-           Hostname 142.132.141.88
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host macMini2
-           Hostname 142.132.141.89
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host garnix5
-           Hostname 65.108.28.108
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host garnix6
-           Hostname 65.108.28.106
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host garnix7
-           Hostname 65.108.28.107
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host garnix8
-           Hostname 88.99.75.150
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host garnix9
-           Hostname 157.90.140.190
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host arm-server-0
-           Hostname 65.109.75.126
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host arm-server-1
-           Hostname 91.107.205.127
-           User nix-ssh
-           IdentityFile /run/secrets/garnix_server_remote_builder_ssh
-        Host cache.garnix.io
-          Hostname 37.27.121.36
-          User cache-uploader
-      '';
+      '' + lib.concatMapStrings (m: ''
+        Host ${m.hostName}
+           Hostname ${m.hostAddress}
+           User ${m.sshUser}
+           IdentityFile ${m.sshKey}
+      '') config.services.garnixServer.buildMachines;
     };
 
     nix = {
@@ -190,140 +179,15 @@ in
         cores = 4;
       };
       extraOptions = ''
-        max-jobs = ${if config.garnix.devMode.enable then "auto" else "0"}
+        max-jobs = ${if config.garnix.devMode.enable then "auto" else toString config.services.garnixServer.maxLocalJobs}
         keep-build-log = true
       '';
-      buildMachines =
-        let
-          sshUser = "nix-ssh";
-          sshKey = "/run/secrets/garnix_server_remote_builder_ssh";
-          protocol = "ssh-ng";
-        in
-        [
-          {
-            hostName = "macMini1";
-            inherit sshUser sshKey protocol;
-            systems = [ "aarch64-darwin" "x86_64-darwin" ];
-            maxJobs = 4;
-            speedFactor = 1;
-            supportedFeatures = [
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "macMini2";
-            inherit sshUser sshKey protocol;
-            systems = [ "aarch64-darwin" "x86_64-darwin" ];
-            maxJobs = 4;
-            speedFactor = 1;
-            supportedFeatures = [
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "garnix5";
-            inherit sshUser sshKey protocol;
-            systems = [ "x86_64-linux" "i686-linux" ];
-            maxJobs = 28;
-            speedFactor = 4;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "garnix6";
-            inherit sshUser sshKey protocol;
-            systems = [ "x86_64-linux" "i686-linux" ];
-            maxJobs = 28;
-            speedFactor = 4;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "garnix7";
-            inherit sshUser sshKey protocol;
-            systems = [ "x86_64-linux" "i686-linux" ];
-            maxJobs = 28;
-            speedFactor = 4;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "garnix8";
-            inherit sshUser sshKey protocol;
-            systems = [ "x86_64-linux" "i686-linux" ];
-            maxJobs = 28;
-            speedFactor = 4;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "garnix9";
-            inherit sshUser sshKey protocol;
-            systems = [ "x86_64-linux" "i686-linux" ];
-            maxJobs = 28;
-            speedFactor = 4;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "arm-server-0";
-            inherit sshUser sshKey protocol;
-            systems = [ "aarch64-linux" ];
-            maxJobs = 60;
-            speedFactor = 4;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-          {
-            hostName = "arm-server-1";
-            inherit sshUser sshKey protocol;
-            systems = [ "aarch64-linux" ];
-            maxJobs = 8;
-            speedFactor = 1;
-            supportedFeatures = [
-              "nixos-test"
-              "kvm"
-              "big-parallel"
-              "recursive-nix"
-            ];
-            mandatoryFeatures = [ ];
-          }
-        ];
-      distributedBuilds = !config.garnix.devMode.enable;
+      buildMachines = map
+        (m: {
+          inherit (m) hostName sshUser sshKey protocol systems maxJobs speedFactor supportedFeatures mandatoryFeatures;
+        })
+        config.services.garnixServer.buildMachines;
+      distributedBuilds = !config.garnix.devMode.enable && config.services.garnixServer.buildMachines != [ ];
       daemonIOSchedPriority = 4;
     };
 
