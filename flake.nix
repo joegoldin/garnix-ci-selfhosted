@@ -165,5 +165,13 @@
       inherit (import ./examples/example-multi-server-deployment.nix {
         inherit self overlays flakeInputs;
       }) nixosConfigurations;
+      nixosModules.self-hosted = import ./nix/modules/self-hosted.nix;
+      # Mandatory for self-hosted consumers: opensearch/nixos-module.nix's
+      # dashboards.package option defaults to pkgs.opensearch-dashboards,
+      # which only exists via this overlay (nix/packages/opensearch-dashboards);
+      # the overlay also carries a workaround for the opensearch packaging bug
+      # https://github.com/NixOS/nixpkgs/issues/319323 that opensearch/nixos-module.nix's
+      # own opensearch package override builds on top of.
+      overlays.default = nixpkgs.lib.composeManyExtensions overlays;
     };
 }
