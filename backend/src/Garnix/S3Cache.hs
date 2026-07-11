@@ -96,10 +96,11 @@ uploadStorePath repoOwner repoName storePath repoPublicity = do
       narSize <- fromIntegral <$> Amazonka.getFileSize narFilePath
       narHash <- getFileHash narFilePath
       compressedNarFilePath <- compress narFilePath
-      bucket <-
-        if isRepoPublic repoPublicity
-          then view $ #s3CacheEnv . #publicBucket
-          else view $ #s3CacheEnv . #privateBucket
+      s3CacheEnv <- view #s3CacheEnv
+      let bucket =
+            if isRepoPublic repoPublicity
+              then s3CacheEnv ^. #publicBucket
+              else s3CacheEnv ^. #privateBucket
       body <- Amazonka.toBody <$> Amazonka.hashedFile compressedNarFilePath
       let policy :: RetryPolicyM M
           policy =
@@ -109,7 +110,7 @@ uploadStorePath repoOwner repoName storePath repoPublicity = do
       void
         $ timingAs #cachePushTime
         $ retryingWithPolicy policy
-        $ sendWithLogging
+        $ sendWithLogging (envForBucket s3CacheEnv bucket)
         $ Amazonka.newPutObject
           bucket
           (Amazonka.ObjectKey $ toNarFilePath storePath XZ)
@@ -187,15 +188,14 @@ toNarFilePath storePath compression =
 
 sendWithLogging ::
   (Amazonka.AWSRequest request, Typeable request, Typeable (Amazonka.AWSResponse request)) =>
+  Amazonka.Env ->
   request ->
   M (Amazonka.AWSResponse request)
-sendWithLogging request = do
+sendWithLogging bucketEnv request = do
   withTextSpan ("tag", "amazonka-log") $ do
     logger <- view #logger
     spans <- view #spanCtx
-    s3Env <-
-      view (#s3CacheEnv . #amazonkaEnv)
-        <&> #logger .~ amazonkaLogger spans logger
+    let s3Env = bucketEnv & #logger .~ amazonkaLogger spans logger
     response <-
       liftIO
         $ runResourceT

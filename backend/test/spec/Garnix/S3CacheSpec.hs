@@ -569,6 +569,33 @@ spec = do
           it (cs ("isInternal " <> show header <> " == " <> show expected)) $ do
             isInternal header `shouldBeM` expected
 
+  describe "envForBucket" $ do
+    it "routes the private bucket to the private credentials and other buckets to the public pair" $ do
+      let mkEnv region =
+            newEnv (pure . Amazonka.fromKeys (AccessKey "id") (SecretKey "secret"))
+              <&> (#region .~ Region' region)
+      publicEnv <- mkEnv "public-region"
+      privateEnv <- mkEnv "private-region"
+      let s3CacheEnv =
+            S3CacheEnv
+              { amazonkaEnv = publicEnv,
+                amazonkaEnvPrivate = privateEnv,
+                publicBucket = "the-public-bucket",
+                publicBaseUrl = error "envForBucket test: publicBaseUrl unused",
+                privateBucket = "the-private-bucket",
+                cachePrivKeyFile = error "envForBucket test: cachePrivKeyFile unused",
+                cachePrivKeyName = error "envForBucket test: cachePrivKeyName unused",
+                expiration = error "envForBucket test: expiration unused",
+                maxUploadSize = error "envForBucket test: maxUploadSize unused",
+                isInNixosCacheMemoTable = error "envForBucket test: isInNixosCacheMemoTable unused"
+              }
+      (envForBucket s3CacheEnv "the-private-bucket" ^. #region)
+        `shouldBe` Region' "private-region"
+      (envForBucket s3CacheEnv "the-public-bucket" ^. #region)
+        `shouldBe` Region' "public-region"
+      (envForBucket s3CacheEnv "some-other-bucket" ^. #region)
+        `shouldBe` Region' "public-region"
+
 localTestBuild :: M Text -> M (EvaluationResult, StorePath)
 localTestBuild mkFlake = do
   liftBaseOp_ inTempDirectory $ do
@@ -690,6 +717,7 @@ withGarageS3 inner =
           ( #s3CacheEnv
               .~ S3CacheEnv
                 { amazonkaEnv,
+                  amazonkaEnvPrivate = amazonkaEnv,
                   publicBucket = "garage-public",
                   publicBaseUrl = "http://garage-public.web.garage.localhost:3902/",
                   privateBucket = "garage-private",

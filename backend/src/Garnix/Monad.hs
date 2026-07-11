@@ -131,6 +131,10 @@ parseTestFeature feature = case readMaybe feature of
 
 data S3CacheEnv = S3CacheEnv
   { amazonkaEnv :: Amazonka.Env,
+    -- | Credentials for operations targeting 'privateBucket'. Defaults to
+    -- 'amazonkaEnv' when no separate private credentials are configured, so
+    -- single-pair deployments behave exactly as before.
+    amazonkaEnvPrivate :: Amazonka.Env,
     publicBucket :: Amazonka.BucketName,
     publicBaseUrl :: Text,
     privateBucket :: Amazonka.BucketName,
@@ -141,6 +145,16 @@ data S3CacheEnv = S3CacheEnv
     isInNixosCacheMemoTable :: MVar (MemoTable StoreHash Bool)
   }
   deriving (Generic)
+
+-- | Select the amazonka 'Amazonka.Env' (and thus the S3 credentials) to use for
+-- a given bucket. Operations targeting the private cache bucket authenticate
+-- with the private credential pair; everything else uses the public pair. When
+-- no separate private credentials are configured 'amazonkaEnvPrivate' equals
+-- 'amazonkaEnv', so this is a no-op for single-pair deployments.
+envForBucket :: S3CacheEnv -> Amazonka.BucketName -> Amazonka.Env
+envForBucket s3CacheEnv bucket
+  | bucket == s3CacheEnv ^. #privateBucket = s3CacheEnv ^. #amazonkaEnvPrivate
+  | otherwise = s3CacheEnv ^. #amazonkaEnv
 
 data ActionEnv = ActionEnv
   { runnerHost :: Text,

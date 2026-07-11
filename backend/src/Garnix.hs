@@ -152,23 +152,49 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
           <> cs sshKey
       liftIO $ makeAbsolute sshKey
   s3CacheEnv <- do
-    amazonkaEnv <- do
-      accessKeyId <-
-        ( lookupEnv "S3_CACHE_ACCESS_KEY_ID"
-            >>= maybe (BSC.readFile "/run/secrets/s3-cache-access-key-id") (pure . cs)
-          )
-          <&> Amazonka.AccessKey
-      secretAccessKey <-
-        ( lookupEnv "S3_CACHE_SECRET_ACCESS_KEY"
-            >>= maybe (BSC.readFile "/run/secrets/s3-cache-secret-access-key") (pure . cs)
-          )
-          <&> Amazonka.SecretKey
-      region <- cs <$> getEnv "S3_CACHE_REGION"
-      host <- cs <$> getEnv "S3_CACHE_HOST"
-      Amazonka.newEnv (pure . Amazonka.fromKeys accessKeyId secretAccessKey)
-        <&> (#region .~ Amazonka.Region' region)
-        <&> Amazonka.overrideService (Amazonka.setEndpoint True host 443)
-        <&> Amazonka.overrideService (#s3AddressingStyle .~ Amazonka.S3AddressingStylePath)
+    accessKeyId <-
+      ( lookupEnv "S3_CACHE_ACCESS_KEY_ID"
+          >>= maybe (BSC.readFile "/run/secrets/s3-cache-access-key-id") (pure . cs)
+        )
+        <&> Amazonka.AccessKey
+    secretAccessKey <-
+      ( lookupEnv "S3_CACHE_SECRET_ACCESS_KEY"
+          >>= maybe (BSC.readFile "/run/secrets/s3-cache-secret-access-key") (pure . cs)
+        )
+        <&> Amazonka.SecretKey
+    region <- cs <$> getEnv "S3_CACHE_REGION"
+    host <- cs <$> getEnv "S3_CACHE_HOST"
+    let mkAmazonkaEnv accessKey secretKey =
+          Amazonka.newEnv (pure . Amazonka.fromKeys accessKey secretKey)
+            <&> (#region .~ Amazonka.Region' region)
+            <&> Amazonka.overrideService (Amazonka.setEndpoint True host 443)
+            <&> Amazonka.overrideService (#s3AddressingStyle .~ Amazonka.S3AddressingStylePath)
+    amazonkaEnv <- mkAmazonkaEnv accessKeyId secretAccessKey
+    -- Optional per-bucket credentials for the private cache bucket. Each key is
+    -- resolved: env var -> secret file if it exists -> fall back to the shared
+    -- (public) pair. B2 application keys are single-bucket, so self-hosters can
+    -- supply a distinct pair for the private bucket. Absent both overrides, the
+    -- private env is the very same value as the public one, keeping upstream
+    -- single-pair deployments byte-identical (and never reading the new files).
+    let readOptionalSecret :: String -> FilePath -> IO (Maybe StrictByteString)
+        readOptionalSecret envVarName filePath =
+          lookupEnv envVarName >>= \case
+            Just value -> pure (Just (cs value))
+            Nothing ->
+              doesFileExist filePath >>= \case
+                True -> Just <$> BSC.readFile filePath
+                False -> pure Nothing
+    privateAccessKeyId <-
+      readOptionalSecret "S3_CACHE_PRIVATE_ACCESS_KEY_ID" "/run/secrets/s3-cache-private-access-key-id"
+    privateSecretAccessKey <-
+      readOptionalSecret "S3_CACHE_PRIVATE_SECRET_ACCESS_KEY" "/run/secrets/s3-cache-private-secret-access-key"
+    amazonkaEnvPrivate <-
+      case (privateAccessKeyId, privateSecretAccessKey) of
+        (Nothing, Nothing) -> pure amazonkaEnv
+        _ ->
+          mkAmazonkaEnv
+            (maybe accessKeyId Amazonka.AccessKey privateAccessKeyId)
+            (maybe secretAccessKey Amazonka.SecretKey privateSecretAccessKey)
     publicBucket <- Amazonka.BucketName . cs <$> getEnv "S3_CACHE_PUBLIC_BUCKET"
     publicBaseUrl <-
       getEnv "S3_CACHE_PUBLIC_BASE_URL"
@@ -188,6 +214,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
     pure
       $ S3CacheEnv
         { amazonkaEnv,
+          amazonkaEnvPrivate,
           publicBucket,
           publicBaseUrl,
           privateBucket,

@@ -159,12 +159,13 @@ publicInternalS3Url storePath compression = do
 
 privateS3Url :: StorePath -> Compression -> M Text
 privateS3Url storePath compression = do
-  privateBucket <- view $ #s3CacheEnv . #privateBucket
-  let request =
+  s3CacheEnv <- view #s3CacheEnv
+  let privateBucket = s3CacheEnv ^. #privateBucket
+      request =
         Amazonka.newGetObject
           privateBucket
           (Amazonka.ObjectKey (toNarFilePath storePath compression))
-  env <- view $ #s3CacheEnv . #amazonkaEnv
+      env = envForBucket s3CacheEnv privateBucket
   now <- liftIO getCurrentTime
   expiration <- view $ #s3CacheEnv . #expiration
   cs <$> Amazonka.presignURL env now (toAmazonkaSeconds expiration) request
