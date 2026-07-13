@@ -42,12 +42,9 @@ const Page = () => {
               <Text type="h2">No running servers</Text>
               <Text type="p">You don&apos;t have any running servers.</Text>
               <Text type="p">
-                <Link href="https://garnix.io/docs/hosting/introduction">
-                  Click here
-                </Link>{" "}
+                <Link href="/docs/hosting/introduction">Click here</Link>{" "}
                 for documentation on how to configure deployment on your repo.
               </Text>
-              <Text type="p">This feature is currently in beta.</Text>
             </div>
           ))
           .with(Ok(P.select()), (servers) => (

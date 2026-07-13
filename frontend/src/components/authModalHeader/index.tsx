@@ -27,7 +27,7 @@ export const AuthModalHeader = ({ type, className }: Props) => {
   const loginLink = useLoginLinkForCurrentPage().loginLink;
 
   const LOGIN_LINKS: LinkProps[] = [
-    { text: "Docs", icon: docsIcon, href: "https://garnix.io/docs" },
+    { text: "Docs", icon: docsIcon, href: "/docs" },
     { text: "Blog", icon: blogIcon, href: "https://garnix.io/blog" },
   ];
 

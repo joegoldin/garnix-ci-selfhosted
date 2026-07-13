@@ -95,11 +95,11 @@ export const AccessTokensComponent = () => {
       </Table>
       <div className={`${Berlin.className} ${styles.small}`}>
         You can use access tokens to authenticate youself for{" "}
-        <Link href="https://garnix.io/docs/ci/caching#private-caches">
+        <Link href="/docs/ci/caching#private-caches">
           private caches
         </Link>
         , and{" "}
-        <Link href="https://garnix.io/docs/api">our programmatic API</Link>.
+        <Link href="/docs/api">our programmatic API</Link>.
       </div>
       {modalState.t === "new-token" && (
         <NewTokenModal
@@ -241,14 +241,14 @@ const NewTokenModal = (props: {
           <ScopeToggle field={scopeCache}>
             <Text>
               The{" "}
-              <Link href="https://garnix.io/docs/ci/caching/">
+              <Link href="/docs/ci/caching/">
                 garnix binary cache
               </Link>
             </Text>
           </ScopeToggle>
           <ScopeToggle field={scopeApi}>
             <Text>
-              The <Link href="https://garnix.io/docs/api">garnix API</Link>
+              The <Link href="/docs/api">garnix API</Link>
             </Text>
           </ScopeToggle>
         </ModalSection>
@@ -369,7 +369,7 @@ const DisplayGeneratedTokenModal = (props: {
           <Text type="p">
             You can use this access token to access the garnix API, for more
             information see{" "}
-            <Link href="https://garnix.io/docs/api">our API documentation</Link>
+            <Link href="/docs/api">our API documentation</Link>
             .
           </Text>
         </ModalSection>

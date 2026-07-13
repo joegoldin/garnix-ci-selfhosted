@@ -11,10 +11,6 @@ import { BuildsIcon } from "@/components/icons/builds";
 import { ModulesIcon } from "@/components/icons/modules";
 import { ServerIcon } from "@/components/icons/servers";
 import { DocumentationIcon } from "@/components/icons/documentation";
-import { DiscordIcon } from "@/components/icons/discord";
-import { MatrixIcon } from "@/components/icons/matrix";
-import { GithubIcon } from "@/components/icons/github";
-import { EmailIcon } from "@/components/icons/email";
 import { AccountIcon } from "@/components/icons/account";
 import { SettingsIcon } from "@/components/icons/settings";
 import { LogoutIcon } from "@/components/icons/logout";
@@ -22,7 +18,6 @@ import hamburgerMenuIcon from "@/components/icons/hamburgerMenu.svg";
 import { useConfig } from "@/store/configContext";
 import { trackClick } from "@/utils/analytics";
 import { filterNull } from "@/utils";
-import { BillingIcon } from "../icons/billing";
 import styles from "./styles.module.css";
 
 type Props = {
@@ -67,43 +62,10 @@ const MAIN_LINK_GROUP: Array<LinkProps> = filterNull([
   {
     icon: <DocumentationIcon className={styles.icon} />,
     label: "Documentation",
-    href: "https://garnix.io/docs",
-    openNewPage: true,
-  },
-  {
-    icon: <BillingIcon className={styles.icon} />,
-    label: "Pricing",
-    href: "https://garnix.io/pricing",
+    href: "/docs",
     openNewPage: true,
   },
 ]);
-
-const SOCIAL_LINK_GROUP: LinkProps[] = [
-  {
-    icon: <DiscordIcon className={styles.icon} />,
-    label: "Discord",
-    href: "https://discord.gg/XtDrPsqpVx",
-    openNewPage: true,
-  },
-  {
-    icon: <MatrixIcon className={styles.icon} />,
-    label: "Matrix",
-    href: "https://matrix.to/#/#garnix-main:matrix.org",
-    openNewPage: true,
-  },
-  {
-    icon: <EmailIcon className={styles.icon} />,
-    label: "Email",
-    href: "mailto:contact@garnix.io",
-    eventName: "mailto-contact-garnix.io",
-  },
-  {
-    icon: <GithubIcon className={styles.icon} />,
-    label: "Report an issue",
-    href: "https://github.com/garnix-io/issues/issues",
-    openNewPage: true,
-  },
-];
 
 const ACCOUNT_LINK_GROUP = (
   githubAppName: string,
@@ -174,16 +136,6 @@ export const Navigation = ({ className }: Props) => {
           ))}
         </div>
         <div>
-          <div className={`${styles.linkGroup} ${styles.socialLinkGroup}`}>
-            {SOCIAL_LINK_GROUP.map((link) => (
-              <NavLink
-                key={link.label}
-                link={link}
-                pathname={pathname}
-                useStroke
-              />
-            ))}
-          </div>
           <div className={styles.linkGroup}>
             {ACCOUNT_LINK_GROUP(githubAppName, router).map((link) => (
               <NavLink key={link.label} link={link} pathname={pathname} />
