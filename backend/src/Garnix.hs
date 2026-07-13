@@ -249,6 +249,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
       Just k -> pure (cs k)
   selfHostMode' <- isJust <$> lookupEnv "GARNIX_SELF_HOST_MODE"
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
+  modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
   hetznerTok <-
     lookupEnv "HETZNER_TOKEN"
       >>= maybe (BSC.readFile "/run/secrets/hetzner-token") (pure . cs)
@@ -341,6 +342,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               cachePublicKey = cachePublicKey',
               selfHostMode = selfHostMode',
               adminGroupName = adminGroupName',
+              modulesOrg = modulesOrg',
               logger = defaultLogger,
               buildLogsDir = buildLogsDir',
               hetznerToken = hetznerTok,

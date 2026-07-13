@@ -21,11 +21,13 @@ publish reporter config commitInfo = withTextSpan ("modules_publish", show publi
     (True, Just "main") -> do
       run <- DB.newRun "Garnix module publish" commitInfo
       withRunReporter reporter (ReportRun run) $ \runReporter -> do
-        case commitInfo ^. repoInfo . ghRepoOwner of
-          "garnix-io" -> do
+        modulesOrg' <- view #modulesOrg
+        let repo = commitInfo ^. repoInfo
+            repoOwner = getGhLogin (getGhRepoOwner (repo ^. ghRepoOwner))
+        if repoOwner == modulesOrg'
+          then do
             schema <- view #workingDir >>= ModuleSchema.readModuleSchema
-            let repo = commitInfo ^. repoInfo
-                repoName = repo ^. ghRepoName . to getGhRepoName
+            let repoName = repo ^. ghRepoName . to getGhRepoName
                 moduleName = ModuleSchema.repoNameToModuleName repoName
             DB.insertLatestVersion
               $ (#name .== moduleName)
@@ -36,8 +38,8 @@ publish reporter config commitInfo = withTextSpan ("modules_publish", show publi
               .+ (#description .== ModuleSchema.description schema)
             reportLogs runReporter $ mkLogLine $ "Module " <> moduleName <> " updated successfully!"
             reportComplete runReporter RunReportStatusSuccess
-          otherOrg ->
-            throw $ OtherError $ "Publishing modules is not enabled for " <> getGhLogin (getGhRepoOwner otherOrg) <> "."
+          else
+            throw $ OtherError $ "Publishing modules is not enabled for " <> repoOwner <> "."
     _ ->
       log Informational "Modules: skipping publish"
   where

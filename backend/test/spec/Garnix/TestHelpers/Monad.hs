@@ -285,6 +285,7 @@ withTestEnvironment tempDir action = do
                   cachePublicKey = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=",
                   selfHostMode = False,
                   adminGroupName = "garnix-admins",
+                  modulesOrg = "garnix-io",
                   logger = defaultLogger,
                   buildLogsDir = buildLogsDir,
                   hetznerToken = "hetzner-token",

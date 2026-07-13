@@ -92,6 +92,11 @@ in
           default = "garnix-admins";
           description = "In self-host mode, membership of this proxy-injected group sets a user's subscription_type to admin on each login.";
         };
+        modulesOrg = lib.mkOption {
+          type = lib.types.str;
+          default = "garnix-io";
+          description = "The GitHub org whose repositories are allowed to publish Garnix modules. Set this to your own org to publish modules from a self-hosted instance.";
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -341,6 +346,7 @@ in
           "S3_CACHE_PUBLIC_BUCKET=${config.services.garnixServer.s3Cache.publicBucket}"
           "S3_CACHE_PUBLIC_BASE_URL=${config.services.garnixServer.s3Cache.publicBaseUrl}"
           "S3_CACHE_PRIVATE_BUCKET=${config.services.garnixServer.s3Cache.privateBucket}"
+          "GARNIX_MODULES_ORG=${config.services.garnixServer.modulesOrg}"
         ]
         ++ lib.optionals config.services.garnixServer.selfHostMode [
           "GARNIX_SELF_HOST_MODE=1"
