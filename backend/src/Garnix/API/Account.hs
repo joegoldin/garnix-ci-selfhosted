@@ -224,6 +224,16 @@ getUpgradeOptionByToken token = case token of
 
 upgradeOptions :: GhRepoOwner -> M (Maybe UpgradeOption)
 upgradeOptions repoOwner = do
+  selfHost <- view #selfHostMode
+  if selfHost
+    then -- Self-host mode has no billing: there is nothing to upgrade to, and
+    -- querying products / Stripe (unseeded, dummy keys) would be pointless or
+    -- fail. Report no upgrade option.
+      pure Nothing
+    else upgradeOptionsFromDb repoOwner
+
+upgradeOptionsFromDb :: GhRepoOwner -> M (Maybe UpgradeOption)
+upgradeOptionsFromDb repoOwner = do
   res ::
     [ ( Text,
         Maybe Text,

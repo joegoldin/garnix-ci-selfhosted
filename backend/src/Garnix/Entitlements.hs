@@ -200,6 +200,27 @@ selfHostHosting =
       largerServers = True
     }
 
+-- | The synthetic plan every org is on in self-host mode. There is no billing,
+-- and the @products@ / @repo_owner_has_product@ tables are unseeded on a
+-- self-host deploy, so we cannot derive a plan from the database. This is the
+-- self-host-bumped plan ('selfHostPlan'): unlimited on every billing dimension,
+-- with the fallback evaluation/build timeouts preserved as safety limits.
+selfHostProductPlan :: ProductPlan
+selfHostProductPlan =
+  selfHostPlan
+    ProductPlan
+      { _productPlanDisplayName = "Self-Hosted",
+        _productPlanDescription = Just "Self-hosted garnix (no billing limits)",
+        _productPlanBaseCiTime = emptyDuration,
+        _productPlanMaximumPrDeploymentTime = emptyDuration,
+        _productPlanIncludedBranchDeploymentHosts = 0,
+        _productPlanMaximumPackagesPerFlake = fallbackPackagesPerFlake,
+        _productPlanPackageEvaluationTimeout = fallbackEvaluationTimeout,
+        _productPlanPackageBuildTimeout = fallbackBuildTimeout,
+        _productPlanExtraUsage = emptyUsageLimits,
+        _productPlanIsPaid = False
+      }
+
 -- * products
 
 newtype ProductToken = ProductToken {getProductToken :: Text}
@@ -261,6 +282,18 @@ getPlan repoOwner =
 
 getPlans :: [GhRepoOwner] -> M (Map GhRepoOwner ProductPlan)
 getPlans orgs = do
+  selfHost <- view #selfHostMode
+  if selfHost
+    then -- Self-host mode has no billing, and the products /
+    -- repo_owner_has_product tables are unseeded (addDefaultEntitlements would
+    -- fail the products(name) foreign key, and the plan query would return
+    -- nothing). Return the synthetic self-host plan for every org so display
+    -- endpoints render instead of throwing "plan missing".
+      pure $ Map.fromList [(org, selfHostProductPlan) | org <- orgs]
+    else getPlansFromDb orgs
+
+getPlansFromDb :: [GhRepoOwner] -> M (Map GhRepoOwner ProductPlan)
+getPlansFromDb orgs = do
   forM_ orgs addDefaultEntitlements
   res ::
     [ ( GhRepoOwner,
