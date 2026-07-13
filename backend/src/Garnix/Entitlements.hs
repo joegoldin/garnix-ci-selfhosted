@@ -54,15 +54,24 @@ addDefaultEntitlements owner = addProduct owner defaultPlanName
 
 addProduct :: GhRepoOwner -> Text -> M ()
 addProduct owner product = do
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO repo_owner_has_product
-          ( repo_owner, product )
-        VALUES
-          ( ${owner}, ${product} )
-        ON CONFLICT DO NOTHING
-      |]
+  selfHost <- view #selfHostMode
+  -- Self-host mode has no billing, and the products / repo_owner_has_product
+  -- tables are unseeded on a self-host deploy, so this INSERT would fail the
+  -- repo_owner_has_product_product_fkey foreign key to products(name). The row
+  -- is never read on the self-host path (getPlans / getPlan / hasRemainingCiTime
+  -- all short-circuit to synthetic values), so skip the write entirely.
+  if selfHost
+    then pure ()
+    else
+      void
+        $ DB.pgExec
+          [pgSQL|
+            INSERT INTO repo_owner_has_product
+              ( repo_owner, product )
+            VALUES
+              ( ${owner}, ${product} )
+            ON CONFLICT DO NOTHING
+          |]
 
 addProductByPriceId :: GhRepoOwner -> StripeLib.PriceId -> M ()
 addProductByPriceId owner priceId = do
