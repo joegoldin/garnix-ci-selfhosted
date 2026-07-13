@@ -106,7 +106,8 @@ wholeAPI =
 getConfig :: M FrontendConfig
 getConfig = do
   ghAppName <- view #githubAppName
-  pure $ FrontendConfig {_frontendConfigGithubAppName = ghAppName}
+  cacheUrl <- view #cacheUrl
+  pure $ FrontendConfig {_frontendConfigGithubAppName = ghAppName, _frontendConfigCacheUrl = cacheUrl}
 
 waitlistAPI :: Email -> M ()
 waitlistAPI email = do

@@ -18,6 +18,7 @@ import {
   revokeAccessToken,
 } from "@/services/account";
 import { useUser } from "@/store/userContext";
+import { useConfig } from "@/store/configContext";
 import { Link } from "@/components/link";
 import { Berlin } from "@/utils/fonts";
 import { ToggleSwitch } from "@/components/toggleSwitch";
@@ -282,9 +283,13 @@ const ScopeToggle = (props: PropsWithChildren<{ field: Field<boolean> }>) => (
   </div>
 );
 
-const sampleNetrc = (username: string, accessToken: string) =>
+const sampleNetrc = (
+  cacheDomain: string,
+  username: string,
+  accessToken: string,
+) =>
   `
-machine cache.garnix.io
+machine ${cacheDomain}
   login ${username}
   password ${accessToken}
 `.trim();
@@ -308,6 +313,9 @@ const DisplayGeneratedTokenModal = (props: {
         // display something more useful than an error:
         "{YOUR GITHUB USERNAME}",
     );
+  // Cache host for the netrc `machine` line, from the backend config (so this
+  // isn't hardcoded to garnix.io — a self-host uses its own cache domain).
+  const cacheDomain = useConfig().cacheUrl.replace(/^https?:\/\//, "");
 
   return (
     <FloatingModal
@@ -334,7 +342,7 @@ const DisplayGeneratedTokenModal = (props: {
           </Text>
           <pre className={styles.codeBlock}>
             <SampleCode
-              code={sampleNetrc(githubUserName, props.token)}
+              code={sampleNetrc(cacheDomain, githubUserName, props.token)}
               language={"config"}
             />
           </pre>

@@ -1576,7 +1576,8 @@ data DeployPlan = DeployPlan
 -- * FrontendConfig
 
 data FrontendConfig = FrontendConfig
-  { _frontendConfigGithubAppName :: Text
+  { _frontendConfigGithubAppName :: Text,
+    _frontendConfigCacheUrl :: Text
   }
   deriving stock (Eq, Show, Generic)
 

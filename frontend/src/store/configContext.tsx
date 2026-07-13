@@ -11,25 +11,29 @@ import { getConfig } from "@/services/config";
 
 type ConfigContextType = {
   githubAppName: string;
+  cacheUrl: string;
 };
 
 const defaultValue = {
   githubAppName: "",
+  cacheUrl: "",
 };
 
 const ConfigContext = createContext<ConfigContextType>(defaultValue);
 
 export const ConfigProvider = ({ children }: PropsWithChildren) => {
   const [githubAppName, setGithubAppName] = useState("");
+  const [cacheUrl, setCacheUrl] = useState("");
   useEffect(() => {
     void (async () => {
       const config = await getConfig();
       if (!config.ok) return;
       setGithubAppName(config.data.githubAppName);
+      setCacheUrl(config.data.cacheUrl);
     })();
-  }, [setGithubAppName]);
+  }, [setGithubAppName, setCacheUrl]);
   return (
-    <ConfigContext.Provider value={{ githubAppName }}>
+    <ConfigContext.Provider value={{ githubAppName, cacheUrl }}>
       {children}
     </ConfigContext.Provider>
   );
