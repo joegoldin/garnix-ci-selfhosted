@@ -32,12 +32,20 @@ getStoreHashPermission storeHash authorization = do
       unless isValid $ throw InvalidAccessToken
       pure $ Just ghLogin
   withTextSpan ("auth_claim", show mGhLogin) $ do
+    -- This function only gates NON-public store paths (the public branch of
+    -- serveNarInfo never calls it), so default-deny: a private path with no
+    -- repo tags must not be served to anyone, and a repo being public on
+    -- GitHub must not grant access to a private path (self-host routes
+    -- public repos with private flake inputs to the private bucket) —
+    -- ServingPrivatePath requires an authenticated collaborator.
     repos <- DB.getReposForHash storeHash
     case repos of
-      [] -> pure Allowed
+      [] -> do
+        log Notice $ "private store path has no repo tags, denying: " <> getStoreHash storeHash
+        pure Disallowed
       repos -> do
         permissions <- forM repos $ \(repoOwner, repoName) -> do
-          getRepoPermissions mGhLogin repoOwner repoName
+          getRepoPermissions ServingPrivatePath mGhLogin repoOwner repoName
         pure $ if Allowed `elem` permissions then Allowed else Disallowed
   where
     isAccessTokenValidCached :: StoreHash -> GhLogin -> AccessToken -> M Bool
