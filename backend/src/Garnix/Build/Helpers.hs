@@ -6,6 +6,7 @@ module Garnix.Build.Helpers
 where
 
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Monad.ForkT (safeSystemTempDirectory, safeSystemTempFile)
@@ -26,6 +27,16 @@ withInternalCacheToken :: GhLogin -> M a -> M a
 withInternalCacheToken reqUser cont = do
   token <- DB.getUserInternalToken reqUser
   cacheHost <- cacheHostFromUrl <$> view #cacheUrl
+  -- This temp netrc becomes THE netrc for the whole build (the left-biased
+  -- NixConfig union below replaces any previous netrc-file setting). If the
+  -- operator configured a netrc for extra authenticated substituters
+  -- (GARNIX_BUILD_NETRC_FILE), merge its entries in — otherwise those caches
+  -- would silently lose their credentials and every fetch would 401.
+  operatorNetRc <- do
+    baseConfig <- view #userNixConfig
+    case NixConfig.getNetRcFileSetting baseConfig of
+      Nothing -> pure ""
+      Just (NetRcFile f) -> liftIO $ TIO.readFile f
   (path, handle) <- safeSystemTempFile "garnix-netrc"
   liftIO $ do
     hPutStrLn handle
@@ -34,6 +45,7 @@ withInternalCacheToken reqUser cont = do
           "login " <> cs (getGhLogin reqUser),
           "password " <> cs (getInternalCacheToken token)
         ]
+    hPutStrLn handle (cs operatorNetRc)
     hClose handle
   local (#userNixConfig %~ ((NixConfig.fromNetRcFile . NetRcFile $ path) <>)) $ do
     withTextSpan ("internal_token", show reqUser) cont
