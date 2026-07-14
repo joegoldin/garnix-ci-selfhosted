@@ -4,6 +4,7 @@ module Garnix.Access
     getRunWithAccess,
     hasAccessTo,
     hasAccessToRepo,
+    canCancelBuild,
     getRepoPublicityForForge,
   )
 where

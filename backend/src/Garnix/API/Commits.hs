@@ -1,7 +1,7 @@
 module Garnix.API.Commits where
 
 import Garnix.API.Runs (RunSummary, toRunSummary)
-import Garnix.Access (getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
+import Garnix.Access (canCancelBuild, getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
@@ -11,7 +11,8 @@ import Servant.Auth.Server
 data CommitAPI route = CommitAPI
   { _commitAPIgetCommitsForRepo :: route :- "repo" :> Capture "owner" GhRepoOwner :> Capture "repo" GhRepoName :> Get '[JSON] ListCommits,
     _commitAPIgetCommitsForUser :: route :- Get '[JSON] ListCommits,
-    _commitAPIgetSingleCommit :: route :- Capture "commit" CommitHash :> Get '[JSON] GetCommit
+    _commitAPIgetSingleCommit :: route :- Capture "commit" CommitHash :> Get '[JSON] GetCommit,
+    _commitAPIcancelCommit :: route :- Capture "commit" CommitHash :> "cancel" :> Post '[JSON] NoContent
   }
   deriving (Generic)
 
@@ -20,13 +21,15 @@ commitAPI (Authenticated ((^. #user) -> user')) =
   CommitAPI
     { _commitAPIgetCommitsForRepo = getCommitsForRepo (Just user'),
       _commitAPIgetCommitsForUser = getCommitsForUser user',
-      _commitAPIgetSingleCommit = getSingleCommit (Just user')
+      _commitAPIgetSingleCommit = getSingleCommit (Just user'),
+      _commitAPIcancelCommit = cancelCommit user'
     }
 commitAPI _ =
   CommitAPI
     { _commitAPIgetCommitsForRepo = getCommitsForRepo Nothing,
       _commitAPIgetCommitsForUser = throw Unauthorized,
-      _commitAPIgetSingleCommit = getSingleCommit Nothing
+      _commitAPIgetSingleCommit = getSingleCommit Nothing,
+      _commitAPIcancelCommit = \_ -> throw Unauthorized
     }
 
 data ListCommits = ListCommits
@@ -76,3 +79,24 @@ getSingleCommit user' commit = do
         summary
         (filter (\b -> b ^. packageType /= TypeOverall) builds)
         (map toRunSummary runs)
+
+-- | Cancel every still-pending build for a commit, including the "overall"
+-- eval/starting build the web UI never lists. Lets the user cancel a commit
+-- that is still evaluating (before any per-package builds exist).
+cancelCommit :: User -> CommitHash -> M NoContent
+cancelCommit user commit = do
+  summary <- DB.getCommitSummary commit
+  hasAccess <-
+    canCancelBuild
+      (Just user)
+      (summary ^. repoIsPublic)
+      (summary ^. reqUser)
+      (summary ^. repoOwner)
+      (summary ^. repoName)
+  when (not hasAccess) $ throw (NoSuchCommit commit)
+  builds <- DB.getBuildsByCommit (summary ^. repoOwner) (summary ^. repoName) commit
+  buildEnd <- liftIO getCurrentTime
+  forM_ builds $ \b ->
+    when (isNothing (b ^. status))
+      $ DB.reportBuildResultDB (b & status ?~ Cancelled & endTime ?~ buildEnd)
+  pure NoContent

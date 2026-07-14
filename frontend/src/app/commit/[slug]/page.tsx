@@ -10,10 +10,10 @@ import { Button } from "@/components/button";
 import { FloatingModal, ModalActions, ModalSection } from "@/components/modal";
 import { formatCommitSha, formatRunName, runUrl } from "@/utils/format";
 import { useLoading } from "@/hooks/useLoading";
-import { BuildStatus, cancelBuild } from "@/services/build";
+import { BuildStatus } from "@/services/build";
 import { Err, Ok } from "@/services";
 import { fromSecs } from "@/utils/duration";
-import { getCommit } from "@/services/commit";
+import { getCommit, cancelCommit } from "@/services/commit";
 import styles from "./styles.module.css";
 
 const Page = ({ params }: { params: { slug: string } }) => {
@@ -34,18 +34,16 @@ const Page = ({ params }: { params: { slug: string } }) => {
     <main className={styles.container}>
       {match(commit.data)
         .with(Ok(P.select()), (commit) => {
-          const pendingBuildIds = commit.builds
-            .filter((build) => build.status === "Pending")
-            .map((build) => build.id);
           return (
             <>
               <div className={styles.header}>
                 <Text type="h1" className={styles.h1}>
                   Commit [{formatCommitSha(commit.summary)}]
                 </Text>
-                {pendingBuildIds.length > 0 && (
+                {commit.summary.pending > 0 && (
                   <CancelAllButton
-                    pendingBuildIds={pendingBuildIds}
+                    slug={params.slug}
+                    pendingCount={commit.summary.pending}
                     reload={reloadCommit}
                   />
                 )}
@@ -81,22 +79,24 @@ const Page = ({ params }: { params: { slug: string } }) => {
 };
 
 const CancelAllButton = ({
-  pendingBuildIds,
+  slug,
+  pendingCount,
   reload,
 }: {
-  pendingBuildIds: string[];
+  slug: string;
+  pendingCount: number;
   reload: () => void;
 }) => {
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const cancelAll = async () => {
     setBusy(true);
-    await Promise.all(pendingBuildIds.map((id) => cancelBuild(id)));
+    await cancelCommit(slug);
     setBusy(false);
     setOpen(false);
     reload();
   };
-  const count = pendingBuildIds.length;
+  const count = pendingCount;
   return (
     <>
       <Button style="warning" onClick={() => setOpen(true)}>

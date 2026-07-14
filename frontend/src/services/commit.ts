@@ -69,5 +69,13 @@ export const getCommit = async (
   );
 };
 
+// Cancels every in-progress build for the commit server-side, including the
+// "overall" eval build that never appears in the builds list. Returns
+// NoContent (empty body -> {}), so accept anything.
+export const cancelCommit = async (
+  commit: string,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(z.any(), "POST", `commits/${commit}/cancel`);
+
 export const getReqUserUrl = (build: Build | CommitSummary) =>
   `https://github.com/${build.reqUser}`;
