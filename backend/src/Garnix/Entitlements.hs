@@ -189,6 +189,11 @@ selfHostPlan :: ProductPlan -> ProductPlan
 selfHostPlan plan =
   plan
     & maximumPackagesPerFlake .~ maxBound
+    -- Never let the eval/build timeouts (minutes, Int16) be the limiting
+    -- factor on self-hosted hardware — max them out like the other limits.
+    -- maxBound @Int16 = 32767 minutes (~22 days).
+    & packageEvaluationTimeout .~ maxBound
+    & packageBuildTimeout .~ maxBound
     & baseCiTime .~ selfHostGenerousDuration
     & maximumPrDeploymentTime .~ selfHostGenerousDuration
     & includedBranchDeploymentHosts .~ maxBound
