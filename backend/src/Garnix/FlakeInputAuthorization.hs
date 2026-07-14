@@ -19,6 +19,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, Value, withObject, (.:))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.NixConfig
 import Garnix.Prelude
@@ -74,12 +75,21 @@ checkAuthorization flakeDir repoConfig commitInfo = do
     [] -> pure $ NixConfig mempty
     _
       | isRepoPublic selfRepoPublicity -> do
-          let skipPrivateInputChecks = repoConfig ^. skipPrivateInputsCheckForCollaborators
+          -- In self-host mode the operator owns every repo, so a public repo is
+          -- allowed to depend on private flake inputs without any per-repo
+          -- opt-in. To keep the resulting closures off the unauthenticated
+          -- public cache, we persist that this repo's cache is private (an
+          -- idempotent upsert, so it only writes the first time); S3Cache reads
+          -- private_cache to route the upload to the authenticated bucket.
+          selfHost <- view #selfHostMode
+          let skipPrivateInputChecks = selfHost || repoConfig ^. skipPrivateInputsCheckForCollaborators
           unless skipPrivateInputChecks $ do
             throw
               $ OtherError
               $ "Public repository has private dependencies, which is not allowed. Private dependencies: "
               <> T.unwords (fmap showPretty privateInputs)
+          when (selfHost && not (repoConfig ^. privateCache))
+            $ DB.upsertRepoConfig (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) True True
           pure $ githubAccessTokenNixConfig $ repoInfo' ^. ghToken
       | isJust $ commitInfo ^. prFromFork ->
           throw
