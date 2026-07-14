@@ -35,7 +35,13 @@ export const BuildLog = ({ build }: { build: BuildWithRelatedBuilds }) => {
       </>
     );
   }
-  return <LogViewer logStream={logStream} defaultLogGroupName="Unknown" />;
+  // Lines nix and the cache-upload step emit without a section tag (the
+  // top-level "these N derivations will be built" plan and the
+  // "Uploaded … to the garnix binary cache" lines) fall into the default
+  // group. Name it after the package being built instead of "Unknown".
+  return (
+    <LogViewer logStream={logStream} defaultLogGroupName={build.package} />
+  );
 };
 
 const LogViewer = (props: {

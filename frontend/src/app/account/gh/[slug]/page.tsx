@@ -28,10 +28,12 @@ import { UnstyledIntInput } from "@/components/input";
 import { Err, Ok } from "@/services";
 import { FormSubmitResult } from "@/components/formSubmitResult";
 import { FloatingModal, ModalActions, ModalSection } from "@/components/modal";
+import { useConfig } from "@/store/configContext";
 import styles from "./styles.module.css";
 
 const Page = ({ params }: { params: Record<string, string> }) => {
   const orgName = params.slug!;
+  const { selfHostMode } = useConfig();
   const usageLoading = useLoading(
     React.useCallback(() => getOrgUsage(orgName), [orgName]),
     { poll: fromMinutes(1) },
@@ -125,32 +127,43 @@ const Page = ({ params }: { params: Record<string, string> }) => {
             {[
               <>
                 <strong>
-                  {toMinutes(usage.plan.base_ci_time).toLocaleString(
-                    undefined,
-                    {
-                      maximumFractionDigits: 0,
-                    },
-                  )}
+                  {selfHostMode
+                    ? "Unlimited"
+                    : toMinutes(usage.plan.base_ci_time).toLocaleString(
+                        undefined,
+                        {
+                          maximumFractionDigits: 0,
+                        },
+                      )}
                 </strong>{" "}
-                minutes/month
+                CI minutes{selfHostMode ? "" : "/month"}
               </>,
               <>Public binary cache</>,
+              <>Private binary cache</>,
               <>
                 <strong>
-                  {toMinutes(
-                    usage.plan.maximum_pr_deployment_time,
-                  ).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  {selfHostMode
+                    ? "Unlimited"
+                    : toMinutes(
+                        usage.plan.maximum_pr_deployment_time,
+                      ).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </strong>{" "}
                 pull-request deployment minutes (Beta)
               </>,
-              <>
-                <strong>
-                  {usage.plan.included_branch_deployment_hosts} server
-                </strong>{" "}
-                deployment
-                {usage.plan.included_branch_deployment_hosts !== 1 && "s"}{" "}
-                (Alpha)
-              </>,
+              selfHostMode ? (
+                <>
+                  <strong>Unlimited</strong> server deployments (Alpha)
+                </>
+              ) : (
+                <>
+                  <strong>
+                    {usage.plan.included_branch_deployment_hosts} server
+                  </strong>{" "}
+                  deployment
+                  {usage.plan.included_branch_deployment_hosts !== 1 && "s"}{" "}
+                  (Alpha)
+                </>
+              ),
             ].map((feature, i) => (
               <li key={i}>
                 <Image src={checkmark} alt="" />

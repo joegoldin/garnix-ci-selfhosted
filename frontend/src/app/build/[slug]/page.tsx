@@ -21,6 +21,8 @@ import statusIcon from "@/components/icons/status.svg";
 import { DownloadIcon } from "@/components/icons/download";
 import { Build, getBuild } from "@/services/build";
 import { Link } from "@/components/link";
+import { forgeBranchUrl } from "@/utils/forge";
+import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
 import { formatDurationShort, diffTime, fromSecs } from "@/utils/duration";
 import { Err, Ok } from "@/services";
@@ -29,23 +31,36 @@ import { cancelBuild } from "@/services/build";
 import { trackSubmit } from "@/utils/analytics";
 import styles from "./styles.module.css";
 
-const createHeaderProps = (module: Build) => {
+const createHeaderProps = (module: Build, giteaUrl: string) => {
   return [
     {
       icon: repoIcon,
       label: "Repo",
       url: `/repo/${module.repoUser}/${module.repoName}`,
+      external: false,
       value: `${module.repoUser}/${module.repoName}`,
     },
     {
       icon: branchIcon,
       label: "Branch",
+      // No garnix branch page exists, so link out to the forge branch.
+      url: module.branch
+        ? forgeBranchUrl(
+            module.forge,
+            giteaUrl,
+            module.repoUser,
+            module.repoName,
+            module.branch,
+          )
+        : undefined,
+      external: true,
       value: module.branch,
     },
     {
       icon: commitIcon,
       label: "Commit",
       url: `/commit/${module.git_commit}`,
+      external: false,
       value: formatCommitSha(module),
     },
     {
@@ -93,6 +108,7 @@ const createHeaderProps = (module: Build) => {
 };
 
 const Page = ({ params }: { params: { slug: string } }) => {
+  const { giteaUrl } = useConfig();
   const build = useLoading(
     useCallback(() => getBuild(params.slug), [params.slug]),
     {
@@ -122,17 +138,27 @@ const Page = ({ params }: { params: { slug: string } }) => {
               {formatRunName(build)}
             </Text>
             <div className={`${styles.section} ${styles.summary}`}>
-              {createHeaderProps(build).map(({ icon, label, url, value }) => (
-                <div key={label} className={styles.field}>
-                  <label className={styles.label}>
-                    <Image src={icon} alt={label} />{" "}
-                    <Text className={styles.labelText}>{label}</Text>
-                  </label>
-                  <Text className={styles.value}>
-                    {url ? <Link href={url}>{value}</Link> : value}
-                  </Text>
-                </div>
-              ))}
+              {createHeaderProps(build, giteaUrl).map(
+                ({ icon, label, url, external, value }) => (
+                  <div key={label} className={styles.field}>
+                    <label className={styles.label}>
+                      <Image src={icon} alt={label} />{" "}
+                      <Text className={styles.labelText}>{label}</Text>
+                    </label>
+                    <Text className={styles.value}>
+                      {!url ? (
+                        value
+                      ) : external ? (
+                        <Link href={url} target="_blank" rel="noreferrer">
+                          {value}
+                        </Link>
+                      ) : (
+                        <Link href={url}>{value}</Link>
+                      )}
+                    </Text>
+                  </div>
+                ),
+              )}
             </div>
             {build.status === "Pending" ? (
               <div className={`${styles.section} ${styles.actions}`}>

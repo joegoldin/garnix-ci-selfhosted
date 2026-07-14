@@ -1581,7 +1581,8 @@ data DeployPlan = DeployPlan
 data FrontendConfig = FrontendConfig
   { _frontendConfigGithubAppName :: Text,
     _frontendConfigCacheUrl :: Text,
-    _frontendConfigGiteaUrl :: Text
+    _frontendConfigGiteaUrl :: Text,
+    _frontendConfigSelfHostMode :: Bool
   }
   deriving stock (Eq, Show, Generic)
 
