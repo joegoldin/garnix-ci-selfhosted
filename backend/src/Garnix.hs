@@ -33,7 +33,7 @@ import Garnix.Hosting.ServerPool.Types
 import Garnix.Monad
 import Garnix.Monad.Metrics (registerMetrics, serveMetrics)
 import Garnix.Monad.Pool qualified
-import Garnix.NixConfig (defaultNixConfig)
+import Garnix.NixConfig (defaultNixConfig, fromNetRcFile)
 import Garnix.Prelude
 import Garnix.StripeLib qualified
 import Garnix.Types
@@ -250,6 +250,11 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   selfHostMode' <- isJust <$> lookupEnv "GARNIX_SELF_HOST_MODE"
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
+  -- Optional netrc for authenticating to extra substituters (e.g. a private
+  -- attic cache) during sandboxed evals/builds. The sandbox ro-binds this path
+  -- (see Garnix.Sandbox) and NIX_CONFIG points nix at it, so the builds can
+  -- substitute from authenticated caches instead of rebuilding.
+  buildNetRc <- fmap (fromNetRcFile . NetRcFile . cs) <$> lookupEnv "GARNIX_BUILD_NETRC_FILE"
   hetznerTok <-
     lookupEnv "HETZNER_TOKEN"
       >>= maybe (BSC.readFile "/run/secrets/hetzner-token") (pure . cs)
@@ -317,7 +322,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               buildLogsReportingPort = buildLogsReportingPort,
               workingDir = curDir,
               nixXdgCacheDir = Nothing,
-              userNixConfig = defaultNixConfig,
+              userNixConfig = maybe defaultNixConfig (defaultNixConfig <>) buildNetRc,
               githubWebhookSecret = ghK,
               githubInterface = realGithubInterface,
               hetznerInterface = realHetznerInterface,

@@ -97,6 +97,11 @@ in
           default = "garnix-io";
           description = "The GitHub org whose repositories are allowed to publish Garnix modules. Set this to your own org to publish modules from a self-hosted instance.";
         };
+        buildNetRcFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          description = "Optional netrc file for authenticating to extra substituters (e.g. a private attic cache) during sandboxed evals/builds. Bound read-only into the build sandbox; must be readable by the garnix server user.";
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -351,6 +356,9 @@ in
         ++ lib.optionals config.services.garnixServer.selfHostMode [
           "GARNIX_SELF_HOST_MODE=1"
           "GARNIX_ADMIN_GROUP=${config.services.garnixServer.adminGroup}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.buildNetRcFile != null) [
+          "GARNIX_BUILD_NETRC_FILE=${config.services.garnixServer.buildNetRcFile}"
         ];
         SupplementaryGroups = [ config.users.groups.keys.name ];
         ExecStartPre = [
