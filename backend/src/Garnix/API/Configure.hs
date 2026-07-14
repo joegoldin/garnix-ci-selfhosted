@@ -14,12 +14,12 @@ module Garnix.API.Configure
 where
 
 import Control.Lens
-import Data.Int (Int32)
 import Garnix.API.Admin (requireAdmin)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
+import Servant (Put)
 import Servant.Auth.Server
 
 data ConfigureAPI route = ConfigureAPI
