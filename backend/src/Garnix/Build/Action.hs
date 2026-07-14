@@ -132,8 +132,12 @@ validateApplication (Nix.AppExecPath path) = do
 
 ensureAllowedSandboxType :: GhRepoOwner -> Action -> M ()
 ensureAllowedSandboxType owner actionConfig = do
+  -- The shared-resources allowlist is a garnix-cloud restriction; in self-host
+  -- mode the operator owns all resources, so any repo may use it.
+  selfHost <- view #selfHostMode
   when
-    ( T.toLower (getGhLogin $ getGhRepoOwner owner)
+    ( not selfHost
+        && T.toLower (getGhLogin $ getGhRepoOwner owner)
         `notElem` allowedSharedResourcesUsers
         && actionConfig
         ^. sandboxType == SharedResources
