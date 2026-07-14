@@ -51,8 +51,13 @@ _getOutputs drvPath = do
       derivations :: NixDerivationsMap <-
         either (throw . OtherError . cs . ("decoding derivation outputs: " <>)) pure
           $ Aeson.parseEither parseJSON (unwrapDerivations value)
-      let raw :: Map Text Text =
-            fmap (("/nix/store/" <>) . (^. #path))
+      let -- Newer nix (>= 2.34) returns each output's .path as an absolute store
+          -- path, while older nix returned it relative to /nix/store. Only add
+          -- the prefix when it's missing, so we don't produce /nix/store//nix/store/…
+          ensureStorePrefix p =
+            if "/nix/store/" `T.isPrefixOf` p then p else "/nix/store/" <> p
+          raw :: Map Text Text =
+            fmap (ensureStorePrefix . (^. #path))
               $ Map.fromList
               $ mconcat
               $ map (\x -> Map.toList (x ^. #outputs))
