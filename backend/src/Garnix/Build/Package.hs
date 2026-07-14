@@ -102,6 +102,7 @@ buildPkg ::
 buildPkg = curry7
   $ mockable #buildPkgMock
   $ \(fodChecker, runReporter, buildKind, flakeDir, repoConfig, productPlan, build) -> do
+    DB.markBuildRunning (build ^. id)
     incrementEvent #packageBuildsAttempted
     cacheDir <- getNixXdgCacheDir
     attr <- localAttr flakeDir . addNixosExtension . attribute $ build

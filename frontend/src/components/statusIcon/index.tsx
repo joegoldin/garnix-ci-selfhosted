@@ -28,6 +28,15 @@ export const StatusIcon = ({ status }: Props) => {
         className={styles.icon}
       />
     );
+  else if (status === "Running")
+    return (
+      <Image
+        src={pendingIcon}
+        alt="running"
+        title="running"
+        className={`${styles.icon} ${styles.running}`}
+      />
+    );
   else if (status === "Pending")
     return (
       <Image

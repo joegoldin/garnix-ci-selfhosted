@@ -501,6 +501,7 @@ data BuildResponse = BuildResponse
     _buildResponseEndTime :: Maybe UTCTime,
     _buildResponseGithubRunId :: Maybe GhRunId,
     _buildResponseForge :: Forge,
+    _buildResponseRunStartedAt :: Maybe UTCTime,
     _buildResponseOriginalBuild :: Maybe OriginalBuild,
     _buildResponseRelatedBuilds :: [OriginalBuild] -- deprecated
   }
@@ -906,6 +907,7 @@ data CommitSummary = CommitSummary
     _commitSummarySucceeded :: Int64,
     _commitSummaryFailed :: Int64,
     _commitSummaryPending :: Int64,
+    _commitSummaryRunning :: Int64,
     _commitSummaryCancelled :: Int64,
     _commitSummaryForge :: Forge
   }

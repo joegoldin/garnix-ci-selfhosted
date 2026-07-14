@@ -117,6 +117,7 @@ const Page = ({ params }: { params: { slug: string } }) => {
         match(result)
           .with(Err(P._), () => true)
           .with(Ok({ status: "Pending" }), () => true)
+          .with(Ok({ status: "Running" }), () => true)
           .with(Ok(P._), () => false)
           .exhaustive(),
     },
@@ -160,7 +161,7 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 ),
               )}
             </div>
-            {build.status === "Pending" ? (
+            {build.status === "Pending" || build.status === "Running" ? (
               <div className={`${styles.section} ${styles.actions}`}>
                 <form {...form.props}>
                   <Button submit={true} style="warning">

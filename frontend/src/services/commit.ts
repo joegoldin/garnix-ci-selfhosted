@@ -14,6 +14,7 @@ const commitSummarySchema = z
     succeeded: z.number(),
     failed: z.number(),
     pending: z.number(),
+    running: z.number(),
     cancelled: z.number(),
     forge: z.string(),
   })
@@ -56,13 +57,19 @@ export const getCommitsForRepo = async (
 export const getCommit = async (
   commit: string,
 ): Promise<
-  APIResult<{ summary: CommitSummary; builds: Array<Build>; runs: Array<Run> }>
+  APIResult<{
+    summary: CommitSummary;
+    builds: Array<Build>;
+    runs: Array<Run>;
+    running_build_ids: Array<string>;
+  }>
 > => {
   return await fetchFromAPI(
     z.object({
       summary: commitSummarySchema,
       builds: z.array(buildSchema),
       runs: z.array(runSchema),
+      running_build_ids: z.array(z.string()),
     }),
     "GET",
     `commits/${commit}`,

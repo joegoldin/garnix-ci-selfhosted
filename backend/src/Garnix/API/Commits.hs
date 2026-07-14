@@ -44,7 +44,8 @@ instance ToJSON ListCommits where
 data GetCommit = GetCommit
   { _getCommitSummary :: CommitSummary,
     _getCommitBuilds :: [Build],
-    _getCommitRuns :: [RunSummary]
+    _getCommitRuns :: [RunSummary],
+    _getCommitRunningBuildIds :: [BuildId]
   }
   deriving (Eq, Show, Generic)
 
@@ -72,13 +73,15 @@ getSingleCommit user' commit = do
   hasAccess <- hasAccessTo user' (summary ^. repoIsPublic) (summary ^. reqUser) (summary ^. repoOwner) (summary ^. repoName)
   when (not hasAccess) $ throw (NoSuchCommit commit)
   result <- DB.getBuildsAndRunsByCommit (summary ^. repoOwner) (summary ^. repoName) commit
+  runningIds <- DB.getRunningBuildIdsForCommit (summary ^. repoOwner) (summary ^. repoName) commit
   pure $ case result of
-    CommitEvaluating -> GetCommit summary [] []
+    CommitEvaluating -> GetCommit summary [] [] runningIds
     CommitEvaluated _ builds runs ->
       GetCommit
         summary
         (filter (\b -> b ^. packageType /= TypeOverall) builds)
         (map toRunSummary runs)
+        runningIds
 
 -- | Cancel every still-pending build for a commit, including the "overall"
 -- eval/starting build the web UI never lists. Lets the user cancel a commit

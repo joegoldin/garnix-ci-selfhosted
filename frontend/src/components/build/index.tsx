@@ -108,19 +108,30 @@ export const CommitBuildsSummary = ({
       </div>
       <div className={styles.statuses}>
         {(() => {
-          const { succeeded, failed, pending, cancelled } = commit;
+          const { succeeded, failed, pending, running, cancelled } = commit;
           return (
             <>
               {succeeded > 0 && (
                 <Text className={styles.status}>
                   <StatusIcon status="Success" />
-                  {getSuccessText(succeeded, failed, pending, cancelled)}
+                  {getSuccessText(
+                    succeeded,
+                    failed,
+                    pending + running,
+                    cancelled,
+                  )}
                 </Text>
               )}
               {failed > 0 && (
                 <Text className={styles.status}>
                   <StatusIcon status="Failure" />
                   {failed}
+                </Text>
+              )}
+              {running > 0 && (
+                <Text className={styles.status}>
+                  <StatusIcon status="Running" />
+                  {running}
                 </Text>
               )}
               {pending > 0 && (

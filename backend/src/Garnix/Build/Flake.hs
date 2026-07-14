@@ -32,6 +32,7 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
     metaCheckRun <- MetaCheck.newReport reporter commitInfo
     flip catchEither (\err -> MetaCheck.updateFail commitInfo metaCheckRun (Just err) >> rethrowEither err) $ do
       reportOnError startingBuildRunReporter startingBuild commitInfo $ do
+        DB.markBuildRunning (startingBuild ^. id)
         hasCiTime <- hasRemainingCiTime repoOwner
         when (not hasCiTime) $ do
           log Notice $ show (commitInfo ^. repoInfo . ghRepoOwner) <> " ran out of CI time."

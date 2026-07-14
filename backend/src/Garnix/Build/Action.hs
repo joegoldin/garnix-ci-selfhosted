@@ -69,6 +69,7 @@ allowedSharedResourcesUsers =
 run :: FlakeDir -> RepoConfig -> Reporter -> CommitInfo -> Attribute -> Action -> Build -> M ()
 run flakeDir repoConfig reporter commitInfo attr actionConfig build =
   withTextSpan ("action_run", review asAttribute attr) $ do
+    DB.markBuildRunning (build ^. id)
     ensureBuildIsApp build
     derivation <- getBuildDerivation build
     command <- evaluateAppExecPath flakeDir repoConfig build

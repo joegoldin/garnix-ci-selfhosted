@@ -24,7 +24,10 @@ const Page = ({ params }: { params: { slug: string } }) => {
       shouldPoll: (result) =>
         match(result)
           .with(Err(P._), () => true)
-          .with(Ok({ summary: P.select() }), (summary) => summary.pending > 0)
+          .with(
+            Ok({ summary: P.select() }),
+            (summary) => summary.pending + summary.running > 0,
+          )
           .exhaustive(),
     },
   );
@@ -40,29 +43,42 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 <Text type="h1" className={styles.h1}>
                   Commit [{formatCommitSha(commit.summary)}]
                 </Text>
-                {commit.summary.pending > 0 && (
+                {commit.summary.pending + commit.summary.running > 0 && (
                   <CancelAllButton
                     slug={params.slug}
-                    pendingCount={commit.summary.pending}
+                    pendingCount={commit.summary.pending + commit.summary.running}
                     reload={reloadCommit}
                   />
                 )}
               </div>
               <CommitBuildsSummary commit={commit.summary} />
             <div className={styles.modules}>
-              {[...commit.builds, ...commit.runs].map((build) => (
-                <Link key={build.id} href={runUrl(build)} variant="wrapper">
-                  <div className={styles.module}>
-                    <Text>{formatRunName(build)}</Text>
-                    <div className={styles.status}>
-                      <StatusIcon status={build.status} />
-                      <Text className={styles.statusText}>
-                        {getStatusText(build.status)}
-                      </Text>
-                    </div>
-                  </div>
-                </Link>
-              ))}
+              {(() => {
+                const runningIds = new Set(commit.running_build_ids);
+                return [...commit.builds, ...commit.runs].map((build) => {
+                  const status =
+                    build.status === "Pending" && runningIds.has(build.id)
+                      ? ("Running" as const)
+                      : build.status;
+                  return (
+                    <Link
+                      key={build.id}
+                      href={runUrl(build)}
+                      variant="wrapper"
+                    >
+                      <div className={styles.module}>
+                        <Text>{formatRunName(build)}</Text>
+                        <div className={styles.status}>
+                          <StatusIcon status={status} />
+                          <Text className={styles.statusText}>
+                            {getStatusText(status)}
+                          </Text>
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                });
+              })()}
               </div>
             </>
           );

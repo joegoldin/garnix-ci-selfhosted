@@ -31,6 +31,12 @@ export const buildSchema = z
       .union([z.string(), z.null()])
       .optional()
       .transform((f) => f ?? "github"),
+    // Set once a build actually starts executing. Absent on endpoints that
+    // don't expose it (e.g. the commit build list); null otherwise.
+    run_started_at: z
+      .coerce.date()
+      .nullish()
+      .transform((v) => v ?? null),
   })
   .transform((build) => ({
     ...build,
@@ -42,6 +48,12 @@ export const buildSchema = z
     startTime: build.start_time,
     packageType: build.package_type,
     endTime: build.end_time ?? null,
+    runStartedAt: build.run_started_at,
+    // A not-yet-finished build that has begun executing is "Running".
+    status:
+      build.status === "Pending" && build.run_started_at != null
+        ? ("Running" as const)
+        : build.status,
   }));
 
 export type Build = z.infer<typeof buildSchema>;

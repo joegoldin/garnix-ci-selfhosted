@@ -121,6 +121,7 @@ getBuild' user' buildId = do
   originalBuild <- case b ^. drvPath of
     Just drv | b ^. alreadyBuilt == Just True -> DB.getOriginalBuildForDrvPath user' drv
     _ -> pure Nothing
+  runStartedAt <- DB.getBuildRunStartedAt buildId
   pure
     $ BuildResponse
       { _buildResponseId = b ^. id,
@@ -137,6 +138,7 @@ getBuild' user' buildId = do
         _buildResponseEndTime = b ^. endTime,
         _buildResponseGithubRunId = b ^. githubRunId,
         _buildResponseForge = b ^. forge,
+        _buildResponseRunStartedAt = runStartedAt,
         _buildResponseOriginalBuild = originalBuild,
         _buildResponseRelatedBuilds = maybeToList originalBuild
       }

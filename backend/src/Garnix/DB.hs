@@ -497,10 +497,11 @@ getCommitsByOwnerAndRepo repoOwner repoName = do
          succeeded :: Int64,
          failed :: Int64,
          pending :: Int64,
+         running :: Int64,
          cancelled :: Int64,
          forge :: Forge
          ) ->
-          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled forge
+          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending running cancelled forge
     )
     <$> pgQuery
       [pgSQL|!
@@ -514,7 +515,8 @@ getCommitsByOwnerAndRepo repoOwner repoName = do
           min(start_time) as commit_start_time,
           COUNT(*) FILTER (WHERE status = 'success') as succeeded,
           COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout') as failed,
-          COUNT(*) FILTER (WHERE status IS NULL) as pending,
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL) as pending,
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NOT NULL) as running,
           COUNT(*) FILTER (WHERE status = 'cancelled') as pending,
           (array_agg(forge))[1]
         FROM (
@@ -1075,10 +1077,11 @@ getCommitsForReqUser user = do
          succeeded :: Int64,
          failed :: Int64,
          pending :: Int64,
+         running :: Int64,
          cancelled :: Int64,
          forge :: Forge
          ) ->
-          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled forge
+          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending running cancelled forge
     )
     <$> pgQuery
       [pgSQL|!
@@ -1108,6 +1111,7 @@ getCommitsForReqUser user = do
             repo_is_public,
             builds.start_time,
             status,
+            builds.run_started_at,
             builds.forge
           FROM commits_for_req_user
           LEFT JOIN builds
@@ -1133,7 +1137,8 @@ getCommitsForReqUser user = do
           max(start_time) as commit_start_time,
           COUNT(*) FILTER (WHERE status = 'success') as succeeded,
           COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout') as failed,
-          COUNT(*) FILTER (WHERE status IS NULL) as pending,
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL) as pending,
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NOT NULL) as running,
           COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
           (array_agg(forge))[1]
         FROM without_reruns
@@ -1157,10 +1162,11 @@ getCommitSummary commit = do
            succeeded :: Int64,
            failed :: Int64,
            pending :: Int64,
+           running :: Int64,
            cancelled :: Int64,
            forge :: Forge
            ) ->
-            CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled forge
+            CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending running cancelled forge
       )
       <$> pgQuery
         [pgSQL|!
@@ -1174,7 +1180,8 @@ getCommitSummary commit = do
           min(start_time),
           COUNT(*) FILTER (WHERE status = 'success') as succeeded,
           COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout') as failed,
-          COUNT(*) FILTER (WHERE status IS NULL) as pending,
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL) as pending,
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NOT NULL) as running,
           COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
           (array_agg(forge))[1]
         FROM (
@@ -1282,6 +1289,38 @@ reportBuildResultDB build = do
     0 -> throw $ NoSuchBuild (build ^. id)
     1 -> pure ()
     _ -> throw $ OtherError "Somehow updated more than 0 or 1 columns"
+
+-- | Mark a build as having started executing (idempotent: only the first
+-- call sets the timestamp).
+markBuildRunning :: BuildId -> M ()
+markBuildRunning buildId = do
+  now <- liftIO getCurrentTime
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE builds
+        SET run_started_at = ${now}
+        WHERE id = ${buildId} AND run_started_at IS NULL
+      |]
+
+-- | Ids of builds for a commit that have started executing but not finished.
+getRunningBuildIdsForCommit :: GhRepoOwner -> GhRepoName -> CommitHash -> M [BuildId]
+getRunningBuildIdsForCommit repoOwner repoName commitHash =
+  pgQuery
+    [pgSQL|
+      SELECT id FROM builds
+      WHERE repo_user = ${repoOwner} AND repo_name = ${repoName}
+        AND git_commit = ${commitHash}
+        AND status IS NULL AND run_started_at IS NOT NULL
+    |]
+
+-- | The moment a build started executing, or 'Nothing' if it is still queued.
+getBuildRunStartedAt :: BuildId -> M (Maybe UTCTime)
+getBuildRunStartedAt buildId = do
+  rows <- pgQuery [pgSQL|SELECT run_started_at FROM builds WHERE id = ${buildId}|]
+  pure $ case rows of
+    (t : _) -> t
+    [] -> Nothing
 
 -- * Servers
 
