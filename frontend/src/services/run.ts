@@ -1,6 +1,18 @@
 import { z } from "zod";
-import { statusSchema } from "./build";
 import { APIResult, fetchFromAPI } from ".";
+
+// Unlike builds, a run row is created only when the run *starts* executing
+// (FOD checks, module publish, actions, deployments) and never queues — so a
+// not-yet-finished run is always "Running", not "Pending".
+const runStatusSchema = z
+  .union([
+    z.literal("Failure"),
+    z.literal("Success"),
+    z.literal("Timeout"),
+    z.literal("Cancelled"),
+  ])
+  .optional()
+  .transform((s) => s ?? ("Running" as const));
 
 export const runSchema = z
   .object({
@@ -10,7 +22,7 @@ export const runSchema = z
     repo_name: z.string(),
     git_commit: z.string(),
     branch: z.string().optional(),
-    status: statusSchema,
+    status: runStatusSchema,
     start_time: z.coerce.date(),
     end_time: z.coerce.date().optional(),
   })
