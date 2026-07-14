@@ -30,6 +30,7 @@ library
       Garnix.AccessToken.Types
       Garnix.API
       Garnix.API.Account
+      Garnix.API.Admin
       Garnix.API.Auth
       Garnix.API.Badges
       Garnix.API.Builds
@@ -793,6 +794,7 @@ test-suite spec
       Garnix.AccessToken.Types
       Garnix.API
       Garnix.API.Account
+      Garnix.API.Admin
       Garnix.API.Auth
       Garnix.API.Badges
       Garnix.API.Builds

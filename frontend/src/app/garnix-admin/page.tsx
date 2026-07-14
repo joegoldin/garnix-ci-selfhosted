@@ -13,6 +13,10 @@ const CreateGithubApp = dynamic(() => import("./createGithubApp"), {
   ssr: false,
 });
 
+const RepoConfigEditor = dynamic(() => import("./repoConfig"), {
+  ssr: false,
+});
+
 const userSchema = z
   .object({
     username: z.string(),
@@ -54,7 +58,13 @@ const Page = () => {
               </>
             );
           if (!user.is_admin) return <>User {user.username} is not an admin!</>;
-          return <CreateGithubApp setError={setError} />;
+          return (
+            <>
+              <CreateGithubApp setError={setError} />
+              <hr />
+              <RepoConfigEditor />
+            </>
+          );
         })
         .exhaustive()}
       <hr />

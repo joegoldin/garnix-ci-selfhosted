@@ -1708,12 +1708,17 @@ data BuildKind = Webhook | ModulePreview
 
 data RepoConfig = RepoConfig
   { _repoConfigSkipPrivateInputsCheckForCollaborators :: Bool,
-    _repoConfigMaxEvalMemory :: Memory
+    _repoConfigMaxEvalMemory :: Memory,
+    -- | When True, this repo's build outputs are uploaded to the private
+    -- (authenticated) cache bucket even if the GitHub repo is public. This
+    -- lets a public repo pull in private flake inputs without leaking the
+    -- resulting closures to the unauthenticated public cache.
+    _repoConfigPrivateCache :: Bool
   }
   deriving stock (Show)
 
 defaultRepoConfig :: RepoConfig
-defaultRepoConfig = RepoConfig False (fromGigabytes 8)
+defaultRepoConfig = RepoConfig False (fromGigabytes 8) False
 
 newtype Memory = Memory Int64
   deriving stock (Show, Eq, Generic, Ord)

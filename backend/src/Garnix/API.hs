@@ -3,6 +3,7 @@ module Garnix.API where
 import Autodocodec.Schema (JSONSchema)
 import Data.Text qualified as T
 import Garnix.API.Account
+import Garnix.API.Admin (AdminAPI, adminAPI)
 import Garnix.API.Auth
 import Garnix.API.Badges
 import Garnix.API.Builds
@@ -38,6 +39,7 @@ data WholeAPI r = WholeAPI
                  :<|> "stripe" :> StripeWebhookAPI
              ),
     account :: r :- "api" :> "account" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AccountAPI,
+    admin :: r :- "api" :> "admin" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AdminAPI,
     build :: r :- "api" :> "build" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi BuildAPI,
     commit :: r :- "api" :> "commits" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi CommitAPI,
     run :: r :- "api" :> "run" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi RunAPI,
@@ -83,6 +85,7 @@ wholeAPI =
   WholeAPI
     { events = toServant ghWebhookAPI :<|> stripeWebhookAPI,
       account = toServant . accountAPI,
+      admin = toServant . adminAPI,
       dev = devAPI,
       login = toServant loginAPI,
       signup = toServant signupAPI,

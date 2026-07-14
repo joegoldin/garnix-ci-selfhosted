@@ -36,6 +36,11 @@ upload :: RunReporter -> GhRepoOwner -> GhRepoName -> EvaluationResult -> RepoPu
 upload = curry5 $ mockable #s3CacheUploadMock $ \(runReporter, repoOwner, repoName, evalResult, repoPublicity) -> do
   withTextSpan ("phase", "s3-cache-upload") $ do
     withSpan (Garnix.S3Cache.getPackageName (evalResult ^. #derivation)) $ do
+      -- A public repo whose config opts into a private cache (e.g. because it
+      -- pulls in private flake inputs) is uploaded to the private bucket, so its
+      -- closures are not exposed via the unauthenticated public cache.
+      repoConfig <- DB.getRepoConfig repoOwner repoName
+      let usePrivateBucket = not (isRepoPublic repoPublicity) || (repoConfig ^. privateCache)
       storePathClosure <- nubOrd . mconcat . catMaybes <$> forM (evalResult ^. #toUpload) Nix.getClosure
       notInNixosCache <- filterM (fmap not . isInNixosCache) storePathClosure
       notInS3Cache <- DB.claimS3CachedStorePaths notInNixosCache
@@ -57,7 +62,7 @@ upload = curry5 $ mockable #s3CacheUploadMock $ \(runReporter, repoOwner, repoNa
                     <> ". Not uploading to the garnix binary cache."
                 )
           else do
-            uploadStorePath repoOwner repoName storePath repoPublicity <?> "uploading to s3-cache"
+            uploadStorePath repoOwner repoName storePath usePrivateBucket <?> "uploading to s3-cache"
             reportLogs runReporter $ mkLogLine ("Uploaded " <> getStorePath storePath <> " to the garnix binary cache.")
 
 getPackageName :: DrvPath -> PackageName
@@ -81,8 +86,11 @@ getDirSize path = do
           isFile <- doesFileExist path
           if isFile then getFileSize path else pure 0
 
-uploadStorePath :: GhRepoOwner -> GhRepoName -> StorePath -> RepoPublicity -> M ()
-uploadStorePath repoOwner repoName storePath repoPublicity = do
+-- | The 'Bool' is @usePrivateBucket@: when True the path is uploaded to the
+-- private (authenticated) bucket and recorded as non-public, so it is only
+-- served to authenticated clients.
+uploadStorePath :: GhRepoOwner -> GhRepoName -> StorePath -> Bool -> M ()
+uploadStorePath repoOwner repoName storePath usePrivateBucket = do
   nixConfig <- view #userNixConfig
   withPoolM s3UploadPool repoOwner
     $ withBinaryFileInTempDir
@@ -98,9 +106,9 @@ uploadStorePath repoOwner repoName storePath repoPublicity = do
       compressedNarFilePath <- compress narFilePath
       s3CacheEnv <- view #s3CacheEnv
       let bucket =
-            if isRepoPublic repoPublicity
-              then s3CacheEnv ^. #publicBucket
-              else s3CacheEnv ^. #privateBucket
+            if usePrivateBucket
+              then s3CacheEnv ^. #privateBucket
+              else s3CacheEnv ^. #publicBucket
       body <- Amazonka.toBody <$> Amazonka.hashedFile compressedNarFilePath
       let policy :: RetryPolicyM M
           policy =
@@ -125,7 +133,7 @@ uploadStorePath repoOwner repoName storePath repoPublicity = do
             DB.packageName = getName storePath,
             narHash,
             narSize,
-            public = isRepoPublic repoPublicity,
+            public = not usePrivateBucket,
             sig,
             references,
             fileSize,

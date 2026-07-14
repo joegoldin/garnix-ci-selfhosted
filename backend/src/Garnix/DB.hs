@@ -99,12 +99,13 @@ setSubscriptionType userId sub =
 getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
-    map (\(skipInputChecks, evalMemory) -> RepoConfig skipInputChecks (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory))
+    map (\(skipInputChecks, evalMemory, privateCache) -> RepoConfig skipInputChecks (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory) privateCache)
       <$> pgQuery
         [pgSQL|
           SELECT
             skip_private_inputs_check_for_collaborators,
-            max_eval_memory
+            max_eval_memory,
+            private_cache
           FROM repo_config
           WHERE repo_user = ${repoOwner}
             AND repo_name = ${repoName}
@@ -113,6 +114,23 @@ getRepoConfig repoOwner repoName = do
     [] -> pure defaultRepoConfig
     [res] -> pure res
     _ -> throw $ OtherError "impossible: multiple entries for repo config"
+
+-- | Upsert the admin-configurable fields of a repo's config. Used by the admin
+-- API to allow a public repo to use private flake inputs and to route its cache
+-- to the private (authenticated) bucket.
+upsertRepoConfig :: GhRepoOwner -> GhRepoName -> Bool -> Bool -> M ()
+upsertRepoConfig repoOwner repoName skipInputChecks privateCache =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config
+          (repo_user, repo_name, skip_private_inputs_check_for_collaborators, private_cache)
+          VALUES (${repoOwner}, ${repoName}, ${skipInputChecks}, ${privateCache})
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET
+            skip_private_inputs_check_for_collaborators = ${skipInputChecks},
+            private_cache = ${privateCache}
+      |]
 
 getBuild :: BuildId -> M Build
 getBuild buildId = do
