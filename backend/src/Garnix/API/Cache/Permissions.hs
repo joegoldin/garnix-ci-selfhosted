@@ -8,6 +8,7 @@ where
 
 import Garnix.Duration
 import Garnix.ExpiringCache
+import Garnix.GiteaInterface (giteaGetRepoCollaborators, giteaGetRepoPublicity)
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
@@ -39,9 +40,16 @@ getRepoPermissions pathVisibility mUser owner repo =
       ]
     $ getGarnixInstallationId owner repo
     >>= \case
-      Nothing -> do
-        log Warning "Cache.getRepoPermissions: could not get garnixInstallationId"
-        pure Disallowed
+      Nothing ->
+        -- No GitHub installation for this repo. If a Gitea instance is
+        -- configured, it may be a Gitea repo — check permissions there so
+        -- private Gitea repos serve their cache to authenticated collaborators
+        -- (via the same netrc). Otherwise deny.
+        view #giteaConfig >>= \case
+          Nothing -> do
+            log Warning "Cache.getRepoPermissions: could not get garnixInstallationId"
+            pure Disallowed
+          Just cfg -> giteaRepoPermissions cfg pathVisibility mUser owner repo
       Just id -> do
         log Informational "Cache.getRepoPermissions: got garnixInstallationId"
         iAuth <- getInstallation (Id $ fromInteger id)
@@ -72,6 +80,28 @@ getRepoPermissions pathVisibility mUser owner repo =
                   else do
                     log Notice "Access to disallowed resource. Blocking."
                     pure Disallowed
+
+-- | Gitea equivalent of the GitHub permission check: a private Gitea repo's
+-- cache is served only to an authenticated collaborator (by login), matching
+-- how private GitHub repos are gated. Public Gitea repos allow public paths.
+giteaRepoPermissions :: (HasCallStack) => GiteaConfig -> ServedPathVisibility -> Maybe GhLogin -> GhRepoOwner -> GhRepoName -> M Permission
+giteaRepoPermissions cfg pathVisibility mUser owner repo = do
+  publicity <- try $ giteaGetRepoPublicity cfg owner repo
+  case (publicity, mUser) of
+    (Left err, _) -> do
+      log Informational $ "Gitea repo publicity fetch failed, denying: " <> show err
+      pure Disallowed
+    (Right (RepoIsPublic True), _)
+      | pathVisibility == ServingPublicPath -> pure Allowed
+    (_, Nothing) -> pure Disallowed
+    (_, Just user) ->
+      try (giteaGetRepoCollaborators cfg owner repo) >>= \case
+        Left err -> do
+          log Informational $ "Gitea collaborators fetch failed, denying: " <> show err
+          pure Disallowed
+        Right RepoNotFound -> pure Disallowed
+        Right (GhCollaborators collaborators) ->
+          pure $ if user `elem` collaborators then Allowed else Disallowed
 
 type GithubPermissionCache = ExpiringCache (Bool, Maybe GhLogin, GhRepoOwner, GhRepoName) Permission
 
