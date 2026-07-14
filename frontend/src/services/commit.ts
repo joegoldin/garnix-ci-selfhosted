@@ -15,6 +15,7 @@ const commitSummarySchema = z
     failed: z.number(),
     pending: z.number(),
     cancelled: z.number(),
+    forge: z.string(),
   })
   .transform((commit) => ({
     ...commit,

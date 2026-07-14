@@ -9,7 +9,13 @@ import commitIcon from "@/components/icons/commit.svg";
 import timestampIcon from "@/components/icons/timestamp.svg";
 import { formatCommitSha } from "@/utils/format";
 import { diffTime, formatDurationLong } from "@/utils/duration";
-import { CommitSummary, getReqUserUrl } from "@/services/commit";
+import { CommitSummary } from "@/services/commit";
+import {
+  forgeBranchUrl,
+  forgeCommitUrl,
+  forgeUserUrl,
+} from "@/utils/forge";
+import { useConfig } from "@/store/configContext";
 import styles from "./styles.module.css";
 
 type Props = {
@@ -18,22 +24,31 @@ type Props = {
   className?: string;
 };
 
-const createHeaderProps = (commit: CommitSummary) => {
+const createHeaderProps = (commit: CommitSummary, giteaUrl: string) => {
+  const owner = commit.repoUser;
+  const repo = commit.repoName;
   return [
     {
       icon: repoIcon,
-      label: "github repository",
-      url: `/repo/${commit.repoUser}/${commit.repoName}`,
-      value: `${commit.repoUser}/${commit.repoName}`,
+      label: "repository",
+      url: `/repo/${owner}/${repo}`,
+      external: false,
+      value: `${owner}/${repo}`,
     },
     {
       icon: branchIcon,
       label: "branch",
+      url: commit.branch
+        ? forgeBranchUrl(commit.forge, giteaUrl, owner, repo, commit.branch)
+        : undefined,
+      external: true,
       value: commit.branch,
     },
     {
       icon: commitIcon,
       label: "commit",
+      url: forgeCommitUrl(commit.forge, giteaUrl, owner, repo, commit.gitCommit),
+      external: true,
       value: formatCommitSha(commit),
     },
   ];
@@ -44,6 +59,7 @@ export const CommitBuildsSummary = ({
   commit,
   className,
 }: Props) => {
+  const { giteaUrl } = useConfig();
   const wrapper = link
     ? (children: ReactNode) => (
         <Link href={`/commit/${commit.gitCommit}`} variant="wrapper">
@@ -57,12 +73,22 @@ export const CommitBuildsSummary = ({
     >
       <div>
         <div className={styles.header}>
-          {createHeaderProps(commit).map(({ icon, label, url, value }) => (
-            <Text key={label} className={styles.status}>
-              <Image key={label} src={icon} alt={label} />
-              {link || !url ? value : <Link href={url}>{value}</Link>}
-            </Text>
-          ))}
+          {createHeaderProps(commit, giteaUrl).map(
+            ({ icon, label, url, external, value }) => (
+              <Text key={label} className={styles.status}>
+                <Image key={label} src={icon} alt={label} />
+                {link || !url ? (
+                  value
+                ) : external ? (
+                  <Link href={url} target="_blank" rel="noreferrer">
+                    {value}
+                  </Link>
+                ) : (
+                  <Link href={url}>{value}</Link>
+                )}
+              </Text>
+            ),
+          )}
         </div>
         <Text className={`${styles.timestamp} ${styles.status}`}>
           <Image src={timestampIcon} alt="timestamp" />
@@ -70,7 +96,13 @@ export const CommitBuildsSummary = ({
           {link ? (
             `@${commit.reqUser}`
           ) : (
-            <Link href={getReqUserUrl(commit)}>@{commit.reqUser}</Link>
+            <Link
+              href={forgeUserUrl(commit.forge, giteaUrl, commit.reqUser)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              @{commit.reqUser}
+            </Link>
           )}
         </Text>
       </div>

@@ -25,6 +25,7 @@ export const buildSchema = z
     package: z.string(),
     end_time: z.coerce.date().optional(),
     status: statusSchema,
+    forge: z.string(),
   })
   .transform((build) => ({
     ...build,

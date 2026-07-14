@@ -450,9 +450,10 @@ getCommitsByOwnerAndRepo repoOwner repoName = do
          succeeded :: Int64,
          failed :: Int64,
          pending :: Int64,
-         cancelled :: Int64
+         cancelled :: Int64,
+         forge :: Forge
          ) ->
-          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled
+          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled forge
     )
     <$> pgQuery
       [pgSQL|!
@@ -467,7 +468,8 @@ getCommitsByOwnerAndRepo repoOwner repoName = do
           COUNT(*) FILTER (WHERE status = 'success') as succeeded,
           COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout') as failed,
           COUNT(*) FILTER (WHERE status IS NULL) as pending,
-          COUNT(*) FILTER (WHERE status = 'cancelled') as pending
+          COUNT(*) FILTER (WHERE status = 'cancelled') as pending,
+          (array_agg(forge))[1]
         FROM (
           SELECT DISTINCT ON (git_commit, package_type, system, package) * FROM builds
           WHERE repo_user = ${repoOwner}
@@ -1026,9 +1028,10 @@ getCommitsForReqUser user = do
          succeeded :: Int64,
          failed :: Int64,
          pending :: Int64,
-         cancelled :: Int64
+         cancelled :: Int64,
+         forge :: Forge
          ) ->
-          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled
+          CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled forge
     )
     <$> pgQuery
       [pgSQL|!
@@ -1057,7 +1060,8 @@ getCommitsForReqUser user = do
             req_user,
             repo_is_public,
             builds.start_time,
-            status
+            status,
+            builds.forge
           FROM commits_for_req_user
           LEFT JOIN builds
             ON commits_for_req_user.git_commit = builds.git_commit
@@ -1083,7 +1087,8 @@ getCommitsForReqUser user = do
           COUNT(*) FILTER (WHERE status = 'success') as succeeded,
           COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout') as failed,
           COUNT(*) FILTER (WHERE status IS NULL) as pending,
-          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
+          (array_agg(forge))[1]
         FROM without_reruns
         GROUP BY git_commit
         ORDER BY commit_start_time DESC
@@ -1105,9 +1110,10 @@ getCommitSummary commit = do
            succeeded :: Int64,
            failed :: Int64,
            pending :: Int64,
-           cancelled :: Int64
+           cancelled :: Int64,
+           forge :: Forge
            ) ->
-            CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled
+            CommitSummary repoOwner repoName (RepoIsPublic isPublic) gitCommit branch reqUser startTime succeeded failed pending cancelled forge
       )
       <$> pgQuery
         [pgSQL|!
@@ -1122,7 +1128,8 @@ getCommitSummary commit = do
           COUNT(*) FILTER (WHERE status = 'success') as succeeded,
           COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout') as failed,
           COUNT(*) FILTER (WHERE status IS NULL) as pending,
-          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
+          (array_agg(forge))[1]
         FROM (
           SELECT DISTINCT ON (git_commit, package_type, system, package) * FROM builds
           WHERE git_commit = ${commit}

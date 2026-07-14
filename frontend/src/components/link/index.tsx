@@ -17,6 +17,7 @@ type Props = LinkProps &
     variant?: "text" | "arrow" | "wrapper";
     eventName?: string;
     target?: string;
+    rel?: string;
   };
 
 export const Link = ({

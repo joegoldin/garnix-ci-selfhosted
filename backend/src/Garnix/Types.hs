@@ -905,7 +905,8 @@ data CommitSummary = CommitSummary
     _commitSummarySucceeded :: Int64,
     _commitSummaryFailed :: Int64,
     _commitSummaryPending :: Int64,
-    _commitSummaryCancelled :: Int64
+    _commitSummaryCancelled :: Int64,
+    _commitSummaryForge :: Forge
   }
   deriving (Eq, Show, Generic)
 
@@ -1578,7 +1579,8 @@ data DeployPlan = DeployPlan
 
 data FrontendConfig = FrontendConfig
   { _frontendConfigGithubAppName :: Text,
-    _frontendConfigCacheUrl :: Text
+    _frontendConfigCacheUrl :: Text,
+    _frontendConfigGiteaUrl :: Text
   }
   deriving stock (Eq, Show, Generic)
 
