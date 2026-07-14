@@ -104,7 +104,8 @@ CREATE TABLE builds (
     uploaded_to_cache boolean DEFAULT false NOT NULL,
     output_paths json,
     comped boolean DEFAULT false NOT NULL,
-    already_built boolean
+    already_built boolean,
+    forge character varying DEFAULT 'github'::character varying NOT NULL
 );
 
 ALTER TABLE builds ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (

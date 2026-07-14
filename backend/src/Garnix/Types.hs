@@ -433,7 +433,8 @@ data Build = Build
     _buildWantsIncrementalism :: Bool,
     _buildEvalHost :: Maybe Text,
     _buildUploadedToCache :: Maybe Bool,
-    _buildAlreadyBuilt :: Maybe Bool
+    _buildAlreadyBuilt :: Maybe Bool,
+    _buildForge :: Forge
   }
   deriving stock (Eq, Show, Generic)
 
@@ -1699,6 +1700,22 @@ instance ToJSON Forge where
 
 instance FromJSON Forge where
   parseJSON = fmap forgeFromText . parseJSON
+
+-- | Postgres representation of 'Forge': a @character varying@ text column
+-- storing @"github"@ / @"gitea"@ (see 'forgeToText' / 'forgeFromText'). The
+-- @builds.forge@ column defaults to @'github'@ so pre-existing rows and every
+-- GitHub code path decode as 'ForgeGithub'.
+instance PGParameter "character varying" Forge where
+  pgEncode _ = cs . forgeToText
+
+instance PGColumn "character varying" Forge where
+  pgDecode _ = forgeFromText . cs
+
+instance PGParameter "text" Forge where
+  pgEncode _ = cs . forgeToText
+
+instance PGColumn "text" Forge where
+  pgDecode _ = forgeFromText . cs
 
 -- | Connection details for a self-hosted Gitea instance. Present in the env
 -- only when the operator configured one (see 'Env.giteaConfig'); when absent,

@@ -160,7 +160,8 @@ getBuild buildId = do
       wants_incrementalism,
       eval_host,
       uploaded_to_cache,
-      already_built
+      already_built,
+      forge
     FROM builds
     WHERE id = ${buildId}
   |]
@@ -224,7 +225,8 @@ makeNewBuildForGithubRunId reqUser ghRunId evalHost = do
         persistence_name,
         wants_incrementalism,
         eval_host,
-        uploaded_to_cache)
+        uploaded_to_cache,
+        forge)
       SELECT
         repo_user,
         repo_name,
@@ -245,7 +247,8 @@ makeNewBuildForGithubRunId reqUser ghRunId evalHost = do
         NULL,
         wants_incrementalism,
         ${evalHost},
-        FALSE
+        FALSE,
+        forge
       FROM builds
       WHERE github_run_id = ${ghRunId}
     RETURNING
@@ -270,7 +273,8 @@ makeNewBuildForGithubRunId reqUser ghRunId evalHost = do
       wants_incrementalism,
       eval_host,
       uploaded_to_cache,
-      already_built
+      already_built,
+      forge
   |]
   case res of
     [r] -> pure r
@@ -304,7 +308,8 @@ getLatestBuildsMatching repoInfo commit = do
       wants_incrementalism,
       eval_host,
       uploaded_to_cache,
-      already_built
+      already_built,
+      forge
     FROM builds
     WHERE repo_user = ${repoInfo ^. ghRepoOwner}
     AND repo_name = ${repoInfo ^. ghRepoName}
@@ -341,7 +346,8 @@ getBuilds usr = do
       wants_incrementalism,
       eval_host,
       uploaded_to_cache,
-      already_built
+      already_built,
+      forge
     FROM builds
     WHERE req_user = ${usr ^. githubLogin}
     ORDER BY start_time DESC
@@ -385,7 +391,8 @@ getLatestBuildsForBranch owner name branch = do
       wants_incrementalism,
       eval_host,
       uploaded_to_cache,
-      already_built
+      already_built,
+      forge
     FROM builds
       WHERE repo_user = ${owner}
         AND branch = ${branch}
@@ -594,7 +601,8 @@ getBuildsByCommit repoOwner repoName commitHash = do
         wants_incrementalism,
         eval_host,
         uploaded_to_cache,
-        already_built
+        already_built,
+        forge
       FROM builds
       WHERE git_commit = ${commitHash}
             AND repo_user = ${repoOwner}
@@ -624,7 +632,8 @@ getBuildsByCommit repoOwner repoName commitHash = do
            wantsIncrementalism,
            evalHost,
            uploadedToCache,
-           alreadyBuilt
+           alreadyBuilt,
+           forge
            ) ->
             Build
               { _buildId = id,
@@ -648,7 +657,8 @@ getBuildsByCommit repoOwner repoName commitHash = do
                 _buildWantsIncrementalism = wantsIncrementalism,
                 _buildEvalHost = evalHost,
                 _buildUploadedToCache = uploadedToCache,
-                _buildAlreadyBuilt = alreadyBuilt
+                _buildAlreadyBuilt = alreadyBuilt,
+                _buildForge = forge
               }
       )
 
@@ -1148,7 +1158,8 @@ newBuildDB commitInfo packageInfo evalHost wantsIncrementalism = do
          start_time,
          wants_incrementalism,
          eval_host,
-         uploaded_to_cache
+         uploaded_to_cache,
+         forge
         )
     VALUES
         (${commitInfo ^. (repoInfo . ghRepoOwner)},
@@ -1164,7 +1175,8 @@ newBuildDB commitInfo packageInfo evalHost wantsIncrementalism = do
          ${now},
          ${wantsIncrementalism},
          ${evalHost},
-         FALSE
+         FALSE,
+         ${commitInfo ^. (repoInfo . forge)}
         )
     ON CONFLICT DO NOTHING
     RETURNING
@@ -1189,7 +1201,8 @@ newBuildDB commitInfo packageInfo evalHost wantsIncrementalism = do
       wants_incrementalism,
       eval_host,
       uploaded_to_cache,
-      already_built
+      already_built,
+      forge
   |]
   case changes of
     [build] -> pure build
@@ -1862,7 +1875,8 @@ getIncrementalTarget build commits =
           wants_incrementalism,
           eval_host,
           uploaded_to_cache,
-          already_built
+          already_built,
+          forge
         FROM builds
         WHERE git_commit =
              (SELECT
