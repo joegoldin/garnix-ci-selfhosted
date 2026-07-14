@@ -66,37 +66,47 @@ handleGiteaWebhook mEvent mSig rawBody =
         handleGiteaPush cfg value
 
 handleGiteaPush :: (HasCallStack) => GiteaConfig -> Aeson.Value -> M ()
-handleGiteaPush cfg v =
-  case (v ^? key "after" . _String, v ^? key "repository" . key "full_name" . _String) of
-    (Just sha, Just fullName)
-      | not (T.all (== '0') sha) -> do
-          (owner, repo) <- parseFullName fullName
-          let private = fromMaybe False (v ^? key "repository" . key "private" . _Bool)
-              reqUser =
-                fromMaybe owner
-                  $ (v ^? key "sender" . key "login" . _String)
-                  <|> (v ^? key "pusher" . key "login" . _String)
-              branch = (v ^? key "ref" . _String) >>= refToBranch
-              repoInfo' =
-                RepoInfo
-                  ForgeGitea
-                  Nothing
-                  (GhToken (_giteaConfigApiToken cfg))
-                  (GhRepoOwner (GhLogin owner))
-                  (GhRepoName repo)
-              commitInfo =
-                CommitInfo
-                  { _commitInfoReqUser = GhLogin reqUser,
-                    _commitInfoRepoPublicity = RepoIsPublic (not private),
-                    _commitInfoRepoInfo = repoInfo',
-                    _commitInfoBranch = Branch <$> branch,
-                    _commitInfoPrFromFork = Nothing,
-                    _commitInfoCommit = CommitHash sha
-                  }
-              reporter = openSearchReporter <> mkGiteaReporter cfg repoInfo' (CommitHash sha)
-          void $ handleCommit reporter False commitInfo
-    _ -> pure () -- deleted branch / missing fields: ignore
+handleGiteaPush cfg v
+  -- Mirror repos are downstream clones (e.g. a Gitea backup mirror of a GitHub
+  -- repo synced via Gitea's migration/mirror feature). The upstream forge
+  -- already builds these commits, so a mirror-sync push here would
+  -- double-trigger garnix — treat the repo as hidden and skip it.
+  | isMirror =
+      log Notice
+        $ "gitea webhook: skipping mirror (downstream clone) repo "
+          <> fromMaybe "<unknown>" (v ^? key "repository" . key "full_name" . _String)
+  | otherwise =
+      case (v ^? key "after" . _String, v ^? key "repository" . key "full_name" . _String) of
+        (Just sha, Just fullName)
+          | not (T.all (== '0') sha) -> do
+              (owner, repo) <- parseFullName fullName
+              let private = fromMaybe False (v ^? key "repository" . key "private" . _Bool)
+                  reqUser =
+                    fromMaybe owner
+                      $ (v ^? key "sender" . key "login" . _String)
+                      <|> (v ^? key "pusher" . key "login" . _String)
+                  branch = (v ^? key "ref" . _String) >>= refToBranch
+                  repoInfo' =
+                    RepoInfo
+                      ForgeGitea
+                      Nothing
+                      (GhToken (_giteaConfigApiToken cfg))
+                      (GhRepoOwner (GhLogin owner))
+                      (GhRepoName repo)
+                  commitInfo =
+                    CommitInfo
+                      { _commitInfoReqUser = GhLogin reqUser,
+                        _commitInfoRepoPublicity = RepoIsPublic (not private),
+                        _commitInfoRepoInfo = repoInfo',
+                        _commitInfoBranch = Branch <$> branch,
+                        _commitInfoPrFromFork = Nothing,
+                        _commitInfoCommit = CommitHash sha
+                      }
+                  reporter = openSearchReporter <> mkGiteaReporter cfg repoInfo' (CommitHash sha)
+              void $ handleCommit reporter False commitInfo
+        _ -> pure () -- deleted branch / missing fields: ignore
   where
+    isMirror = fromMaybe False (v ^? key "repository" . key "mirror" . _Bool)
     refToBranch r = case T.splitOn "/" r of
       "refs" : "heads" : rest -> Just (T.intercalate "/" rest)
       _ -> Nothing
