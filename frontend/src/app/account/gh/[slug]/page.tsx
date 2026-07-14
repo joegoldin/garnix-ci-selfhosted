@@ -164,6 +164,17 @@ const Page = ({ params }: { params: Record<string, string> }) => {
                   (Alpha)
                 </>
               ),
+              // The rest of the self-host plan's dimensions are also maxed out;
+              // surface them so the plan reads as truly unlimited. (Build
+              // timeout is intentionally omitted — it is configurable per repo
+              // via the Configure page.)
+              ...(selfHostMode
+                ? [
+                    <>Larger build servers</>,
+                    <>Unlimited packages per flake</>,
+                    <>Unlimited evaluation time</>,
+                  ]
+                : []),
             ].map((feature, i) => (
               <li key={i}>
                 <Image src={checkmark} alt="" />
