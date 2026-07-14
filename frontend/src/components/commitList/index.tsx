@@ -13,7 +13,10 @@ import styles from "./styles.module.css";
 
 type CommitListFor = "reqUser" | { owner: string; repo: string };
 
-export const CommitList = (props: { for: CommitListFor }) => {
+export const CommitList = (props: {
+  for: CommitListFor;
+  headerRight?: React.ReactNode;
+}) => {
   const { githubAppName } = useConfig();
   const setupUrl = `https://github.com/apps/${githubAppName}/installations/new`;
 
@@ -35,9 +38,12 @@ export const CommitList = (props: { for: CommitListFor }) => {
   const commits = loadingCommits.data.data;
   return commits.length > 0 ? (
     <div className={styles.container}>
-      <Text type="h1" className={styles.h1}>
-        Builds
-      </Text>
+      <div className={styles.header}>
+        <Text type="h1" className={styles.h1}>
+          Builds
+        </Text>
+        {props.headerRight}
+      </div>
       <ol>
         {commits.map((commit) => (
           <CommitBuildsSummary

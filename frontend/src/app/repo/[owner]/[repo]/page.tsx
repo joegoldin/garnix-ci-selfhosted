@@ -3,7 +3,7 @@
 import React from "react";
 import { WithSidebar } from "@/components/withSidebar";
 import { CommitList } from "@/components/commitList";
-import { Link } from "@/components/link";
+import { Button } from "@/components/button";
 import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
 import { getCommitsForRepo } from "@/services/commit";
@@ -25,15 +25,17 @@ const Page = ({ params }: { params: { owner: string; repo: string } }) => {
   const isGitea = forge === "gitea" && giteaUrl.length > 0;
   return (
     <WithSidebar>
-      <Link
-        href={forgeRepoUrl(forge, giteaUrl, params.owner, params.repo)}
-        target="_blank"
-        rel="noreferrer"
-        variant="arrow"
-      >
-        View {params.owner}/{params.repo} on {isGitea ? "Gitea" : "GitHub"}
-      </Link>
-      <CommitList for={params} />
+      <CommitList
+        for={params}
+        headerRight={
+          <Button
+            href={forgeRepoUrl(forge, giteaUrl, params.owner, params.repo)}
+            target="_blank"
+          >
+            View on {isGitea ? "Gitea" : "GitHub"} →
+          </Button>
+        }
+      />
     </WithSidebar>
   );
 };

@@ -23,9 +23,9 @@ export const UsageComponent = () => {
           <tr>
             <th>Organization</th>
             <th>Plan</th>
-            <th>CI minutes (used{nonBreakingSlash}max)</th>
-            <th>PR deployment minutes (used{nonBreakingSlash}max)</th>
-            <th>Deployed hosts (used{nonBreakingSlash}max)</th>
+            <th>CI minutes</th>
+            <th>PR deployment minutes</th>
+            <th>Deployed hosts</th>
           </tr>
         </thead>
         <tbody>
@@ -58,21 +58,9 @@ export const UsageComponent = () => {
                         <Link href={`https://github.com/${name}`}>{name}</Link>
                       </td>
                       <td>{usage.plan ? usage.plan.display_name : "-"}</td>
-                      <td>
-                        {formatMinutes(usage.ci_time)}
-                        {nonBreakingSlash}
-                        {formatMinutes(usage.plan.base_ci_time)}
-                      </td>
-                      <td>
-                        {formatMinutes(usage.pr_deployment_time)}
-                        {nonBreakingSlash}
-                        {formatMinutes(usage.plan.maximum_pr_deployment_time)}
-                      </td>
-                      <td>
-                        {usage.branch_deployment_hosts}
-                        {nonBreakingSlash}
-                        {usage.plan.included_branch_deployment_hosts}
-                      </td>
+                      <td>{formatMinutes(usage.ci_time)}</td>
+                      <td>{formatMinutes(usage.pr_deployment_time)}</td>
+                      <td>{usage.branch_deployment_hosts}</td>
                       <td>
                         <Link
                           className={styles.manageButton}
@@ -100,5 +88,3 @@ export const UsageComponent = () => {
     </>
   );
 };
-
-const nonBreakingSlash = <>&#8288;/&#8288;</>;
