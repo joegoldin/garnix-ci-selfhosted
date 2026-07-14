@@ -10,6 +10,7 @@ import Cradle hiding (ExitCode)
 import Garnix.Async
 import Garnix.Build.Checkout (withAuthorization)
 import Garnix.Build.Checkout qualified as Checkout
+import Garnix.GiteaInterface (giteaDoesFileExist, requireGiteaConfig)
 import Garnix.Build.Flake
 import Garnix.Build.FodCheck qualified as FodCheck
 import Garnix.Build.Helpers
@@ -51,12 +52,28 @@ buildModule reqUser modules = do
 --
 -- N.B.: This function should return as quickly as possible so the connection
 -- can be closed.
+-- | Check whether a file exists in the repo at this commit, dispatched by
+-- forge: GitHub via its contents API, Gitea via its contents API. (The bare
+-- 'doesRepoFileExist' is GitHub-only and 401s for a Gitea repo.)
+doesRepoFileExistForge :: (HasCallStack) => CommitInfo -> FilePath -> M DoesFileExist
+doesRepoFileExistForge commitInfo path =
+  case commitInfo ^. repoInfo . forge of
+    ForgeGithub -> doesRepoFileExist commitInfo path
+    ForgeGitea -> do
+      cfg <- requireGiteaConfig
+      giteaDoesFileExist
+        cfg
+        (commitInfo ^. repoInfo . ghRepoOwner)
+        (commitInfo ^. repoInfo . ghRepoName)
+        (commitInfo ^. commit)
+        path
+
 buildFlake :: (HasCallStack) => Reporter -> CommitInfo -> M (Promise ())
 buildFlake = curry $ mockable #buildFlakeMock $ \(reporter, commitInfo) -> do
   filesExist <-
     concurrently
-      (doesRepoFileExist commitInfo "flake.nix")
-      (doesRepoFileExist commitInfo "garnix.yaml")
+      (doesRepoFileExistForge commitInfo "flake.nix")
+      (doesRepoFileExistForge commitInfo "garnix.yaml")
   case filesExist of
     (FileDoesntExist, FileDoesntExist) -> do
       log Informational "No flake.nix or garnix.yaml - skipping."

@@ -11,6 +11,7 @@ module Garnix.GiteaInterface
   ( requireGiteaConfig,
     giteaGetRepoPublicity,
     giteaGetRepoCollaborators,
+    giteaDoesFileExist,
     giteaGetRemote,
     GiteaStatusState (..),
     GiteaCommitStatus (..),
@@ -71,6 +72,17 @@ giteaGetRepoCollaborators cfg owner repo = do
   assertGiteaOk "giteaGetRepoCollaborators" resp
   let logins = resp ^.. Wreq.responseBody . values . key "login" . _String
   pure $ GhCollaborators (GhLogin <$> logins)
+
+-- | @GET /api/v1/repos/{owner}/{repo}/contents/{path}?ref={sha}@ → 2xx if the
+-- file exists at that commit, 404 otherwise. Used to gate builds on the
+-- presence of flake.nix / garnix.yaml (the Gitea analogue of the GitHub
+-- contents check).
+giteaDoesFileExist :: (HasCallStack) => GiteaConfig -> GhRepoOwner -> GhRepoName -> CommitHash -> FilePath -> M DoesFileExist
+giteaDoesFileExist cfg owner repo (CommitHash sha) path = do
+  let url = giteaRepoUrl cfg owner repo <> "/contents/" <> cs path <> "?ref=" <> sha
+  resp <- withWreqOptions $ \opts -> Wreq.getWith (giteaOptions cfg opts) (cs url)
+  let code = resp ^. Wreq.responseStatus . Wreq.statusCode
+  pure $ if code >= 200 && code < 300 then FileExists else FileDoesntExist
 
 -- | Tokenized clone URL: @https://<token>@<host>/<owner>/<repo>.git@.
 giteaGetRemote :: GiteaConfig -> GhRepoOwner -> GhRepoName -> RemoteUrl
