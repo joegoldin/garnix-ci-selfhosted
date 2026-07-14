@@ -1,12 +1,11 @@
 module Garnix.API.Commits where
 
 import Garnix.API.Runs (RunSummary, toRunSummary)
-import Garnix.Access (hasAccessTo, hasAccessToRepo)
+import Garnix.Access (getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
-import GitHub.Data.Id (Id (..))
 import Servant.Auth.Server
 
 data CommitAPI route = CommitAPI
@@ -52,11 +51,9 @@ instance ToJSON GetCommit where
 
 getCommitsForRepo :: (HasCallStack) => Maybe User -> GhRepoOwner -> GhRepoName -> M ListCommits
 getCommitsForRepo user repoOwner repoName = do
-  installationId <- getGarnixInstallationId repoOwner repoName
-  iAuth <- case installationId of
-    Nothing -> throw $ NoSuchRepo {_owner = repoOwner, _name = repoName}
-    Just id -> getInstallation (Id $ fromInteger id)
-  repoPublicity <- getRepoPublicity iAuth repoOwner repoName
+  -- Forge-aware: publicity comes from GitHub or Gitea (throws NoSuchRepo if the
+  -- repo is on neither), then the usual access check (admin/collaborator).
+  repoPublicity <- getRepoPublicityForForge repoOwner repoName
   hasAccess <- hasAccessToRepo user repoPublicity repoOwner repoName
   when (not hasAccess) $ throw NoSuchRepo {_owner = repoOwner, _name = repoName}
   ListCommits <$> DB.getCommitsByOwnerAndRepo repoOwner repoName

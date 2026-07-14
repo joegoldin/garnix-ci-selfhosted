@@ -4,10 +4,12 @@ module Garnix.Access
     getRunWithAccess,
     hasAccessTo,
     hasAccessToRepo,
+    getRepoPublicityForForge,
   )
 where
 
 import Garnix.DB qualified as DB
+import Garnix.GiteaInterface (giteaGetRepoCollaborators, giteaGetRepoPublicity)
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types as Types
@@ -60,14 +62,40 @@ hasAccessToRepo user' repoIsPublic owner name
           RepoNotFound -> pure False
           GhCollaborators collaborators' -> pure $ (user ^. githubLogin) `elem` collaborators'
 
+-- | Collaborators of a repo, dispatched by forge: GitHub via its installation,
+-- or Gitea via its API when the repo has no GitHub installation. Lets private
+-- Gitea repos be gated on Gitea collaborators (by login), like GitHub.
 getCollaborators :: GhRepoOwner -> GhRepoName -> M GhCollaborators
 getCollaborators owner repo = do
   installationId <- getGarnixInstallationId owner repo
   case installationId of
-    Nothing -> pure RepoNotFound
     Just id -> do
       iAuth <- getInstallation (Id $ fromInteger id)
       getRepoCollaborators iAuth owner repo
+    Nothing ->
+      view #giteaConfig >>= \case
+        Nothing -> pure RepoNotFound
+        Just cfg ->
+          try (giteaGetRepoCollaborators cfg owner repo) >>= \case
+            Left _ -> pure RepoNotFound
+            Right collaborators -> pure collaborators
+
+-- | Publicity of a repo, dispatched by forge (GitHub installation, else Gitea).
+-- Throws 'NoSuchRepo' if the repo isn't found on any configured forge — used by
+-- the web UI's repo view so Gitea repos render instead of 404ing.
+getRepoPublicityForForge :: (HasCallStack) => GhRepoOwner -> GhRepoName -> M RepoPublicity
+getRepoPublicityForForge owner repo =
+  getGarnixInstallationId owner repo >>= \case
+    Just id -> do
+      iAuth <- getInstallation (Id $ fromInteger id)
+      getRepoPublicity iAuth owner repo
+    Nothing ->
+      view #giteaConfig >>= \case
+        Nothing -> throw NoSuchRepo {_owner = owner, _name = repo}
+        Just cfg ->
+          try (giteaGetRepoPublicity cfg owner repo) >>= \case
+            Left _ -> throw NoSuchRepo {_owner = owner, _name = repo}
+            Right p -> pure p
 
 canCancelBuild :: Maybe User -> RepoPublicity -> GhLogin -> GhRepoOwner -> GhRepoName -> M Bool
 canCancelBuild user' _ reqUser owner name
