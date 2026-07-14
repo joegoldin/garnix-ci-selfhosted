@@ -25,7 +25,12 @@ export const buildSchema = z
     package: z.string(),
     end_time: z.coerce.date().optional(),
     status: statusSchema,
-    forge: z.string(),
+    // Tolerate a backend that predates the forge column: a single missing
+    // scalar must not fail the whole build page. Defaults to GitHub.
+    forge: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((f) => f ?? "github"),
   })
   .transform((build) => ({
     ...build,

@@ -136,6 +136,7 @@ getBuild' user' buildId = do
         _buildResponseStartTime = b ^. startTime,
         _buildResponseEndTime = b ^. endTime,
         _buildResponseGithubRunId = b ^. githubRunId,
+        _buildResponseForge = b ^. forge,
         _buildResponseOriginalBuild = originalBuild,
         _buildResponseRelatedBuilds = maybeToList originalBuild
       }

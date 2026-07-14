@@ -500,6 +500,7 @@ data BuildResponse = BuildResponse
     _buildResponseStartTime :: UTCTime,
     _buildResponseEndTime :: Maybe UTCTime,
     _buildResponseGithubRunId :: Maybe GhRunId,
+    _buildResponseForge :: Forge,
     _buildResponseOriginalBuild :: Maybe OriginalBuild,
     _buildResponseRelatedBuilds :: [OriginalBuild] -- deprecated
   }
