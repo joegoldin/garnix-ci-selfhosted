@@ -12,6 +12,7 @@ import Garnix.API.Commits
 import Garnix.API.ConfigSchema (garnixConfigJsonSchema)
 import Garnix.API.Dev (DevAPI, devAPI)
 import Garnix.API.GhWebhooks
+import Garnix.API.GiteaWebhooks (GiteaWebhookAPI, giteaWebhookAPI)
 import Garnix.API.Health
 import Garnix.API.Hosts
 import Garnix.API.Keys
@@ -37,6 +38,7 @@ data WholeAPI r = WholeAPI
           :> "events"
           :> ( "github" :> ToServantApi GhWebhookAPI
                  :<|> "stripe" :> StripeWebhookAPI
+                 :<|> "gitea" :> ToServantApi GiteaWebhookAPI
              ),
     account :: r :- "api" :> "account" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AccountAPI,
     admin :: r :- "api" :> "admin" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AdminAPI,
@@ -83,7 +85,7 @@ data ProjectAPI r = ProjectAPI
 wholeAPI :: WholeAPI (AsServerT M)
 wholeAPI =
   WholeAPI
-    { events = toServant ghWebhookAPI :<|> stripeWebhookAPI,
+    { events = toServant ghWebhookAPI :<|> stripeWebhookAPI :<|> toServant giteaWebhookAPI,
       account = toServant . accountAPI,
       admin = toServant . adminAPI,
       dev = devAPI,

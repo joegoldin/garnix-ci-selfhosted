@@ -73,7 +73,7 @@ ghWebhookCheckSuite ev
             CommitInfo
               { _commitInfoReqUser = GhLogin . whUserLogin $ senderOfEvent ev,
                 _commitInfoRepoPublicity = RepoIsPublic . not . whRepoIsPrivate $ repoForEvent ev,
-                _commitInfoRepoInfo = RepoInfo iAuth tok owner' repo',
+                _commitInfoRepoInfo = RepoInfo ForgeGithub (Just iAuth) tok owner' repo',
                 _commitInfoBranch = branch',
                 _commitInfoPrFromFork = Nothing,
                 _commitInfoCommit = commit'
@@ -154,7 +154,7 @@ ghWebhookPullRequest ev = do
             CommitInfo
               { _commitInfoReqUser = GhLogin . whUserLogin $ senderOfEvent ev,
                 _commitInfoRepoPublicity = RepoIsPublic . not . whRepoIsPrivate $ repoForEvent ev,
-                _commitInfoRepoInfo = RepoInfo iAuth tok owner' repo',
+                _commitInfoRepoInfo = RepoInfo ForgeGithub (Just iAuth) tok owner' repo',
                 _commitInfoBranch = Nothing,
                 _commitInfoPrFromFork = prFromFork,
                 _commitInfoCommit = commit'
@@ -191,7 +191,7 @@ ghWebhookPush ev
             CommitInfo
               { _commitInfoReqUser = reqUser,
                 _commitInfoRepoPublicity = RepoIsPublic . not . whRepoIsPrivate $ repoForEvent ev,
-                _commitInfoRepoInfo = RepoInfo iAuth tok owner' repo',
+                _commitInfoRepoInfo = RepoInfo ForgeGithub (Just iAuth) tok owner' repo',
                 _commitInfoBranch = branch',
                 _commitInfoPrFromFork = Nothing,
                 _commitInfoCommit = commit'

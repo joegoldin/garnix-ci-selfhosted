@@ -85,6 +85,11 @@ data Env = Env
     selfHostMode :: Bool,
     adminGroupName :: Text,
     modulesOrg :: Text,
+    -- | Connection details for an optional self-hosted Gitea instance. When
+    -- 'Nothing' (the default, and the only possibility for upstream/GitHub-only
+    -- deployments) garnix behaves exactly as before; when set, the Gitea
+    -- webhook + reporter + API paths become active.
+    giteaConfig :: Maybe GiteaConfig,
     sshUserHostingKeys :: [FilePath],
     s3CacheEnv :: S3CacheEnv,
     action :: ActionEnv,

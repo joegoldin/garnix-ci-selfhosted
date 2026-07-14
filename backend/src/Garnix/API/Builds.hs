@@ -74,7 +74,7 @@ submitTestBuild SubmitTestBuild {owner, repo, testCommit} = do
             CommitInfo
               { _commitInfoReqUser = "garnix-io",
                 _commitInfoRepoPublicity = RepoIsPublic False,
-                _commitInfoRepoInfo = RepoInfo iAuth tok owner repo,
+                _commitInfoRepoInfo = RepoInfo ForgeGithub (Just iAuth) tok owner repo,
                 _commitInfoBranch = Nothing,
                 _commitInfoPrFromFork = Just $ PrFromFork $ getGhLogin (getGhRepoOwner owner) <> "/" <> getGhRepoName repo,
                 _commitInfoCommit = testCommit

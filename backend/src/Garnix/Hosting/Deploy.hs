@@ -256,7 +256,7 @@ checkSubdomainValidity ::
   [Build] ->
   M ()
 checkSubdomainValidity
-  (RepoInfo _ _ (GhRepoOwner (GhLogin repoOwner')) (GhRepoName repoName'))
+  (RepoInfo _ _ _ (GhRepoOwner (GhLogin repoOwner')) (GhRepoName repoName'))
   deploymentType
   wantedServers = do
     unless (isValidSubdomainString repoOwner')

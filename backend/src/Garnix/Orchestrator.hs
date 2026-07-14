@@ -87,7 +87,7 @@ handleRerun ev = do
           CommitInfo
             { _commitInfoReqUser = ev ^. #reqUser,
               _commitInfoRepoPublicity = ev ^. #repoIsPublic,
-              _commitInfoRepoInfo = RepoInfo (ev ^. #installAuth) (ev ^. #token) (build' ^. repoUser) (build' ^. repoName),
+              _commitInfoRepoInfo = RepoInfo ForgeGithub (Just (ev ^. #installAuth)) (ev ^. #token) (build' ^. repoUser) (build' ^. repoName),
               _commitInfoBranch = build' ^. branch,
               _commitInfoPrFromFork = build' ^. prFromFork,
               _commitInfoCommit = build' ^. gitCommit

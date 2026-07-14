@@ -1675,6 +1675,47 @@ instance ToJSON OpenSearchMessage where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 
+-- * forge (source host) abstraction
+
+-- | Which source-hosting platform a repo lives on. GitHub is the default and
+-- historical behaviour; Gitea is an additive second forge for self-hosted
+-- instances. Everything that is not explicitly forge-aware assumes 'ForgeGithub'.
+data Forge = ForgeGithub | ForgeGitea
+  deriving stock (Eq, Ord, Show, Generic)
+
+-- | Wire/DB representation: @"github"@ / @"gitea"@.
+forgeToText :: Forge -> Text
+forgeToText = \case
+  ForgeGithub -> "github"
+  ForgeGitea -> "gitea"
+
+forgeFromText :: Text -> Forge
+forgeFromText = \case
+  "gitea" -> ForgeGitea
+  _ -> ForgeGithub
+
+instance ToJSON Forge where
+  toJSON = toJSON . forgeToText
+
+instance FromJSON Forge where
+  parseJSON = fmap forgeFromText . parseJSON
+
+-- | Connection details for a self-hosted Gitea instance. Present in the env
+-- only when the operator configured one (see 'Env.giteaConfig'); when absent,
+-- garnix behaves exactly as the GitHub-only build.
+data GiteaConfig = GiteaConfig
+  { -- | Base URL of the instance, no trailing slash, e.g. @https://gitea.example.com@.
+    _giteaConfigBaseUrl :: Text,
+    -- | API token of a bot/admin account with access to the built repos
+    -- (Gitea has no GitHub-App-style per-repo installations).
+    _giteaConfigApiToken :: Text,
+    -- | Shared secret for verifying inbound Gitea webhook signatures.
+    _giteaConfigWebhookSecret :: StrictByteString
+  }
+
+instance Show GiteaConfig where
+  show (GiteaConfig url _ _) = "GiteaConfig " <> Prelude.show url <> " <token> <secret>"
+
 -- * combined data types
 
 data CommitInfo = CommitInfo
@@ -1688,15 +1729,21 @@ data CommitInfo = CommitInfo
   deriving stock (Show)
 
 data RepoInfo = RepoInfo
-  { _repoInfoInstallationAuth :: InstallationAuth,
+  { -- | Which forge this repo is on. GitHub-constructed 'RepoInfo's use
+    -- 'ForgeGithub'; the Gitea webhook path uses 'ForgeGitea'.
+    _repoInfoForge :: Forge,
+    -- | GitHub App installation auth. 'Nothing' for non-GitHub forges (Gitea
+    -- authenticates with the single configured token instead). Only ever
+    -- forced on the GitHub code path.
+    _repoInfoInstallationAuth :: Maybe InstallationAuth,
     _repoInfoGhToken :: GhToken,
     _repoInfoGhRepoOwner :: GhRepoOwner,
     _repoInfoGhRepoName :: GhRepoName
   }
 
 instance Show RepoInfo where
-  show (RepoInfo _iAuth _ghToken repoOwner repoName) =
-    "RepoInfo <iAuth> <ghToken>" <> unwords [Prelude.show repoOwner, Prelude.show repoName]
+  show (RepoInfo forge _iAuth _ghToken repoOwner repoName) =
+    "RepoInfo " <> Prelude.show forge <> " <iAuth> <ghToken> " <> unwords [Prelude.show repoOwner, Prelude.show repoName]
 
 data PackageInfo = PackageInfo
   { _packageInfoPackageType :: PackageType,

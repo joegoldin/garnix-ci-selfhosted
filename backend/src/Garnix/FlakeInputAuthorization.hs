@@ -69,8 +69,24 @@ checkAuthorization flakeDir repoConfig commitInfo = do
   inputs <- aesonDecode "output of 'nix flake metadata --json'" _parseFlakeMetaData output
   githubInputs <- checkInputsAllowed curDir inputs
   let repoInfo' = commitInfo ^. repoInfo
-  privateInputs <- filterM (\(GithubFlakeInput owner repo) -> not . isRepoPublic <$> getRepoPublicity (repoInfo' ^. installationAuth) owner repo) githubInputs
-  selfRepoPublicity <- getRepoPublicity (repoInfo' ^. installationAuth) (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName)
+  case repoInfo' ^. forge of
+    -- github: input authorization is inherently GitHub API-based (publicity /
+    -- collaborator checks of github: refs) and needs the GitHub app. A Gitea
+    -- repo has no installation, so we skip it: Gitea repos may depend on public
+    -- github: inputs (no token needed); private github: inputs from a Gitea repo
+    -- are not supported yet.
+    ForgeGitea -> pure $ NixConfig mempty
+    ForgeGithub -> authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs
+
+-- | GitHub-only: authorize a repo's private github: flake inputs (extracted from
+-- 'checkAuthorization' so non-GitHub forges skip it entirely).
+authorizeGithubPrivateInputs :: (HasCallStack) => RepoConfig -> CommitInfo -> RepoInfo -> [GithubFlakeInput] -> M NixConfig
+authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
+  iAuth <- case repoInfo' ^. installationAuth of
+    Just a -> pure a
+    Nothing -> throw $ OtherError "authorizeGithubPrivateInputs: missing GitHub installation auth"
+  privateInputs <- filterM (\(GithubFlakeInput owner repo) -> not . isRepoPublic <$> getRepoPublicity iAuth owner repo) githubInputs
+  selfRepoPublicity <- getRepoPublicity iAuth (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName)
   case privateInputs of
     [] -> pure $ NixConfig mempty
     _
@@ -96,7 +112,7 @@ checkAuthorization flakeDir repoConfig commitInfo = do
             $ OtherError
               "Repository has private dependencies, but PR is from fork."
     _ -> do
-      baseRepoCollaborators' <- getRepoCollaborators (repoInfo' ^. installationAuth) (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) <?> "Getting repo collaborators"
+      baseRepoCollaborators' <- getRepoCollaborators iAuth (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) <?> "Getting repo collaborators"
       baseRepoCollaborators <- case baseRepoCollaborators' of
         RepoNotFound -> throw $ OtherError "checkAuthorization: base repo not found"
         GhCollaborators collaborators -> pure collaborators
@@ -106,7 +122,7 @@ checkAuthorization flakeDir repoConfig commitInfo = do
         let skipPrivateInputChecks = repoConfig ^. skipPrivateInputsCheckForCollaborators
         unless skipPrivateInputChecks $ do
           thisInputCollaborators' <-
-            getRepoCollaborators (repoInfo' ^. installationAuth) (repoInfo' ^. ghRepoOwner) (repo privateInput)
+            getRepoCollaborators iAuth (repoInfo' ^. ghRepoOwner) (repo privateInput)
           thisInputCollaborators <- case thisInputCollaborators' of
             RepoNotFound -> throw $ OtherError $ "checkAuthorization: repo " <> (getGhLogin . getGhRepoOwner $ repoInfo' ^. ghRepoOwner) <> "/" <> getGhRepoName (repoInfo' ^. ghRepoName) <> " not found"
             GhCollaborators collaborators -> pure collaborators

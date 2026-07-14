@@ -102,6 +102,20 @@ in
           default = null;
           description = "Optional netrc file for authenticating to extra substituters (e.g. a private attic cache) during sandboxed evals/builds. Bound read-only into the build sandbox; must be readable by the garnix server user.";
         };
+        giteaUrl = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "https://gitea.example.com";
+          description = ''
+            Base URL of an optional self-hosted Gitea instance to integrate as a
+            second forge alongside GitHub (no trailing slash). When null, garnix
+            is GitHub-only. When set, the backend also serves Gitea webhooks at
+            /api/events/gitea and reports build status via Gitea commit statuses.
+            The API token and webhook secret are read from /run/secrets/gitea-token
+            and /run/secrets/gitea-webhook-secret (provision them like the other
+            garnix secrets); the server user must be able to read them.
+          '';
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -359,6 +373,11 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.buildNetRcFile != null) [
           "GARNIX_BUILD_NETRC_FILE=${config.services.garnixServer.buildNetRcFile}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.giteaUrl != null) [
+          # Token + webhook secret are read from /run/secrets/gitea-token and
+          # /run/secrets/gitea-webhook-secret by the backend.
+          "GITEA_URL=${config.services.garnixServer.giteaUrl}"
         ];
         SupplementaryGroups = [ config.users.groups.keys.name ];
         ExecStartPre = [

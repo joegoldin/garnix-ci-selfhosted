@@ -50,6 +50,10 @@ NixOS machine. Everything below uses example values — substitute your own:
   private [attic](https://github.com/zhaofengli/attic)).
 - **Admin API + UI** (`/garnix-admin` → "Per-repo config", `/api/admin/repo-config`)
   for per-repo overrides (`skip_private_inputs_check`, `private_cache`).
+- **Gitea as a second forge** — an optional self-hosted [Gitea](https://about.gitea.com)
+  instance alongside GitHub (both work at once). Push webhooks trigger builds and
+  results report back as Gitea commit statuses. Off unless `giteaUrl` is set. See
+  [the Gitea section](#optional-gitea-as-a-second-forge).
 - **sops made optional** — bring your own secrets manager (agenix, sops, plain
   files); the backend reads `/run/secrets/<name>` paths or env vars.
 - Single-host adaptations: no Hetzner fleet required (`buildMachines` for
@@ -319,6 +323,67 @@ has no SSH key) — use `github:` refs; garnix injects its App token for those.
 If a **public** repo has **private** `github:` inputs, self-host mode allows it
 automatically and routes that repo's closures to the private (authenticated)
 bucket. Override per-repo on `/garnix-admin` → "Per-repo config".
+
+## Optional: Gitea as a second forge
+
+garnix can integrate a self-hosted **Gitea** instance *alongside* GitHub — both
+forges work simultaneously, and each repo is tagged with the forge it came from.
+This is additive: leave `giteaUrl` unset and nothing changes.
+
+**What's supported (MVP):** push webhooks → build → **commit-status** reporting.
+Gitea has no check-runs API, so garnix posts commit statuses
+(`POST /api/v1/repos/{owner}/{repo}/statuses/{sha}`): one `pending` when a run
+starts, one terminal `success`/`failure`/`error` when it finishes, each linking
+to the garnix build page. Repo source is cloned from Gitea with the configured
+token; publicity/collaborators are read from Gitea's API.
+
+**Setup:**
+
+1. In Gitea, create a **bot/admin account** and an **API token** (Settings →
+   Applications) with access to the repos you want built. This single token
+   authenticates all clone + API + status calls (Gitea has no per-repo
+   installations like a GitHub App).
+2. Provision two secrets on the garnix host (like the other garnix secrets):
+   - `/run/secrets/gitea-token` — the API token
+   - `/run/secrets/gitea-webhook-secret` — a random string you'll also put in the
+     Gitea webhook config
+   Both must be readable by the garnix server user; **strip trailing newlines**
+   (a `\n` breaks the webhook HMAC and the bearer token).
+3. Set the instance URL and deploy:
+   ```nix
+   services.garnixServer.giteaUrl = "https://gitea.example.com";
+   ```
+4. In each repo (or org), add a **webhook** in Gitea (Settings → Webhooks →
+   Gitea):
+   - Target URL: `https://garnix.example.com/api/events/gitea`
+   - HTTP method: `POST`, Content type: `application/json`
+   - Secret: the same value as `/run/secrets/gitea-webhook-secret`
+   - Trigger on: **Push events** (branch push)
+5. Add a `garnix.yaml` to the repo just like a GitHub repo. Push → build →
+   commit status.
+
+**How it works internally:** the backend serves `/api/events/gitea`, verifies
+the `X-Gitea-Signature` HMAC-SHA256 over the raw body, parses Gitea's push
+payload into the same `CommitInfo` the GitHub path uses, and runs the shared
+build pipeline with a Gitea commit-status reporter. All forge-specific calls
+(`getRemote`, repo publicity/collaborators, status reporting) dispatch on a
+`Forge` tag; GitHub behaviour is unchanged.
+
+**MVP limitations** (GitHub is unaffected by all of these):
+
+- **Login** still uses GitHub OAuth for identity; in self-host mode access is
+  gated by oauth2-proxy/Authentik regardless, and the Gitea webhook's sender is
+  recorded as the build's requesting user — so builds work without Gitea login.
+- **Private caches for Gitea repos**: a *public* Gitea repo's cache is served
+  normally; a *private* Gitea repo's cache paths are currently fail-closed (not
+  served), because the cache-serve permission check is GitHub-API-based. Public
+  repos and the build/status loop are unaffected.
+- **Private `github:` flake inputs from a Gitea repo** aren't supported (that
+  would need a GitHub token the Gitea repo has no installation for); public
+  `github:` inputs work fine.
+- **Same `owner/name` on both forges collides** in the DB (builds are keyed on
+  `owner/name` without a forge column yet) — don't mirror a repo under an
+  identical path on both GitHub and Gitea.
 
 ## Step 9 — Multiple servers & hash subdomains (hosting)
 

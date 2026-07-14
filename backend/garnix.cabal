@@ -43,6 +43,7 @@ library
       Garnix.API.ConfigSchema
       Garnix.API.Dev
       Garnix.API.GhWebhooks
+      Garnix.API.GiteaWebhooks
       Garnix.API.Health
       Garnix.API.Hosts
       Garnix.API.Keys
@@ -75,6 +76,7 @@ library
       Garnix.ExpiringCache
       Garnix.FlakeInputAuthorization
       Garnix.GetAttributes
+      Garnix.GiteaInterface
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
       Garnix.HetznerInterface
@@ -108,6 +110,7 @@ library
       Garnix.ParseHttpBasicAuth
       Garnix.Password
       Garnix.Prelude
+      Garnix.Reporters.GiteaReporter
       Garnix.Reporters.GithubReporter
       Garnix.Reporters.OpenSearchReporter
       Garnix.Reporters.Utils
@@ -807,6 +810,7 @@ test-suite spec
       Garnix.API.ConfigSchema
       Garnix.API.Dev
       Garnix.API.GhWebhooks
+      Garnix.API.GiteaWebhooks
       Garnix.API.Health
       Garnix.API.Hosts
       Garnix.API.Keys
@@ -839,6 +843,7 @@ test-suite spec
       Garnix.ExpiringCache
       Garnix.FlakeInputAuthorization
       Garnix.GetAttributes
+      Garnix.GiteaInterface
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
       Garnix.HetznerInterface
@@ -872,6 +877,7 @@ test-suite spec
       Garnix.ParseHttpBasicAuth
       Garnix.Password
       Garnix.Prelude
+      Garnix.Reporters.GiteaReporter
       Garnix.Reporters.GithubReporter
       Garnix.Reporters.OpenSearchReporter
       Garnix.Reporters.Utils

@@ -61,7 +61,12 @@ instance Loggable CommitInfo where
   asLog info = asLog (info ^. _CommitInfo)
 
 instance Loggable RepoInfo where
-  asLog info = asLog (info ^. _RepoInfo)
+  asLog info =
+    ("forge", forgeToText (info ^. forge))
+      : asLog (info ^. ghRepoOwner)
+      <> asLog (info ^. ghRepoName)
+      <> maybe [] asLog (info ^. installationAuth)
+      <> asLog (info ^. ghToken)
 
 instance Loggable PackageInfo where
   asLog info = asLog (info ^. _PackageInfo)

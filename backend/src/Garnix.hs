@@ -250,6 +250,26 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   selfHostMode' <- isJust <$> lookupEnv "GARNIX_SELF_HOST_MODE"
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
+  -- Optional self-hosted Gitea forge. Enabled only when GITEA_URL is set;
+  -- otherwise garnix stays GitHub-only. Token + webhook secret are read from
+  -- env or /run/secrets, whitespace-stripped (a trailing newline breaks the
+  -- webhook HMAC and the API bearer token).
+  giteaConfig' <-
+    lookupEnv "GITEA_URL" >>= \case
+      Nothing -> pure Nothing
+      Just url -> do
+        token <-
+          lookupEnv "GITEA_TOKEN"
+            >>= maybe (BSC.readFile "/run/secrets/gitea-token") (pure . cs)
+        secret <-
+          lookupEnv "GITEA_WEBHOOK_SECRET"
+            >>= maybe (BSC.readFile "/run/secrets/gitea-webhook-secret") (pure . cs)
+        pure . Just
+          $ GiteaConfig
+            { _giteaConfigBaseUrl = T.strip (cs url),
+              _giteaConfigApiToken = T.strip (cs token),
+              _giteaConfigWebhookSecret = cs (T.strip (cs secret))
+            }
   -- Optional netrc for authenticating to extra substituters (e.g. a private
   -- attic cache) during sandboxed evals/builds. The sandbox ro-binds this path
   -- (see Garnix.Sandbox) and NIX_CONFIG points nix at it, so the builds can
@@ -348,6 +368,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               selfHostMode = selfHostMode',
               adminGroupName = adminGroupName',
               modulesOrg = modulesOrg',
+              giteaConfig = giteaConfig',
               logger = defaultLogger,
               buildLogsDir = buildLogsDir',
               hetznerToken = hetznerTok,

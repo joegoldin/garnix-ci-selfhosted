@@ -332,8 +332,17 @@ getInstalledOrgs (GhToken tok) = do
 
 -- * Making Github requests
 
+-- | The GitHub check-run reporter only ever runs for GitHub repos, which always
+-- carry an installation auth. Guard the invariant explicitly rather than with a
+-- partial pattern.
+requireGithubInstallationAuth :: (HasCallStack) => Maybe GHA.InstallationAuth -> M GHA.InstallationAuth
+requireGithubInstallationAuth = \case
+  Just a -> pure a
+  Nothing -> throw $ OtherError "GitHub reporter invoked for a repo without a GitHub installation auth"
+
 createBuildReportGH :: (HasCallStack) => RepoInfo -> GhRunReport -> M GhRunId
-createBuildReportGH (RepoInfo iAuth _ owner@(GhRepoOwner (GhLogin repoUser)) repo@(GhRepoName repoName)) report = do
+createBuildReportGH (RepoInfo _ mIAuth _ owner@(GhRepoOwner (GhLogin repoUser)) repo@(GhRepoName repoName)) report = do
+  iAuth <- requireGithubInstallationAuth mIAuth
   run <- fromRunReport report
   res <-
     executeAppRequest @Aeson.Value iAuth
@@ -345,7 +354,8 @@ createBuildReportGH (RepoInfo iAuth _ owner@(GhRepoOwner (GhLogin repoUser)) rep
         Just v -> pure $ fromInteger v
 
 updateBuildReportGH :: (HasCallStack) => GhRunId -> GhRunReport -> RepoInfo -> M ()
-updateBuildReportGH runId report (RepoInfo iAuth _ owner@(GhRepoOwner (GhLogin repoUser)) repo@(GhRepoName repoName)) = do
+updateBuildReportGH runId report (RepoInfo _ mIAuth _ owner@(GhRepoOwner (GhLogin repoUser)) repo@(GhRepoName repoName)) = do
+  iAuth <- requireGithubInstallationAuth mIAuth
   run <- fromRunReport report
   res <-
     executeAppRequest @Aeson.Value iAuth
