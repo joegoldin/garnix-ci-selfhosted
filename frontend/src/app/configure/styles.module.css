@@ -1,0 +1,109 @@
+.container {
+  padding: 24px;
+}
+
+.h1 {
+  font-size: 32px;
+  line-height: 130%;
+  margin-bottom: 24px;
+}
+
+.section {
+  background-color: var(--color-white);
+  border: 1px solid var(--color-stone-300);
+  padding: 24px;
+  margin: 32px 0;
+}
+
+.h2 {
+  font-size: 22px;
+  margin-bottom: 8px;
+}
+
+.h3 {
+  font-size: 16px;
+  margin: 24px 0 12px;
+}
+
+.help {
+  color: var(--color-stone-500);
+  margin-bottom: 16px;
+  line-height: 20px;
+}
+
+.error {
+  color: var(--color-red-500);
+}
+
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.timeout {
+  display: flex;
+  flex-direction: column;
+}
+
+.defaultRow,
+.addRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.label {
+  font-size: 14px;
+  color: var(--color-stone-600);
+}
+
+.picker {
+  flex: 1;
+  min-width: 240px;
+}
+
+.hoursInput {
+  width: 110px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-stone-300);
+  background-color: var(--color-white);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.overrideList {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  border: 1px solid var(--color-stone-300);
+}
+
+.overrideRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-stone-200);
+}
+
+.overrideRow:last-child {
+  border-bottom: none;
+}
+
+.overrideRepo {
+  flex: 1;
+  font-weight: 500;
+}
+
+.overrideValue {
+  color: var(--color-stone-500);
+  min-width: 60px;
+  text-align: right;
+}
+
+.overrideActions {
+  display: flex;
+  gap: 8px;
+}

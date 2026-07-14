@@ -50,6 +50,14 @@ NixOS machine. Everything below uses example values — substitute your own:
   private [attic](https://github.com/zhaofengli/attic)).
 - **Admin API + UI** (`/garnix-admin` → "Per-repo config", `/api/admin/repo-config`)
   for per-repo overrides (`skip_private_inputs_check`, `private_cache`).
+- **Configure page** (`/configure`, sidebar → "Configure") — a self-host web UI
+  to set a **default max build time** and **per-repo overrides** (each caps both
+  the eval and build phases), plus quick links to each forge's webhook admin.
+  Timeouts persist in `server_settings` / `repo_config.build_timeout_minutes`
+  and are applied on top of the plan at build time (`/api/configure`). The
+  synthetic self-host plan is otherwise unlimited on every dimension (CI
+  minutes, PR-deploy minutes, server deployments, packages/flake, larger
+  servers), surfaced on the plan page.
 - **Gitea as a second forge** — an optional self-hosted [Gitea](https://about.gitea.com)
   instance alongside GitHub (both work at once). Push webhooks trigger builds and
   results report back as Gitea commit statuses. Off unless `giteaUrl` is set. See

@@ -9,6 +9,7 @@ module Garnix.API.Admin
   ( AdminAPI (..),
     adminAPI,
     RepoConfigDto (..),
+    requireAdmin,
   )
 where
 

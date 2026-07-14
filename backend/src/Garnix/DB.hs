@@ -99,13 +99,14 @@ setSubscriptionType userId sub =
 getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
-    map (\(skipInputChecks, evalMemory, privateCache) -> RepoConfig skipInputChecks (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory) privateCache)
+    map (\(skipInputChecks, evalMemory, privateCache, buildTimeout) -> RepoConfig skipInputChecks (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory) privateCache buildTimeout)
       <$> pgQuery
         [pgSQL|
           SELECT
             skip_private_inputs_check_for_collaborators,
             max_eval_memory,
-            private_cache
+            private_cache,
+            build_timeout_minutes
           FROM repo_config
           WHERE repo_user = ${repoOwner}
             AND repo_name = ${repoName}
@@ -114,6 +115,52 @@ getRepoConfig repoOwner repoName = do
     [] -> pure defaultRepoConfig
     [res] -> pure res
     _ -> throw $ OtherError "impossible: multiple entries for repo config"
+
+-- | The global default build/eval timeout (minutes), or 'Nothing' if unset.
+-- Consulted in self-host mode when a repo has no per-repo override.
+getDefaultBuildTimeout :: M (Maybe Int32)
+getDefaultBuildTimeout = do
+  rows <-
+    pgQuery
+      [pgSQL|SELECT default_build_timeout_minutes FROM server_settings WHERE singleton|]
+  pure $ case rows of
+    (mMinutes : _) -> mMinutes
+    [] -> Nothing
+
+-- | Set (or clear, with 'Nothing') the global default build/eval timeout.
+setDefaultBuildTimeout :: Maybe Int32 -> M ()
+setDefaultBuildTimeout mMinutes =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO server_settings (singleton, default_build_timeout_minutes)
+          VALUES (true, ${mMinutes})
+          ON CONFLICT (singleton)
+          DO UPDATE SET default_build_timeout_minutes = ${mMinutes}
+      |]
+
+-- | Every repo that has a per-repo build/eval timeout override (minutes).
+getReposWithBuildTimeout :: M [(GhRepoOwner, GhRepoName, Int32)]
+getReposWithBuildTimeout =
+  catMaybes . map (\(o, r, m) -> (o,r,) <$> m)
+    <$> pgQuery
+      [pgSQL|
+        SELECT repo_user, repo_name, build_timeout_minutes
+        FROM repo_config
+        WHERE build_timeout_minutes IS NOT NULL
+      |]
+
+-- | Set (or clear, with 'Nothing') a repo's build/eval timeout override.
+setRepoBuildTimeout :: GhRepoOwner -> GhRepoName -> Maybe Int32 -> M ()
+setRepoBuildTimeout repoOwner repoName mMinutes =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config (repo_user, repo_name, build_timeout_minutes)
+          VALUES (${repoOwner}, ${repoName}, ${mMinutes})
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET build_timeout_minutes = ${mMinutes}
+      |]
 
 -- | Upsert the admin-configurable fields of a repo's config. Used by the admin
 -- API to allow a public repo to use private flake inputs and to route its cache

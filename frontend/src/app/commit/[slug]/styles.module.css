@@ -2,10 +2,26 @@
   padding: 24px;
 }
 
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.header .h1 {
+  margin-bottom: 0;
+}
+
 .h1 {
   font-size: 32px;
   line-height: 130%;
   margin-bottom: 24px;
+}
+
+.modalText {
+  line-height: 22px;
 }
 
 .modules {

@@ -88,7 +88,7 @@ rerunBuild reporter build commitInfo = do
   DB.reportBuildResultDB build' <?> "Adding build github ID to DB"
   reportOnError runReporter build' commitInfo $ do
     repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
-    plan <- Entitlements.getPlan (build ^. repoUser)
+    plan <- Entitlements.getPlan (build ^. repoUser) >>= Entitlements.applyConfiguredTimeouts repoConfig
     Checkout.runWithCheckout Checkout.remoteWithConfig commitInfo $ \config -> do
       withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
         reportBuildResult runReporter build'

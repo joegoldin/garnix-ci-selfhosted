@@ -15,7 +15,6 @@ import { AccountIcon } from "@/components/icons/account";
 import { SettingsIcon } from "@/components/icons/settings";
 import { LogoutIcon } from "@/components/icons/logout";
 import hamburgerMenuIcon from "@/components/icons/hamburgerMenu.svg";
-import { useConfig } from "@/store/configContext";
 import { trackClick } from "@/utils/analytics";
 import { filterNull } from "@/utils";
 import styles from "./styles.module.css";
@@ -67,10 +66,7 @@ const MAIN_LINK_GROUP: Array<LinkProps> = filterNull([
   },
 ]);
 
-const ACCOUNT_LINK_GROUP = (
-  githubAppName: string,
-  router: AppRouterInstance,
-): LinkProps[] => [
+const ACCOUNT_LINK_GROUP = (router: AppRouterInstance): LinkProps[] => [
   {
     icon: <AccountIcon className={styles.icon} />,
     label: "Account",
@@ -79,9 +75,8 @@ const ACCOUNT_LINK_GROUP = (
   {
     icon: <SettingsIcon className={styles.icon} />,
     label: "Configure",
-    href: `https://github.com/apps/${githubAppName}`,
-    openNewPage: true,
-    eventName: "configure-github-app",
+    href: "/configure",
+    eventName: "configure",
   },
   {
     icon: <LogoutIcon className={styles.icon} />,
@@ -96,7 +91,6 @@ const ACCOUNT_LINK_GROUP = (
 export const Navigation = ({ className }: Props) => {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = React.useState(false);
-  const { githubAppName } = useConfig();
   const router = useRouter();
   return (
     <div className={`${styles.container} ${className}`}>
@@ -137,7 +131,7 @@ export const Navigation = ({ className }: Props) => {
         </div>
         <div>
           <div className={styles.linkGroup}>
-            {ACCOUNT_LINK_GROUP(githubAppName, router).map((link) => (
+            {ACCOUNT_LINK_GROUP(router).map((link) => (
               <NavLink key={link.label} link={link} pathname={pathname} />
             ))}
           </div>

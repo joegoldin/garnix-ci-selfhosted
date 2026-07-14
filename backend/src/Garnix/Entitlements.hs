@@ -15,6 +15,7 @@ module Garnix.Entitlements
     defaultPlanName,
     getPlan,
     getPlans,
+    applyConfiguredTimeouts,
     getPlanByProductToken,
     getPlanByName,
 
@@ -285,6 +286,25 @@ mergePlans allPlans = case filter (isJust . snd) allPlans of
                     },
                 _productPlanIsPaid = (a ^. isPaid) || (b ^. isPaid)
               }
+
+-- | Apply the operator-configured build/eval timeout (from the self-host
+-- Configure page) on top of a plan. A per-repo override wins over the global
+-- default, which wins over the plan's own timeout; when neither is set the plan
+-- is returned unchanged. The same cap is applied to both the evaluation and
+-- build phases, and is clamped to the Int16 minute range the plan fields use.
+applyConfiguredTimeouts :: RepoConfig -> ProductPlan -> M ProductPlan
+applyConfiguredTimeouts repoConfig plan = do
+  globalDefault <- DB.getDefaultBuildTimeout
+  let mMinutes = case repoConfig ^. buildTimeoutMinutes of
+        Just m -> Just m
+        Nothing -> globalDefault
+  pure $ case mMinutes of
+    Nothing -> plan
+    Just minutes ->
+      let capped = min 32767 (max 1 minutes)
+       in plan
+            & packageBuildTimeout .~ fromIntegral capped
+            & packageEvaluationTimeout .~ fromIntegral capped
 
 getPlan :: GhRepoOwner -> M ProductPlan
 getPlan repoOwner =

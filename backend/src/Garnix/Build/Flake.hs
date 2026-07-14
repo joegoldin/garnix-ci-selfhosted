@@ -13,7 +13,7 @@ import Garnix.Build.MetaCheck qualified as MetaCheck
 import Garnix.Build.Package (doBuild)
 import Garnix.Build.Reporting
 import Garnix.DB qualified as DB
-import Garnix.Entitlements (addDefaultEntitlements, getPlan, hasRemainingCiTime)
+import Garnix.Entitlements (addDefaultEntitlements, applyConfiguredTimeouts, getPlan, hasRemainingCiTime)
 import Garnix.GetAttributes
 import Garnix.Hosting.Deploy (rolloutNewServerVersion)
 import Garnix.Modules qualified as Modules
@@ -39,7 +39,7 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
         repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
         runWithCheckout withCheckout commitInfo $ \config -> do
           withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
-            plan <- getPlan repoOwner
+            plan <- getPlan repoOwner >>= applyConfiguredTimeouts repoConfig
             initialBuilds <- setupBuilds reporter commitInfo config plan
             initialActions <- setupActions reporter commitInfo config
             updatedBuild <-

@@ -1781,12 +1781,16 @@ data RepoConfig = RepoConfig
     -- (authenticated) cache bucket even if the GitHub repo is public. This
     -- lets a public repo pull in private flake inputs without leaking the
     -- resulting closures to the unauthenticated public cache.
-    _repoConfigPrivateCache :: Bool
+    _repoConfigPrivateCache :: Bool,
+    -- | Per-repo build/eval timeout override, in minutes. 'Nothing' means fall
+    -- back to the global default (or, absent that, the plan's timeout). Only
+    -- consulted in self-host mode via the Configure page.
+    _repoConfigBuildTimeoutMinutes :: Maybe Int32
   }
   deriving stock (Show)
 
 defaultRepoConfig :: RepoConfig
-defaultRepoConfig = RepoConfig False (fromGigabytes 8) False
+defaultRepoConfig = RepoConfig False (fromGigabytes 8) False Nothing
 
 newtype Memory = Memory Int64
   deriving stock (Show, Eq, Generic, Ord)
