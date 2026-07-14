@@ -1,6 +1,7 @@
 module Garnix.Nix.StorePath
   ( withStorePath,
     getClosure,
+    unwrapDerivations,
 
     -- * exported for tests
     _getOutputs,
@@ -9,6 +10,9 @@ module Garnix.Nix.StorePath
 where
 
 import Cradle
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Lens (key)
+import Data.Aeson.Types qualified as Aeson
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Row (Rec, type (.==))
@@ -22,16 +26,16 @@ import Garnix.Types
 import System.Directory (removeFile)
 import System.IO.Temp (withSystemTempDirectory)
 
-type NixDerivationShowOutput =
-  ( Rec
-      ( "derivations"
-          .== Map
-                Text
-                ( Rec
-                    ("outputs" .== Map Text (Rec ("path" .== Text)))
-                )
-      )
-  )
+type NixDerivationsMap =
+  Map
+    Text
+    (Rec ("outputs" .== Map Text (Rec ("path" .== Text))))
+
+-- | @nix derivation show@ output changed format: newer nix (>= 2.34) wraps the
+-- @{<drvPath>: ...}@ map under a @"derivations"@ key (alongside a @"version"@),
+-- while older nix emits the map directly. Return the inner map either way.
+unwrapDerivations :: Aeson.Value -> Aeson.Value
+unwrapDerivations v = fromMaybe v (v ^? key "derivations")
 
 _getOutputs :: Nix.DrvPath -> M (Map Text Nix.StorePath)
 _getOutputs drvPath = do
@@ -43,13 +47,16 @@ _getOutputs drvPath = do
       & addNixConfigEnvironment nixConfig
   case exit of
     ExitSuccess -> do
-      parsed :: NixDerivationShowOutput <- aesonDecode "nix derivation show output" parseJSON output
+      value :: Aeson.Value <- aesonDecode "nix derivation show output" parseJSON output
+      derivations :: NixDerivationsMap <-
+        either (throw . OtherError . cs . ("decoding derivation outputs: " <>)) pure
+          $ Aeson.parseEither parseJSON (unwrapDerivations value)
       let raw :: Map Text Text =
             fmap (("/nix/store/" <>) . (^. #path))
               $ Map.fromList
               $ mconcat
               $ map (\x -> Map.toList (x ^. #outputs))
-              $ Map.elems (parsed ^. #derivations)
+              $ Map.elems derivations
       forM raw $ \storePath -> do
         case Nix.parseStorePath storePath of
           Right storePath -> pure storePath

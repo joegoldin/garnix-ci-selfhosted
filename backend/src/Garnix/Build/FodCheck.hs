@@ -19,6 +19,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe
 import Data.Row (Rec, type (.+), type (.==))
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Data.Text.IO qualified as T
 import Garnix.BuildLogs.Types (LogLine (LogLine), mkLogLine)
 import Garnix.DB qualified as DB
@@ -27,9 +28,12 @@ import Garnix.DB.FeatureFlags.Types qualified as FeatureFlags
 import Garnix.Monad
 import Garnix.Monad.Async (joinAll, resolve, spawn)
 import Garnix.Monad.Bubbling
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Types qualified as Aeson
 import Garnix.Monad.Metrics (timingAs)
 import Garnix.Monad.Pool (withPoolM)
 import Garnix.Monad.SubProcess (runSubProcess)
+import Garnix.Nix.StorePath (unwrapDerivations)
 import Garnix.Nix.Types qualified as Nix
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude hiding (Alternative)
@@ -148,8 +152,11 @@ __findAllFodsRecursively drvPath = do
       $ cmd "nix"
       & addArgs ["derivation", "show", "--recursive", cs drvPath :: Text]
       & addNixConfigEnvironment nixConfig
-  parsed :: NixDerivationShowJson <- aesonDecode "nix derivation show output" parseJSON (cs stdout)
-  (Set.fromList <$>) $ flip mapMaybeM (Map.toList $ parsed ^. #derivations) $ \(drvPathText, info) -> do
+  value :: Aeson.Value <- aesonDecode "nix derivation show output" parseJSON (cs stdout)
+  derivations :: NixDerivationShowJson <-
+    either (\e -> throw $ DecodeError {original = cs stdout, message = "decoding derivations: " <> cs e}) pure
+      $ Aeson.parseEither parseJSON (unwrapDerivations value)
+  (Set.fromList <$>) $ flip mapMaybeM (Map.toList derivations) $ \(drvPathText, info) -> do
     case (info ^. #env . #outputHash, info ^. #env . #system) of
       (Nothing, _) -> pure Nothing
       (Just _, Nothing) ->
@@ -159,22 +166,22 @@ __findAllFodsRecursively drvPath = do
               message = "fod doesn't have an `env.system` field."
             }
       (Just _fodDerivation, Just system) -> do
-        case Nix.parseDrvPath ("/nix/store/" <> drvPathText) of
+        -- Older nix keys the map by the full store path, newer nix by the bare
+        -- @<hash>-name.drv@; normalize to a full store path either way.
+        let drvStorePath =
+              if "/nix/store/" `Text.isPrefixOf` drvPathText
+                then drvPathText
+                else "/nix/store/" <> drvPathText
+        case Nix.parseDrvPath drvStorePath of
           Left err -> throw $ DecodeError {original = cs stdout, message = "Failed to parse drv path: " <> err}
           Right drvPath -> pure $ Just (drvPath, system ^. re systemTextIso)
 
+-- | The inner @{<drvPath>: {...}}@ map of @nix derivation show@ (after
+-- 'unwrapDerivations' has stripped the newer nix @"derivations"@ wrapper).
 type NixDerivationShowJson =
-  ( Rec
-      ( "derivations"
-          .== Map.Map
-                Text
-                ( Rec
-                    ( "env"
-                        .== NixDerivationShowEnvJson
-                    )
-                )
-      )
-  )
+  Map.Map
+    Text
+    (Rec ("env" .== NixDerivationShowEnvJson))
 
 data NixDerivationShowEnvJson = NixDerivationShowEnvJson
   { outputHash :: Maybe Text,
