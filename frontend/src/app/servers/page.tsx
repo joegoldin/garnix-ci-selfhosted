@@ -152,7 +152,11 @@ const ServersTable = (props: {
                 </td>
                 <td className={styles.actions}>
                   {server.status === "Online" ? (
-                    <Button onClick={() => window.open(server.url, "_blank")}>
+                    <Button
+                      onClick={() => {
+                        window.open(server.url, "_blank");
+                      }}
+                    >
                       Visit
                     </Button>
                   ) : null}
