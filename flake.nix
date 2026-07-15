@@ -166,6 +166,12 @@
         inherit self overlays flakeInputs;
       }) nixosConfigurations;
       nixosModules.self-hosted = import ./nix/modules/self-hosted.nix;
+      # Shared profile for garnix-hosted microVM guests: user-deployed
+      # nixosConfigurations must import this (together with
+      # microvm.nixosModules.microvm) so switch-to-configuration inside the
+      # guest keeps a fstab matching the provisioner's base guest
+      # (root/overlay volumes + virtiofs store share).
+      nixosModules.garnix-guest = import ./provisioner/guest-profile.nix;
       # Mandatory for self-hosted consumers: opensearch/nixos-module.nix's
       # dashboards.package option defaults to pkgs.opensearch-dashboards,
       # which only exists via this overlay (nix/packages/opensearch-dashboards);
