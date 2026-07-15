@@ -86,6 +86,7 @@ library
       Garnix.Hosting.ServerPool
       Garnix.Hosting.ServerPool.Types
       Garnix.Incremental
+      Garnix.LocalProvisioner
       Garnix.Log
       Garnix.Modules
       Garnix.Modules.Schema
@@ -221,6 +222,7 @@ library
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -368,6 +370,7 @@ executable convert-hashids
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -516,6 +519,7 @@ executable generate-yaml-config-docs
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -663,6 +667,7 @@ executable server
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -854,6 +859,7 @@ test-suite spec
       Garnix.Hosting.ServerPool
       Garnix.Hosting.ServerPool.Types
       Garnix.Incremental
+      Garnix.LocalProvisioner
       Garnix.Log
       Garnix.Modules
       Garnix.Modules.Schema
@@ -1000,6 +1006,7 @@ test-suite spec
     , monad-control
     , mtl
     , neat-interpolation
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
