@@ -30,6 +30,7 @@ import Garnix.HetznerInterface
 import Garnix.Hosting.Deploy (stopUnusedServers)
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
+import Garnix.LocalProvisioner (localProvisionerInterface)
 import Garnix.Monad
 import Garnix.Monad.Metrics (registerMetrics, serveMetrics)
 import Garnix.Monad.Pool qualified
@@ -57,6 +58,7 @@ import Stripe.Concepts qualified
 import System.Directory
 import System.Environment (getEnv)
 import System.Systemd.Daemon (notifyReady)
+import Text.Read (readMaybe)
 import WithCli (HasArguments, withCli)
 
 run :: IO ()
@@ -250,6 +252,30 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   selfHostMode' <- isJust <$> lookupEnv "GARNIX_SELF_HOST_MODE"
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
+  hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
+  -- Warm-pool sizing. Upstream keeps a large Hetzner pool; self-host keeps a
+  -- single small local VM warm unless GARNIX_SERVER_POOL overrides it
+  -- (format: "i2x4:1,i4x8:0").
+  poolEnv <- lookupEnv "GARNIX_SERVER_POOL"
+  let parseTier t = case T.toLower t of
+        "i2x4" -> Just I2x4
+        "i4x8" -> Just I4x8
+        "i8x16" -> Just I8x16
+        "i16x32" -> Just I16x32
+        _ -> Nothing
+      parsePool s =
+        catMaybes
+          [ (,) <$> parseTier tier <*> readMaybe (cs count)
+          | entry <- T.splitOn "," (cs s),
+            [tier, count] <- [T.splitOn ":" entry]
+          ]
+      defaultPool
+        | selfHostMode' = [(I2x4, 1)]
+        | otherwise = [(I2x4, 10), (I4x8, 2), (I8x16, 1), (I16x32, 1)]
+      serverPool = maybe defaultPool parsePool poolEnv
+  -- When a local provisioner daemon socket is configured, deployments go to
+  -- local microVMs behind the HetznerInterface seam instead of Hetzner Cloud.
+  provisionerSocket <- lookupEnv "GARNIX_PROVISIONER_SOCKET"
   -- Optional self-hosted Gitea forge. Enabled only when GITEA_URL is set;
   -- otherwise garnix stays GitHub-only. Token + webhook secret are read from
   -- env or /run/secrets, whitespace-stripped (a trailing newline breaks the
@@ -345,13 +371,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               userNixConfig = maybe defaultNixConfig (defaultNixConfig <>) buildNetRc,
               githubWebhookSecret = ghK,
               githubInterface = realGithubInterface,
-              hetznerInterface = realHetznerInterface,
-              serverPoolConfig =
-                [ (I2x4, 10),
-                  (I4x8, 2),
-                  (I8x16, 1),
-                  (I16x32, 1)
-                ],
+              hetznerInterface = maybe realHetznerInterface localProvisionerInterface provisionerSocket,
+              serverPoolConfig = serverPool,
               cookieSettings =
                 defaultCookieSettings
                   { cookieXsrfSetting = Nothing,
@@ -363,6 +384,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               dbConn = dbConnectionPool,
               manager = mgr,
               baseUrl = cs burl,
+              hostingDomain = hostingDomain',
               cacheUrl = cacheUrl',
               cachePublicKey = cachePublicKey',
               selfHostMode = selfHostMode',
@@ -415,7 +437,12 @@ runWith opts = do
     (Garnix.buildLogsReportingPort opts)
     $ \env -> do
       serveMetrics (Garnix.metricsPort opts) (env ^. #metrics)
-      void . forkIO . void . runM env $ forever (stopUnusedServers' *> threadDelay (fromMinutes @Int 5))
+      -- The heartbeat reaper needs the Traefik heartbeat middleware to be
+      -- reporting; in self-host mode servers are torn down by deploy plans
+      -- instead, so skip it rather than reap every server.
+      unless (env ^. #selfHostMode)
+        $ void . forkIO . void . runM env
+        $ forever (stopUnusedServers' *> threadDelay (fromMinutes @Int 5))
       if Garnix.provisionServerPool opts
         then void $ runM env ServerPool.initializeProvisioningPool
         else hPutStrLn stderr "Not provisioning server pool"

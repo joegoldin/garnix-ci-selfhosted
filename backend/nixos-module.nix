@@ -116,6 +116,26 @@ in
             garnix secrets); the server user must be able to read them.
           '';
         };
+        hostingDomain = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "apps.garnix.example.com";
+          description = ''
+            Base domain under which deployed servers are exposed. Deployed
+            servers get <package>.<branch>.<repo>.<owner>.<hostingDomain>.
+            When null, the upstream default (garnix.me) is used.
+          '';
+        };
+        provisionerSocket = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/run/garnix-provisioner/provisioner.sock";
+          description = ''
+            Unix socket of a local garnix-provisionerd daemon. When set, server
+            deployments provision local microVMs through it instead of Hetzner
+            Cloud VMs (see provisioner/nixos-module.nix).
+          '';
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -378,6 +398,12 @@ in
           # Token + webhook secret are read from /run/secrets/gitea-token and
           # /run/secrets/gitea-webhook-secret by the backend.
           "GITEA_URL=${config.services.garnixServer.giteaUrl}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.hostingDomain != null) [
+          "GARNIX_HOSTING_DOMAIN=${config.services.garnixServer.hostingDomain}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.provisionerSocket != null) [
+          "GARNIX_PROVISIONER_SOCKET=${config.services.garnixServer.provisionerSocket}"
         ];
         SupplementaryGroups = [ config.users.groups.keys.name ];
         ExecStartPre = [
