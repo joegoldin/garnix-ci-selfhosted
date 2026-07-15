@@ -151,7 +151,7 @@ const ServersTable = (props: {
                     : "-"}
                 </td>
                 <td className={styles.actions}>
-                  {server.status === "Online" ? (
+                  {server.status !== "Ended" ? (
                     <Button
                       onClick={() => setDeleteServerModal(server.id)}
                       style="warning"
