@@ -32,7 +32,6 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
     metaCheckRun <- MetaCheck.newReport reporter commitInfo
     flip catchEither (\err -> MetaCheck.updateFail commitInfo metaCheckRun (Just err) >> rethrowEither err) $ do
       reportOnError startingBuildRunReporter startingBuild commitInfo $ do
-        DB.markBuildRunning (startingBuild ^. id)
         hasCiTime <- hasRemainingCiTime repoOwner
         when (not hasCiTime) $ do
           log Notice $ show (commitInfo ^. repoInfo . ghRepoOwner) <> " ran out of CI time."
@@ -148,7 +147,9 @@ newBuild reporter commitInfo packageInfo wantsIncrementalism = withSpan packageI
     DB.newBuildDB commitInfo packageInfo hostname wantsIncrementalism
       <?> "Creating a build in the DB"
   withSpan (initialBuild ^. id) $ do
-    runReporter <- createNewRun reporter $ ReportBuild (reportNameForBuild initialBuild) initialBuild
+    runReporter <-
+      createNewRun reporter (ReportBuild (reportNameForBuild initialBuild) initialBuild)
+        >>= markRunningOnFirstLog initialBuild
     log Informational $ "My GH run id is: " <> show (Garnix.Monad.ghRunId runReporter)
     let build = initialBuild & githubRunId .~ Garnix.Monad.ghRunId runReporter
     DB.reportBuildResultDB build <?> "Adding build github ID to DB"

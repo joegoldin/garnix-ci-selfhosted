@@ -2,15 +2,33 @@ module Garnix.Build.Reporting
   ( reportOnError,
     reportBuildResult,
     reportNameForBuild,
+    markRunningOnFirstLog,
   )
 where
 
 import Control.Lens
+import Data.IORef (atomicModifyIORef', newIORef)
 import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types as Types
+
+-- | Wrap a build's reporter so the build is marked "running"
+-- (@run_started_at@ is set) on its first line of output, staying "pending"
+-- until then. Without this a build flips to "running" the instant it is
+-- scheduled — showing everything green while it is still only evaluating with
+-- no output yet.
+markRunningOnFirstLog :: Build -> RunReporter -> M RunReporter
+markRunningOnFirstLog build runReporter = do
+  pendingRef <- liftIO $ newIORef True
+  pure
+    runReporter
+      { reportLogs = \logLine -> do
+          isFirst <- liftIO $ atomicModifyIORef' pendingRef (\p -> (False, p))
+          when isFirst $ DB.markBuildRunning (build ^. id)
+          reportLogs runReporter logLine
+      }
 
 reportNameForBuild :: Build -> Text
 reportNameForBuild build =

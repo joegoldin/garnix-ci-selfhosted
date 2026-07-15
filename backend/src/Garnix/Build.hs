@@ -83,7 +83,9 @@ buildFlake = curry $ mockable #buildFlakeMock $ \(reporter, commitInfo) -> do
 rerunBuild :: Reporter -> Build -> CommitInfo -> M ()
 rerunBuild reporter build commitInfo = do
   MetaCheck.update reporter commitInfo
-  runReporter <- createNewRun reporter $ ReportBuild (reportNameForBuild build) build
+  runReporter <-
+    createNewRun reporter (ReportBuild (reportNameForBuild build) build)
+      >>= markRunningOnFirstLog build
   let build' = build & githubRunId .~ Garnix.Monad.ghRunId runReporter
   DB.reportBuildResultDB build' <?> "Adding build github ID to DB"
   reportOnError runReporter build' commitInfo $ do
