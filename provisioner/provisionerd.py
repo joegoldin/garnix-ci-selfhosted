@@ -89,6 +89,10 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
         pubkey = f.read().strip()
     spec_dir = os.path.join(SPECS_DIR, name)
     os.makedirs(spec_dir, exist_ok=True)
+    # Copy the shared guest profile into the flake tree and import it
+    # relatively: `microvm -c` evaluates the flake in pure mode, where an
+    # absolute /nix/store import path is forbidden.
+    shutil.copyfile(GUEST_PROFILE, os.path.join(spec_dir, "guest-profile.nix"))
     with open(os.path.join(spec_dir, "flake.nix"), "w") as f:
         f.write(
             f"""{{
@@ -110,7 +114,7 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
     with open(os.path.join(spec_dir, "guest.nix"), "w") as f:
         f.write(
             f"""{{
-  imports = [ {GUEST_PROFILE} ];
+  imports = [ ./guest-profile.nix ];
   networking.hostName = {nix_str(name)};
   microvm.vcpu = {vcpu};
   microvm.mem = {mem};
