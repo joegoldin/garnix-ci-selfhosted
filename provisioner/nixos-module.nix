@@ -101,13 +101,12 @@ in
     # The bridge is host-only: the backend SSHes into guests and Traefik
     # proxies to them, so host<->guest must be fully open.
     networking.firewall.trustedInterfaces = [ cfg.bridge ];
-    # Don't run bridged (L2) traffic through iptables; the host FORWARD chain
-    # would otherwise drop guest packets before they reach the bridge.
-    boot.kernel.sysctl = {
-      "net.bridge.bridge-nf-call-iptables" = 0;
-      "net.bridge.bridge-nf-call-ip6tables" = 0;
-      "net.bridge.bridge-nf-call-arptables" = 0;
-    };
+    # Deliberately NOT disabling the bridge-nf-call-* sysctls (the usual
+    # microVM-host trick): they only affect bridged guest<->guest L2 traffic,
+    # which garnix guests never use (host<->guest is routed via the bridge
+    # address; ingress goes through Traefik), and forcing them to 0 host-wide
+    # changes behavior for other bridge users on the box (e.g. docker keeps
+    # bridge-nf-call-iptables=1 for its own networks).
 
     # ── dnsmasq: DHCP-only, per-MAC reservations from the daemon ─────────────
     services.dnsmasq = {
