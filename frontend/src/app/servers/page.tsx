@@ -150,7 +150,7 @@ const ServersTable = (props: {
                       ) + " ago"
                     : "-"}
                 </td>
-                <td className={styles.actions}>
+                <td className={styles.rowActions}>
                   {server.status === "Online" ? (
                     <Button
                       onClick={() => {

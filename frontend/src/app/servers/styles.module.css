@@ -50,6 +50,16 @@
   text-align: center;
 }
 
+/* Per-row action buttons (Visit / Delete / Logs): stack them with even
+   spacing instead of forcing `display: inline` on the flex Button, which
+   overlapped them vertically. */
+.rowActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
 .error {
   color: var(--color-error);
   margin-bottom: 10px;
