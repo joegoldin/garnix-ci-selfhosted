@@ -98,9 +98,16 @@ in
     };
 
     # ── Firewall ──────────────────────────────────────────────────────────────
-    # The bridge is host-only: the backend SSHes into guests and Traefik
-    # proxies to them, so host<->guest must be fully open.
-    networking.firewall.trustedInterfaces = [ cfg.bridge ];
+    # Guests run deployed (potentially untrusted) code, so the bridge is NOT
+    # trusted wholesale — that would let a guest reach every host service bound
+    # to 0.0.0.0 (postgres, the garnix backend/API, sshd, …) at the host's
+    # bridge address, a guest→host pivot. Host→guest still works without
+    # trusting the interface: the backend's ssh/nix-copy-closure and Traefik's
+    # proxying are host-initiated, so their return traffic is allowed as
+    # established/related. Guests only need DHCP inbound to the host (dnsmasq);
+    # everything else guest→host is dropped by the default policy. Guest egress
+    # to the internet goes through NAT (above), not the host firewall's INPUT.
+    networking.firewall.interfaces.${cfg.bridge}.allowedUDPPorts = [ 67 ];
     # Deliberately NOT disabling the bridge-nf-call-* sysctls (the usual
     # microVM-host trick): they only affect bridged guest<->guest L2 traffic,
     # which garnix guests never use (host<->guest is routed via the bridge

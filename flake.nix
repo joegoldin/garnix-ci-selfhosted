@@ -172,6 +172,10 @@
       # guest keeps a fstab matching the provisioner's base guest
       # (root/overlay volumes + virtiofs store share).
       nixosModules.garnix-guest = import ./provisioner/guest-profile.nix;
+      # Optional: lock a deployed server behind Authentik/OIDC (oauth2-proxy +
+      # nginx forward-auth gate on :80). Import into a deployed config and set
+      # `garnix.authentik.*`. See provisioner/authentik-guard.nix.
+      nixosModules.garnix-authentik = import ./provisioner/authentik-guard.nix;
       # Mandatory for self-hosted consumers: opensearch/nixos-module.nix's
       # dashboards.package option defaults to pkgs.opensearch-dashboards,
       # which only exists via this overlay (nix/packages/opensearch-dashboards);

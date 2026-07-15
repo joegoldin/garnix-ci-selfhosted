@@ -490,6 +490,50 @@ Deferred (documented, not implemented): guest IPv6 (recorded as `""`),
 heartbeat-based reaping (disabled in self-host; deploys tear servers down),
 and pool autostart across host reboots (the pool refills itself).
 
+### Locking a deployed server behind Authentik (or any OIDC provider)
+
+`garnix-ci.nixosModules.garnix-authentik` gates a deployed server behind an
+OIDC login with one import: it runs `oauth2-proxy` plus an nginx forward-auth
+gate on port 80 (the port Traefik proxies to), so every request needs a valid
+session before it reaches your service. Point your own service at a different
+port and set `garnix.authentik.upstream` to it:
+
+```nix
+modules = [
+  microvm.nixosModules.microvm
+  garnix-ci.nixosModules.garnix-guest
+  garnix-ci.nixosModules.garnix-authentik
+  {
+    garnix.guest.sshPublicKey = "<YOUR HOSTING PUBLIC KEY>";
+    garnix.authentik = {
+      enable = true;
+      publicUrl = "https://app.main.myrepo.myorg.apps.example.com";
+      issuerUrl = "https://authentik.example.com/application/o/myapp/";
+      clientId = "<oidc client id>";
+      allowedGroups = [ "my-app-users" ];   # omit to allow any logged-in user
+      upstream = "127.0.0.1:8080";           # your service (NOT on :80)
+      # age ciphertext of the OIDC client secret, encrypted to this repo's
+      # public key. Safe to commit; decrypted at runtime on the guest.
+      clientSecretAge = ''
+        -----BEGIN AGE ENCRYPTED FILE-----
+        ...
+        -----END AGE ENCRYPTED FILE-----
+      '';
+    };
+    services.myApp.port = 8080;              # your actual app, behind the gate
+  }
+];
+```
+
+The client secret is delivered the garnix-native way: encrypt it to the repo's
+public key (`GET /api/keys/<owner>/<repo>/repo-key.public`, or via `age -r`),
+paste the ciphertext into `clientSecretAge`, and the guest decrypts it at
+runtime with the repo private key garnix drops at `/var/garnix/keys/repo-key`
+(root-only). No plaintext secret ever lands in the world-readable nix store.
+The cookie secret is generated on the guest and persisted. `oauth2-proxy` only
+trusts forwarded headers from the loopback nginx gate. This module doubles as a
+worked example when writing your own custom garnix server modules.
+
 ## Step 10 — Remote builders (optional)
 
 ```nix
