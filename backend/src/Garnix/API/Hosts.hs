@@ -27,6 +27,9 @@ data HostsAPI route = HostsAPI
     _hostsAPIHeartbeat :: route :- "heartbeat" :> ReqBody '[JSON] [Text] :> Post '[JSON] NoContent,
     _hostsAPIGetIPsForDns :: route :- "dns" :> Get '[JSON] DnsHosts,
     _hostsAPIGetDomainsForOnDemandResolver :: route :- "on-demand-resolver" :> Get '[JSON] OnDemandResolverDomainNames,
+    -- | Caddy on_demand_tls "ask" contract: 200 iff the queried domain is a
+    -- currently-valid deployed-server domain, 404 otherwise.
+    _hostsAPIOnDemandCheck :: route :- "on-demand-check" :> QueryParam "domain" Text :> Get '[JSON] NoContent,
     _hostsAPIGetHosts :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Get '[JSON] [RunningServer],
     _hostsAPIDeleteHost :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> Delete '[JSON] ()
   }
@@ -39,23 +42,26 @@ hostsAPI =
       _hostsAPIHeartbeat = postHostsHeartbeat,
       _hostsAPIGetIPsForDns = getHostsForDns,
       _hostsAPIGetDomainsForOnDemandResolver = getDomainsForOnDemandResolver,
+      _hostsAPIOnDemandCheck = onDemandCheck,
       _hostsAPIGetHosts = getHosts,
       _hostsAPIDeleteHost = deleteHost
     }
 
 data HostList = HostList
   { hostList :: [Host],
-    hostBaseUrl :: Text
+    hostBaseUrl :: Text,
+    -- | Base domain for deployed servers (Env.hostingDomain).
+    hostDomain :: Text
   }
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON HostList where
-  toJSON (HostList hosts baseUrl) =
+  toJSON (HostList hosts baseUrl domain) =
     let routerMapPair serviceDomain ruleDomain =
           ( ruleDomain,
             [aesonQQ| {
               service: #{serviceDomain},
-              rule: #{"Host(`" <> ruleDomain <> ".garnix.me`)"},
+              rule: #{"Host(`" <> ruleDomain <> "." <> domain <> "`)"},
               middlewares: ["heartbeatmiddleware"]
               }
             |]
@@ -101,6 +107,7 @@ instance ToJSON HostList where
 getHostsForTraefik :: M HostList
 getHostsForTraefik = do
   baseUrl <- view #baseUrl
+  domain <- view #hostingDomain
   hosts <-
     DB.getAllRunningHosts
       <&> filter
@@ -110,7 +117,7 @@ getHostsForTraefik = do
               && (isValidSubdomainString (host ^. branch . to getBranch) || isJust (host ^. pullRequest))
               && isValidSubdomainString (host ^. packageName . to getPackageName)
         )
-  pure $ HostList hosts baseUrl
+  pure $ HostList hosts baseUrl domain
 
 postHostsHeartbeat :: [Text] -> M NoContent
 postHostsHeartbeat hosts = NoContent <$ DB.upsertHeartbeat hosts
@@ -179,17 +186,25 @@ data OnDemandResolverDomainNames = OnDemandResolverDomainNames
 
 getDomainsForOnDemandResolver :: M OnDemandResolverDomainNames
 getDomainsForOnDemandResolver = do
+  domain <- view #hostingDomain
   runningHosts <- DB.getAllRunningHosts
   pure
     $ OnDemandResolverDomainNames
       { domains =
           concatMap
             ( \host ->
-                [hostToDomainName host <> ".garnix.me"]
-                  <> if host ^. isPrimary then [hostToPrimaryDomainName host <> ".garnix.me"] else []
+                [hostToDomainName host <> "." <> domain]
+                  <> if host ^. isPrimary then [hostToPrimaryDomainName host <> "." <> domain] else []
             )
             runningHosts
       }
+
+onDemandCheck :: Maybe Text -> M NoContent
+onDemandCheck mDomain = do
+  OnDemandResolverDomainNames names <- getDomainsForOnDemandResolver
+  case mDomain of
+    Just d | d `elem` names -> pure NoContent
+    _ -> throw NotFound
 
 hostToPrimaryDomainName :: Host -> Text
 hostToPrimaryDomainName host =

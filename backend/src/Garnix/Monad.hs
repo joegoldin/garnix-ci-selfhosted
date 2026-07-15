@@ -80,6 +80,9 @@ data Env = Env
     jwtSettings :: JWTSettings,
     dbConn :: DatabaseConnection,
     baseUrl :: Text,
+    -- | Base domain under which deployed servers are exposed (upstream:
+    -- "garnix.me"). Overridden via GARNIX_HOSTING_DOMAIN for self-hosting.
+    hostingDomain :: Text,
     cacheUrl :: Text,
     cachePublicKey :: Text,
     selfHostMode :: Bool,

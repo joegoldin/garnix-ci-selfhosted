@@ -52,14 +52,15 @@ rolloutNewServerVersion reporter commitInfo deploymentType =
 
 stopUnusedServers :: M ()
 stopUnusedServers = do
+  domain <- view #hostingDomain
   (PrHostList runningServers) <- DB.getShutdownCandidates
   heartbeat <- DB.getRecentHeartbeats
-  let toSpinDown = filter (haveNotSentHeartbeat heartbeat) runningServers
+  let toSpinDown = filter (haveNotSentHeartbeat domain heartbeat) runningServers
   traverse_ (\s -> stopServer (s ^. serverId) (s ^. hetznerId)) toSpinDown
   where
-    haveNotSentHeartbeat :: [Text] -> Host -> Bool
-    haveNotSentHeartbeat heartbeats host =
-      let hostName = hostToDomainName host <> ".garnix.me"
+    haveNotSentHeartbeat :: Text -> [Text] -> Host -> Bool
+    haveNotSentHeartbeat domain heartbeats host =
+      let hostName = hostToDomainName host <> "." <> domain
        in hostName `notElem` heartbeats
 
 getDeployPlan ::
@@ -330,6 +331,7 @@ startServer = curry4
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
           let logs = showPretty (err error)
           DB.appendToServerDeployLog (serverInfo ^. id) logs
+      domain <- view #hostingDomain
       let logs =
             T.unlines
               [ "Server has been successfully deployed to: https://"
@@ -340,7 +342,8 @@ startServer = curry4
                   <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
                   <> "."
                   <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
-                  <> ".garnix.me",
+                  <> "."
+                  <> domain,
                 "ipv4: " <> serverInfo ^. ipv4Addr,
                 "ipv6: " <> serverInfo ^. ipv6Addr,
                 "",
@@ -370,6 +373,7 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
                 & readyAt
                 ?~ now
         DB.updateServerPostDeploy serverInfo' <?> "Updating DB about the redeployed server"
+        domain <- view #hostingDomain
         let logs =
               T.unlines
                 [ "Server has been successfully redeployed to: https://"
@@ -380,7 +384,8 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
                     <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
                     <> "."
                     <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
-                    <> ".garnix.me",
+                    <> "."
+                    <> domain,
                   "ipv4: " <> serverInfo ^. ipv4Addr,
                   "ipv6: " <> serverInfo ^. ipv6Addr,
                   "",
