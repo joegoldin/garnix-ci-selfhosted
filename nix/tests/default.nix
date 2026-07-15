@@ -119,16 +119,6 @@ let
     garnix5 = { };
     monitoring = { };
     hosting-gateway1 = { };
-    ns1 = {
-      scriptFun = name: ''
-        ${name}.wait_for_unit("dns-server.service")
-        sockets = ${name}.wait_until_succeeds("ss --tcp --udp --numeric --listening --process --no-header '( sport 53 )' | rg -i 'dns'", 30).strip()
-        print(sockets)
-        count = len(sockets.split("\n"))
-        # 2 IPv4 addresses + 1 IPv6 loopback address, each on tcp and udp
-        assert (count == 6), f"The DNS server did not bind to all addresses, found: {count}"
-      '';
-    };
     opensearch1 = {
       extraModules = [
         {

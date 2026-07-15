@@ -9,7 +9,6 @@ let
     arm-server-0 = { };
     arm-1 = { };
     hosting-gateway1 = { };
-    ns1 = { };
     opensearch1 = { };
     opensearch2 = { };
     opensearch3 = { };
