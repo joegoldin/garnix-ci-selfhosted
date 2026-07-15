@@ -404,6 +404,92 @@ myservice.otherServiceURL =
   "http://" + garnix-lib.lib.getHashSubdomain self.nixosConfigurations.machine1;
 ```
 
+## Server deployments (self-host microVM hosting)
+
+Upstream deploys servers as Hetzner Cloud VMs. In self-host mode the same
+deploy pipeline targets local [microvm.nix](https://github.com/microvm-nix/microvm.nix)
+guests on the garnix host instead: a root daemon (`garnix-provisionerd`,
+`provisioner/nixos-module.nix`) creates/destroys microVMs on a host-only
+bridge (default `garnixbr0`, `10.111.0.0/24`, dnsmasq DHCP with per-MAC
+reservations, NAT to your uplink), and the backend selects the local
+provisioner whenever `services.garnixServer.provisionerSocket` is set. The
+SSH deploy path is unchanged: `nix-copy-closure` into the guest, then
+`switch-to-configuration switch`.
+
+Host wiring (the fork stays input-free, so you import microvm.nix yourself):
+
+```nix
+imports = [
+  "${garnix-ci}/provisioner/nixos-module.nix"
+  microvm-nix.nixosModules.host
+];
+microvm.host.enable = true;
+garnix.local-provisioner = {
+  enable = true;
+  uplinkInterface = "eno1";              # your default-route interface
+  nixpkgsFlake = "path:${nixpkgs}";      # store-path pins: no network fetch
+  microvmFlake = "path:${microvm-nix}";
+};
+services.garnixServer = {
+  hostingDomain = "apps.garnix.example.com";
+  provisionerSocket = "/run/garnix-provisioner/provisioner.sock";
+  provisionServerPool = true;            # pre-warm the pool (default: one i2x4)
+};
+```
+
+Routing: deployed servers live at `<pkg>.<branch>.<repo>.<owner>.<hostingDomain>`
+(primary deploys also at `<repo>.<owner>.<hostingDomain>`). Point a wildcard
+DNS record `*.<hostingDomain>` (DNS-only, no proxy) at the host, run Traefik
+against the backend's dynamic config, and front it with Caddy on-demand TLS —
+per-SNI certs gated by `GET /api/hosts/on-demand-check?domain=`, which avoids
+needing a wildcard cert for the two- and four-label app domains:
+
+```nix
+services.traefik = {
+  enable = true;
+  staticConfigOptions = {
+    entryPoints.web.address = "127.0.0.1:8090";
+    providers.http = {
+      endpoint = "http://127.0.0.1:8321/api/hosts/traefik";
+      pollInterval = "5s";
+    };
+  };
+};
+services.caddy.globalConfig = ''
+  on_demand_tls {
+    ask http://127.0.0.1:8321/api/hosts/on-demand-check
+  }
+'';
+services.caddy.virtualHosts."https://".extraConfig = ''
+  tls {
+    on_demand
+  }
+  reverse_proxy 127.0.0.1:8090
+'';
+```
+
+Guest contract: every deployed `nixosConfiguration` MUST import
+`microvm.nixosModules.microvm` and `garnix-ci.nixosModules.garnix-guest`
+(fixed volume/share/network conventions — 20 GiB root, 20 GiB writable store
+overlay, virtiofs read-only store, DHCP) and set `garnix.guest.sshPublicKey`
+to the instance's hosting public key (derived at service start into
+`/var/lib/garnix-provisioner/hosting.pub`). See
+[`examples/hello-server/flake.nix`](examples/hello-server/flake.nix) for a
+complete user repo.
+
+Machine tiers map to guest resources (20 GiB root + 20 GiB overlay for all):
+
+| tier     | vCPU | RAM (MiB) |
+|----------|------|-----------|
+| `i2x4`   | 2    | 4096      |
+| `i4x8`   | 4    | 8192      |
+| `i8x16`  | 8    | 16384     |
+| `i16x32` | 16   | 32768     |
+
+Deferred (documented, not implemented): guest IPv6 (recorded as `""`),
+heartbeat-based reaping (disabled in self-host; deploys tear servers down),
+and pool autostart across host reboots (the pool refills itself).
+
 ## Step 10 — Remote builders (optional)
 
 ```nix
