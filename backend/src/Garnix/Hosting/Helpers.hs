@@ -42,7 +42,10 @@ data RunningServer = RunningServer
     _runningServerConfigurationBuildId :: BuildId,
     _runningServerCommit :: CommitHash,
     _runningServerIpv4 :: Maybe Text,
-    _runningServerDeployLogs :: Text
+    _runningServerDeployLogs :: Text,
+    -- | Public URL the deployed server is reachable at once Online
+    -- (<pkg>.<branch|pull-N>.<repo>.<owner>.<hostingDomain>).
+    _runningServerUrl :: Text
   }
   deriving stock (Eq, Show, Generic)
 
@@ -51,11 +54,23 @@ instance ToJSON RunningServer where
 
 getRunningAndRecentServersForOwners :: [GhRepoOwner] -> M [RunningServer]
 getRunningAndRecentServersForOwners owners = do
+  domain <- view #hostingDomain
+  let mkUrl typ repoName repoUser packageName =
+        "https://"
+          <> getPackageName packageName
+          <> "."
+          <> fromDeploymentType getBranch (("pull-" <>) . show . getGhPullRequestId) typ
+          <> "."
+          <> getGhRepoName repoName
+          <> "."
+          <> getGhLogin (getGhRepoOwner repoUser)
+          <> "."
+          <> domain
   mapMaybe
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName)
     )
     <$> DB.pgQuery
       [pgSQL|

@@ -32,7 +32,12 @@
         {
           garnix.guest.sshPublicKey = "<YOUR HOSTING PUBLIC KEY>";
           services.nginx.enable = true;
-          services.nginx.virtualHosts."_".locations."/".return = ''200 "hello from garnix hosting"'';
+          # `return 200 "..."` defaults to Content-Type application/octet-stream
+          # (browsers download it), so set an explicit HTML type.
+          services.nginx.virtualHosts."_".locations."/".extraConfig = ''
+            default_type "text/html; charset=utf-8";
+            return 200 "<!doctype html><h1>hello from garnix hosting</h1>";
+          '';
         }
       ];
     };

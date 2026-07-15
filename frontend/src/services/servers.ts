@@ -29,6 +29,7 @@ const runningServerSchema = z.object({
   ipv4: z.string().optional(),
   created_at: z.coerce.date().optional(),
   deploy_logs: z.string(),
+  url: z.string(),
 });
 export type RunningServer = z.infer<typeof runningServerSchema>;
 
