@@ -9,7 +9,7 @@
   # (/var/lib/garnix-provisioner/hosting.pub on the garnix host) or redeploys
   # will lock the backend out of the guest.
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     microvm.url = "github:microvm-nix/microvm.nix";
     microvm.inputs.nixpkgs.follows = "nixpkgs";
     garnix-ci.url = "github:joegoldin/garnix-ci/self-hosting";
