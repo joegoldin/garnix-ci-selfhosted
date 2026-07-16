@@ -154,6 +154,18 @@
 - [ ] **Step 2:** Build the href as `https://garnix.io/docs/modules/${module.name}` (open in a new tab, `rel="noopener noreferrer"`). Keep the Source link (`https://github.com/${repo_user}/${repo_name}`) unchanged. If a configurable docs base is preferred over hardcoding, thread it from `/api/config` — but default to `https://garnix.io/docs/modules/`.
 - [ ] **Step 3: Gate** `nix build .#frontend_default` **+ Commit** `fix(modules): point per-module Documentation links at /docs/modules/<name>`.
 
+### Task 12: Configurable microVM size in garnix.yaml
+
+**Files:** `backend/src/Garnix/YamlConfig.hs` (`DeploySection`/`ServerSection`), `backend/.golden/.../golden`, `backend/src/Garnix/Hosting/Deploy.hs`, `README.md`, `backend/test/spec/Garnix/YamlConfigSpec.hs`, `backend/test/spec/Garnix/DeploySpec.hs`.
+
+**Context:** `on-branch` deployments already accept `machine: i4x8` (the `ServerTier` field, default `i2x4`) — `I2x4|I4x8|I8x16|I16x32`, mapped to `(vcpu, mem-MiB)` by `tierResources` (Task 3). `on-pull-request` deployments hardcode `def` (`i2x4`). This task makes the size configurable for PR deploys too and documents it.
+
+- [ ] **Step 1:** In `YamlConfig.hs`, add a `machine`/tier field to the `OnPullRequest` `DeploySection` variant (`optionalFieldWithDefault "machine" (def :: ServerTier) "MicroVM size (i2x4|i4x8|i8x16|i16x32)."`), so both deployment types carry a tier. In `Deploy.hs` `wantedPackagesMapping`, use the PR section's tier instead of `def`.
+- [ ] **Step 2:** Regenerate the golden (the `on-pull-request` deployment gets a `machine` string property).
+- [ ] **Step 3:** Update fixtures (`OnPullRequest` constructions gain the tier).
+- [ ] **Step 4: `README.md`** — document `machine` on both deployment types + the tier→resources table (already present).
+- [ ] **Step 5: Gate + Commit** `feat(yaml): configurable microVM size (machine) for PR deploys too`.
+
 ## Self-review notes
 - **Spec coverage:** billing (T1,T4,T6,T7) · plan limits (T2,T4) · Hetzner+rename (T3,T4,T7) · usage-query rewrite (T4) · SSH redesign+hardening+ssh_user (T5) · frontend (T6) · nix/secrets (T7) · tests (T8) · README/cookbooks (T9) · skill (T10) · module Documentation links (T11). No gap.
 - **KEEP list honoured:** usage tracking, Configure timeouts, `SubscriptionType`, `ServerTier`, `LocalProvisioner`, monitoring, forge — none deleted.
