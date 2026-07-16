@@ -163,6 +163,8 @@ sshArgsFor server = do
              "StrictHostKeychecking=no",
              "-o",
              "UserKnownHostsFile=/dev/null",
+             "-o",
+             "ConnectTimeout=15",
              "-p",
              port
            ]

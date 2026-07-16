@@ -437,6 +437,22 @@ runWith opts = do
     (Garnix.buildLogsReportingPort opts)
     $ \env -> do
       serveMetrics (env ^. #selfHostMode) (Garnix.metricsPort opts) (env ^. #metrics)
+      -- Builds/runs left non-terminal by the previous process can never
+      -- finish (their threads died with it) and would show "running" forever.
+      -- Close them out before serving. Self-host only: with a fleet this
+      -- would cancel other servers' in-flight work.
+      when (env ^. #selfHostMode) $ do
+        runM env DB.cancelOrphanedWork >>= \case
+          Right (orphanedBuilds, orphanedRuns)
+            | orphanedBuilds + orphanedRuns > 0 ->
+                hPutStrLn stderr
+                  $ "Cancelled orphaned work from previous process: "
+                  <> show orphanedBuilds
+                  <> " builds, "
+                  <> show orphanedRuns
+                  <> " runs"
+          Right _ -> pure ()
+          Left err -> hPutStrLn stderr $ "Failed to cancel orphaned work: " <> show err
       -- The heartbeat reaper needs the Traefik heartbeat middleware to be
       -- reporting; in self-host mode servers are torn down by deploy plans
       -- instead, so skip it rather than reap every server.
