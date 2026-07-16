@@ -18,6 +18,7 @@ const Page = ({ params }: { params: { slug: string } }) => {
       shouldPoll: (result) =>
         match(result)
           .with(Err(P._), () => true)
+          .with(Ok({ status: "Pending" }), () => true)
           .with(Ok({ status: "Running" }), () => true)
           .with(Ok(P._), () => false)
           .exhaustive(),

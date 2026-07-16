@@ -453,6 +453,30 @@ makeNewBuildForBuildId reqUser buildId evalHost = do
     [] -> throw $ NoSuchBuild buildId
     _ -> throw $ OtherError "Impossible: more than one result"
 
+-- | Close out builds and runs left non-terminal by a previous backend process:
+-- their driving threads died with it, so they can never finish — without this
+-- they show "running" forever in the UI after every deploy/restart. Returns
+-- (builds, runs) closed. Self-host only (single backend); a fleet would
+-- cancel other servers' in-flight work.
+cancelOrphanedWork :: M (Int, Int)
+cancelOrphanedWork = do
+  now <- liftIO getCurrentTime
+  orphanedBuilds <-
+    pgExec
+      [pgSQL|
+        UPDATE builds
+        SET status = ${Just Cancelled}, end_time = ${now}
+        WHERE status IS NULL
+      |]
+  orphanedRuns <-
+    pgExec
+      [pgSQL|
+        UPDATE runs
+        SET status = ${Just Cancelled}, end_time = ${now}
+        WHERE status IS NULL
+      |]
+  pure (orphanedBuilds, orphanedRuns)
+
 -- | Cancel every still-unfinished build of *older* pushes to the same branch
 -- (same repo, different commit, not a PR from a fork). Used when garnix.yaml
 -- sets cancelSupersededBuilds; running builds notice via abortOnCancellation.
@@ -862,14 +886,14 @@ getRuns :: GhRepoOwner -> GhRepoName -> CommitHash -> M [Run]
 getRuns repoOwner repoName commitHash = do
   pgQuery
     [pgSQL|
-      SELECT id, name, repo_user, repo_name, git_commit, branch, status, req_user, start_time, end_time
+      SELECT id, name, repo_user, repo_name, git_commit, branch, status, req_user, start_time, end_time, run_started_at
       FROM runs
       WHERE git_commit = ${commitHash}
         AND repo_user = ${repoOwner}
         AND repo_name = ${repoName}
     |]
     <&> map
-      ( \(id, name, repoOwner, repoName, gitCommit, branch, status, reqUser, startTime, endTime) ->
+      ( \(id, name, repoOwner, repoName, gitCommit, branch, status, reqUser, startTime, endTime, runStartedAt) ->
           Run
             { _runId = id,
               _runName = name,
@@ -880,7 +904,8 @@ getRuns repoOwner repoName commitHash = do
               _runStatus = status,
               _runReqUser = reqUser,
               _runStartTime = startTime,
-              _runEndTime = endTime
+              _runEndTime = endTime,
+              _runRunStartedAt = runStartedAt
             }
       )
 
@@ -889,12 +914,12 @@ getRun runId = do
   result <-
     pgQuery
       [pgSQL|
-        SELECT id, name, repo_user, repo_name, git_commit, branch, status, req_user, start_time, end_time
+        SELECT id, name, repo_user, repo_name, git_commit, branch, status, req_user, start_time, end_time, run_started_at
         FROM runs
         WHERE id = ${runId}
       |]
       <&> map
-        ( \(id, name, repoOwner, repoName, gitCommit, branch, status, reqUser, startTime, endTime) ->
+        ( \(id, name, repoOwner, repoName, gitCommit, branch, status, reqUser, startTime, endTime, runStartedAt) ->
             Run
               { _runId = id,
                 _runName = name,
@@ -905,7 +930,8 @@ getRun runId = do
                 _runStatus = status,
                 _runReqUser = reqUser,
                 _runStartTime = startTime,
-                _runEndTime = endTime
+                _runEndTime = endTime,
+                _runRunStartedAt = runStartedAt
               }
         )
   case result of
@@ -922,6 +948,19 @@ setRunStatus runId status =
         SET status = ${status},
             end_time = NOW()
         WHERE id = ${runId}
+      |]
+
+-- | Mark a run as having produced output (idempotent: only the first call
+-- sets the timestamp). Runs stay "pending" in the UI until this is set.
+markRunRunning :: RunId -> M ()
+markRunRunning runId = do
+  now <- liftIO getCurrentTime
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE runs
+        SET run_started_at = ${now}
+        WHERE id = ${runId} AND run_started_at IS NULL
       |]
 
 newRun :: Text -> CommitInfo -> M Run
@@ -953,7 +992,8 @@ newRun name commitInfo = do
                 _runStatus = status,
                 _runReqUser = reqUser,
                 _runStartTime = startTime,
-                _runEndTime = Nothing
+                _runEndTime = Nothing,
+                _runRunStartedAt = Nothing
               }
         )
   case result of

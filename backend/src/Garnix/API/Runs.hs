@@ -48,7 +48,8 @@ data RunSummary = RunSummary
     _runSummaryBranch :: Maybe Branch,
     _runSummaryStatus :: Maybe Status,
     _runSummaryStartTime :: UTCTime,
-    _runSummaryEndTime :: Maybe UTCTime
+    _runSummaryEndTime :: Maybe UTCTime,
+    _runSummaryRunStartedAt :: Maybe UTCTime
   }
   deriving (Eq, Show, Generic)
 
@@ -63,7 +64,8 @@ toRunSummary run@(Run {_runId, _runName, _runStatus, _runStartTime, _runEndTime}
       _runSummaryBranch = run ^. branch,
       _runSummaryStatus = _runStatus,
       _runSummaryStartTime = _runStartTime,
-      _runSummaryEndTime = _runEndTime
+      _runSummaryEndTime = _runEndTime,
+      _runSummaryRunStartedAt = run ^. runStartedAt
     }
 
 instance ToJSON RunSummary where

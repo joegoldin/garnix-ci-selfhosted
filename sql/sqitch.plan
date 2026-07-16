@@ -5,3 +5,4 @@ init 2026-05-20T00:00:00Z Julian K. Arni <julian.arni@artificial.io> # Initializ
 add-builds-forge 2026-07-14T09:00:00Z joegoldin <joe@joegold.in> # Add forge discriminator to builds (github/gitea)
 add-build-timeout-config 2026-07-14T19:00:00Z joegoldin <joe@joegold.in> # Configurable build/eval timeout: global default + per-repo overrides
 add-builds-run-started-at 2026-07-14T20:00:00Z joegoldin <joe@joegold.in> # Record when a build starts executing (pending vs running)
+add-runs-run-started-at 2026-07-16T08:00:00Z joegoldin <joe@joegold.in> # Runs stay pending until first output (run_started_at on runs)

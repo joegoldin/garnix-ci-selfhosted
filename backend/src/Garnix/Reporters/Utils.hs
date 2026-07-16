@@ -10,7 +10,9 @@ import Control.Concurrent.Async.Lifted qualified as Async
 import Cradle qualified
 import Cradle.ProcessConfiguration (ProcessConfiguration (..), addHandle)
 import Data.Function (applyWhen)
+import Data.IORef (atomicModifyIORef', newIORef)
 import Garnix.BuildLogs.Types (mkLogLine)
+import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.SafeUnix (safeCreatePipe)
@@ -21,7 +23,21 @@ import System.IO qualified
 
 withRunReporter :: Reporter -> ReportType -> (RunReporter -> M a) -> M a
 withRunReporter report reportType action = do
-  runReporter <- createNewRun report reportType
+  runReporter' <- createNewRun report reportType
+  -- Every run kind (actions, FOD checks, module publish, deployments) stays
+  -- "pending" until its first line of output, like builds do (see
+  -- markRunningOnFirstLog in Garnix.Build.Reporting).
+  runReporter <- case reportType of
+    ReportRun run -> do
+      pendingRef <- liftIO $ newIORef True
+      pure
+        runReporter'
+          { reportLogs = \logLine -> do
+              isFirst <- liftIO $ atomicModifyIORef' pendingRef (\p -> (False, p))
+              when isFirst $ DB.markRunRunning (_runId run)
+              reportLogs runReporter' logLine
+          }
+    _ -> pure runReporter'
   catchEither (action runReporter) $ \e -> do
     let message = case e of
           Right e -> show $ pretty $ err e

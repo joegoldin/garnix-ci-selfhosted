@@ -699,7 +699,10 @@ data Run = Run
     _runStatus :: Maybe Status,
     _runReqUser :: GhLogin,
     _runStartTime :: UTCTime,
-    _runEndTime :: Maybe UTCTime
+    _runEndTime :: Maybe UTCTime,
+    -- | When the run produced its first line of output; Nothing while it is
+    -- still pending (mirrors builds.run_started_at).
+    _runRunStartedAt :: Maybe UTCTime
   }
   deriving stock (Eq, Show, Generic)
 
