@@ -66,9 +66,14 @@ NixOS machine. Everything below uses example values — substitute your own:
   dashboard of instance (Prometheus), host (node-exporter), job, and deployment
   stats. See [Monitoring](#monitoring).
 - **SSH into deployed servers + extra ports** — `garnix.yaml` `servers[]` gains
-  `sshKeys`/`sshExpose`/`ports`; reach guests via tailscale, ProxyJump, or DNAT,
-  and expose extra http/tcp ports. See
+  `exposeSSH` (public DNAT), `authorizeDeployerGithubKeys`, `authorizedSSHKeys`,
+  and `ports`; reach guests via tailscale, ProxyJump, or DNAT, and expose extra
+  http/tcp ports. The guest's `garnix` user is login-closed and password auth is
+  off by default. See
   [SSH into a deployed server](#ssh-into-a-deployed-server-and-expose-extra-ports).
+- **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
+  picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
+  [Server deployments](#server-deployments-self-host-microvm-hosting).
 - **sops made optional** — bring your own secrets manager (agenix, sops, plain
   files); the backend reads `/run/secrets/<name>` paths or env vars.
 - Single-host adaptations: no Hetzner fleet required (`buildMachines` for
@@ -333,6 +338,11 @@ builds:
     - "nixosConfigurations.*"
 ```
 
+**Fixed-output derivation (FOD) checks** are **on by default** in this fork
+(`fodChecks: true`) — garnix rebuilds FODs (fetchers, `vendorHash`/`cargoHash`
+closures) ignoring the cache so a stale or wrong hash surfaces in CI. Set
+`fodChecks: false` in `garnix.yaml` to opt out.
+
 **Only the latest commit matters?** Set `cancelSupersededBuilds: true` in
 `garnix.yaml` and a new push to a branch cancels the still-queued/running
 builds of older commits on that branch (PR-from-fork builds are untouched).
@@ -451,7 +461,7 @@ garnix.local-provisioner = {
 services.garnixServer = {
   hostingDomain = "apps.garnix.example.com";
   provisionerSocket = "/run/garnix-provisioner/provisioner.sock";
-  provisionServerPool = true;            # pre-warm the pool (default: one i2x4)
+  provisionServerPool = true;            # pre-warm the pool (default: one i1x1)
 };
 ```
 
@@ -495,14 +505,35 @@ to the instance's hosting public key (derived at service start into
 [`examples/hello-server/flake.nix`](examples/hello-server/flake.nix) for a
 complete user repo.
 
-Machine tiers map to guest resources (20 GiB root + 20 GiB overlay for all):
+Pick a size per server with `deployment.machine` in `garnix.yaml` (default
+`i1x1`); the tier name encodes `<vCPU>x<GiB>` and maps to guest resources
+(20 GiB root + 20 GiB writable-store overlay for every tier):
 
-| tier     | vCPU | RAM (MiB) |
-|----------|------|-----------|
-| `i2x4`   | 2    | 4096      |
-| `i4x8`   | 4    | 8192      |
-| `i8x16`  | 8    | 16384     |
-| `i16x32` | 16   | 32768     |
+```yaml
+servers:
+  - configuration: myServer
+    deployment:
+      branch: main
+      machine: i2x4        # 2 vCPU, 4 GiB — omit for the i1x1 default
+```
+
+| tier              | vCPU | RAM (MiB) |
+|-------------------|------|-----------|
+| `i1x1` (default)  | 1    | 1024      |
+| `i1x2`            | 1    | 2048      |
+| `i2x2`            | 2    | 2048      |
+| `i2x3`            | 2    | 3072      |
+| `i2x4`            | 2    | 4096      |
+| `i4x2`            | 4    | 2048      |
+| `i4x4`            | 4    | 4096      |
+| `i4x8`            | 4    | 8192      |
+| `i8x8`            | 8    | 8192      |
+| `i8x16`           | 8    | 16384     |
+| `i16x16`          | 16   | 16384     |
+| `i16x32`          | 16   | 32768     |
+
+The pool pre-warms `provisionServerPool`-configured tiers; override the set with
+`GARNIX_SERVER_POOL` (format `i1x1:1,i4x4:0`).
 
 Deferred (documented, not implemented): guest IPv6 (recorded as `""`),
 heartbeat-based reaping (disabled in self-host; deploys tear servers down),
@@ -510,38 +541,61 @@ and pool autostart across host reboots (the pool refills itself).
 
 ### SSH into a deployed server, and expose extra ports
 
-`garnix.yaml` `servers[]` entries take three optional networking fields:
+`garnix.yaml` `servers[]` entries take four optional networking fields.
+**Reachability** (`exposeSSH`) and **login authorization**
+(`authorizeDeployerGithubKeys` / `authorizedSSHKeys`) are independent — you
+usually want both:
 
 ```yaml
 servers:
   - configuration: myServer
     deployment:
       branch: main
-    # Extra authorized keys for the guest's `garnix` user (in addition to the
-    # deployer's GitHub keys, which are authorized automatically).
-    sshKeys:
+      machine: i2x2
+    # Reachability: open a public DNAT port forwarding to the guest's :22.
+    # This does NOT grant login by itself.
+    exposeSSH: true
+    # Login: authorize the deployer's github.com/<user>.keys on the garnix user.
+    authorizeDeployerGithubKeys: true
+    # Login: authorize extra explicit keys on the garnix user.
+    authorizedSSHKeys:
       - "ssh-ed25519 AAAA... me@laptop"
-    # Also publish SSH on a public host port via DNAT (see below).
-    sshExpose: true
     # Extra ports. `http` -> a Traefik subdomain; `tcp` -> a raw host port.
     ports:
       - { name: api, port: 8080, type: http }
       - { name: db,  port: 5432, type: tcp }
 ```
 
-**SSH.** When a server declares `sshKeys` or `sshExpose`, garnix drops an
-`authorized_keys` file onto the guest's `garnix` user at deploy time (the
-deployer's `github.com/<user>.keys` plus any `sshKeys`). Three ways to reach it,
-shown with copyable commands on the **Servers** page:
+**Hardened by default.** The guest's `garnix` user is the deploy identity, not a
+login account: password authentication is disabled (`PasswordAuthentication no`,
+`KbdInteractiveAuthentication no`), root is key-only, and the `garnix` user has
+**no authorized keys** unless you opt in. It only becomes loginable when you set
+`authorizeDeployerGithubKeys: true` and/or list `authorizedSSHKeys` (garnix then
+writes `/var/garnix/keys/authorized_keys` at deploy time). Once authorized,
+three ways to reach it, shown with copyable commands on the **Servers** page:
 
 - **Tailscale** — advertise the guest subnet from the host
   (`services.tailscale.useRoutingFeatures = "server"` +
   `--advertise-routes=10.111.0.0/24`, approved in the tailnet admin), then
-  `ssh garnix@<internal-ip>` directly.
+  `ssh garnix@<internal-ip>` directly (no `exposeSSH` needed).
 - **ProxyJump** — `ssh -J <host> garnix@<internal-ip>`, jumping through the
   garnix host (`services.garnixServer.sshHost`).
-- **DNAT** — with `sshExpose: true`, the provisioner opens a deterministic
+- **DNAT** — with `exposeSSH: true`, the provisioner opens a deterministic
   public host port (`sshExposePortBase + id%1000`); `ssh -p <port> garnix@<host>`.
+
+**Bring your own login user (fully manual).** If you'd rather not touch the
+`garnix` user, declare an ordinary login user in the deployed
+`nixosConfiguration` — same pattern as
+[garnix-io/user-module](https://github.com/garnix-io/user-module) — and use
+`exposeSSH: true` (or tailscale) purely for reachability:
+
+```nix
+users.users.me = {
+  isNormalUser = true;
+  extraGroups = [ "wheel" ];
+  openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAA... me@laptop" ];
+};
+```
 
 **Extra ports.** `http` ports are served at `<name>.<pkg>.<branch>.<repo>.<owner>.<hostingDomain>`
 via Traefik (on-demand TLS issues for them automatically). `tcp` ports get a

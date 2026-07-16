@@ -21,7 +21,16 @@
         deployment = {
           type = "on-branch";
           branch = "main";
+          # Optional microVM size; omit for the i1x1 default (1 vCPU, 1 GiB).
+          # machine = "i2x2";
         };
+        # Optional SSH access to the guest's `garnix` user (login-closed and
+        # password-auth-off by default). `exposeSSH` only opens a public DNAT
+        # port; authorize a login too via the fields below (or reach it over
+        # tailscale / ProxyJump without exposeSSH).
+        # exposeSSH = true;
+        # authorizeDeployerGithubKeys = true;   # your github.com/<user>.keys
+        # authorizedSSHKeys = [ "ssh-ed25519 AAAA... me@laptop" ];
       }
     ];
     nixosConfigurations.hello = nixpkgs.lib.nixosSystem {
