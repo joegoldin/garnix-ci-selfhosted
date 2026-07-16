@@ -483,7 +483,9 @@ cancelOrphanedWork = do
 -- finished; pending = created but not started.
 getJobCounts :: M (Int64, Int64, Int64, Int64)
 getJobCounts = do
-  [(rb, pb)] <-
+  -- headDef instead of a `[(rb,pb)] <-` failable pattern: M has no MonadFail.
+  -- The aggregate always returns exactly one row.
+  buildCounts <-
     pgQuery
       [pgSQL|!
         SELECT
@@ -491,7 +493,7 @@ getJobCounts = do
           COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL)
         FROM builds
       |]
-  [(rr, pr)] <-
+  runCounts <-
     pgQuery
       [pgSQL|!
         SELECT
@@ -499,6 +501,8 @@ getJobCounts = do
           COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL)
         FROM runs
       |]
+  let (rb, pb) = case buildCounts of (x : _) -> x; [] -> (0, 0)
+      (rr, pr) = case runCounts of (x : _) -> x; [] -> (0, 0)
   pure (rb, pb, rr, pr)
 
 -- | The N most recently finished builds, with their wall-clock duration in
