@@ -20,6 +20,9 @@ import Network.Wai.EventSource (ServerEvent (..))
 import Test.QuickCheck
 import Test.QuickCheck.Instances ()
 
+instance Arbitrary Forge where
+  arbitrary = genericArbitrary uniform
+
 instance Arbitrary PackageType where
   arbitrary = genericArbitrary uniform
 
