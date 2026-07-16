@@ -14,6 +14,7 @@ where
 import Control.Concurrent.Async.Lifted qualified as Async
 import Control.Lens (traversed)
 import Cradle
+import Data.Aeson qualified as Aeson
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
@@ -22,6 +23,7 @@ import Data.Text.IO qualified as TIO
 import Garnix.API.Keys (getRepoKeys)
 import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
+import Garnix.LocalProvisioner (exposeServer)
 import Garnix.Duration
 import Garnix.Entitlements qualified as Entitlements
 import Garnix.Hosting.ServerPool qualified as ServerPool
@@ -37,6 +39,7 @@ import Garnix.Reporters.Utils (withRunReporter)
 import Garnix.Request
 import Garnix.Types
 import Garnix.YamlConfig
+import Network.Wreq qualified as Wreq
 import System.Process qualified as Proc
 
 -- | Deploys new server versions, deletes old ones.
@@ -363,6 +366,21 @@ startServer = curry4
       when (serverToSpinUp ^. #useDefaultAuthentik)
         $ copyDefaultAuthentikEnv serverInfo publicHost
         <?> "Copying default Authentik credentials"
+      -- Authorize SSH for the garnix user when the user opted in (sshExpose or
+      -- explicit sshKeys); this also grants the deployer's own GitHub keys.
+      when (serverToSpinUp ^. #sshExpose || not (null (serverToSpinUp ^. #sshKeys)))
+        $ copyAuthorizedKeys serverInfo (commitInfo ^. reqUser) (serverToSpinUp ^. #sshKeys)
+        <?> "Authorizing SSH keys"
+      -- Public port exposure (DNAT) only makes sense with the local
+      -- provisioner; persist whatever it (plus the http routers) exposes, but
+      -- only when the server actually declares ssh/ports.
+      let wantsExposure =
+            serverToSpinUp ^. #sshExpose
+              || not (null (serverToSpinUp ^. #httpPorts))
+              || not (null (serverToSpinUp ^. #tcpPorts))
+      when wantsExposure $ do
+        exposeResult <- exposeServerPorts serverInfo serverToSpinUp
+        DB.setServerExposed (serverInfo ^. id) (exposedBlob serverToSpinUp exposeResult)
       (serverInfo, stderr) <-
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
           let logs = showPretty (err error)
@@ -525,6 +543,73 @@ copyDefaultAuthentikEnv server publicHost = do
   case exitCode of
     ExitSuccess -> pure ()
     ExitFailure _ -> throw $ OtherError "Exporting default Authentik credentials to the server failed"
+
+-- | Authorize the deployer's GitHub keys (best-effort) plus any garnix.yaml
+-- sshKeys for the guest's `garnix` user, by dropping an authorized_keys file
+-- the guest profile reads via authorizedKeys.keyFiles. No-op with no keys.
+copyAuthorizedKeys :: ServerInfo -> GhLogin -> [Text] -> M ()
+copyAuthorizedKeys server deployer extraKeys = do
+  githubKeys <- fetchGithubKeys deployer
+  let keys = filter (not . T.null . T.strip) (githubKeys <> extraKeys)
+  unless (null keys) $ do
+    (ip, sshArgs) <- ServerPool.sshArgsFor server
+    let keyFile = "/var/garnix/keys/authorized_keys" :: Text
+    (exitCode, _, _) <-
+      liftIO
+        $ Proc.readProcessWithExitCode
+          "ssh"
+          ((cs <$> sshArgs) <> ["root@" <> cs ip, "mkdir -p /var/garnix/keys && cat > " <> cs keyFile <> " && chmod 444 " <> cs keyFile])
+          (cs (T.unlines keys))
+    case exitCode of
+      ExitSuccess -> pure ()
+      ExitFailure _ -> throw $ OtherError "Writing authorized_keys to the server failed"
+
+-- | The deployer's public SSH keys, via GitHub's @<login>.keys@ endpoint.
+-- Best-effort: any failure (network, non-GitHub forge, 404) yields no keys.
+fetchGithubKeys :: GhLogin -> M [Text]
+fetchGithubKeys login =
+  ( do
+      resp <-
+        withWreqOptions $ \opts ->
+          liftIO (Wreq.getWith opts (cs ("https://github.com/" <> getGhLogin login <> ".keys")))
+      pure $ filter (not . T.null . T.strip) $ T.lines $ cs (resp ^. Wreq.responseBody)
+  )
+    `catchAny` const (pure [])
+
+-- | Ask the local provisioner to expose SSH/tcp ports via host-port DNAT, when
+-- the provisioner socket is configured and something was requested. Returns
+-- Nothing on the Hetzner path or when nothing needs exposing.
+exposeServerPorts :: ServerInfo -> ServerToSpinUp -> M (Maybe ExposeResult)
+exposeServerPorts server serverToSpinUp = do
+  socket <- view #provisionerSocket
+  let sshExpose' = serverToSpinUp ^. #sshExpose
+      tcpGuestPorts = snd <$> serverToSpinUp ^. #tcpPorts
+  case socket of
+    Just sock
+      | sshExpose' || not (null tcpGuestPorts) ->
+          Just <$> exposeServer sock (_serverInfoHetznerServerId server) sshExpose' tcpGuestPorts
+    _ -> pure Nothing
+
+-- | The per-server exposure blob stored in servers.exposed:
+-- @{"ssh_port": Int|null, "tcp": [{name,guest,host}], "http": [{name,port}]}@.
+exposedBlob :: ServerToSpinUp -> Maybe ExposeResult -> Aeson.Value
+exposedBlob serverToSpinUp exposeResult =
+  Aeson.object
+    [ "ssh_port" Aeson..= (exposeResult >>= _exposeResultSshPort),
+      "tcp" Aeson..= tcpEntries,
+      "http" Aeson..= httpEntries
+    ]
+  where
+    hostForGuest = maybe [] _exposeResultTcpPorts exposeResult
+    tcpEntries =
+      [ Aeson.object ["name" Aeson..= name, "guest" Aeson..= guest, "host" Aeson..= host]
+      | (name, guest) <- serverToSpinUp ^. #tcpPorts,
+        host <- toList (lookup guest hostForGuest)
+      ]
+    httpEntries =
+      [ Aeson.object ["name" Aeson..= name, "port" Aeson..= port]
+      | (name, port) <- serverToSpinUp ^. #httpPorts
+      ]
 
 switchToConfiguration :: SshUser -> ServerInfo -> StorePath -> M Text
 switchToConfiguration (SshUser user) server storePath = do

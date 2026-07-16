@@ -9,6 +9,7 @@ module Garnix.Hosting.Helpers
   )
 where
 
+import Data.Aeson qualified as Aeson
 import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Ord
@@ -45,7 +46,10 @@ data RunningServer = RunningServer
     _runningServerDeployLogs :: Text,
     -- | Public URL the deployed server is reachable at once Online
     -- (<pkg>.<branch|pull-N>.<repo>.<owner>.<hostingDomain>).
-    _runningServerUrl :: Text
+    _runningServerUrl :: Text,
+    -- | Raw servers.exposed blob ({ssh_port, tcp, http}) when the server has
+    -- exposed SSH/ports; the frontend builds ssh commands + port links from it.
+    _runningServerExposed :: Maybe Aeson.Value
   }
   deriving stock (Eq, Show, Generic)
 
@@ -55,6 +59,7 @@ instance ToJSON RunningServer where
 getRunningAndRecentServersForOwners :: [GhRepoOwner] -> M [RunningServer]
 getRunningAndRecentServersForOwners owners = do
   domain <- view #hostingDomain
+  exposures <- DB.getServerExposures
   let mkUrl typ repoName repoUser packageName =
         "https://"
           <> getPackageName packageName
@@ -70,7 +75,7 @@ getRunningAndRecentServersForOwners owners = do
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName)
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures)
     )
     <$> DB.pgQuery
       [pgSQL|

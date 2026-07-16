@@ -8,6 +8,8 @@ module Garnix.API.Hosts
   )
 where
 
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Lens (key, values, _Integer, _String)
 import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -51,12 +53,24 @@ data HostList = HostList
   { hostList :: [Host],
     hostBaseUrl :: Text,
     -- | Base domain for deployed servers (Env.hostingDomain).
-    hostDomain :: Text
+    hostDomain :: Text,
+    -- | Per-server extra http ports (name, guest port), by server id, from
+    -- garnix.yaml servers[].ports; each becomes <name>.<server-domain>.
+    hostExtraHttpPorts :: [(ServerId, [(Text, Int)])]
   }
   deriving stock (Eq, Show, Generic)
 
+-- | Extract the http ports ([(name, port)]) from a servers.exposed blob.
+parseHttpPorts :: Aeson.Value -> [(Text, Int)]
+parseHttpPorts v =
+  [ (name, fromIntegral port)
+  | entry <- v ^.. key "http" . values,
+    name <- toList (entry ^? key "name" . _String),
+    port <- toList (entry ^? key "port" . _Integer)
+  ]
+
 instance ToJSON HostList where
-  toJSON (HostList hosts baseUrl domain) =
+  toJSON (HostList hosts baseUrl domain extraHttpPorts) =
     let routerMapPair serviceDomain ruleDomain =
           ( ruleDomain,
             [aesonQQ| {
@@ -66,25 +80,35 @@ instance ToJSON HostList where
               }
             |]
           )
+        portsFor h = fromMaybe [] (lookup (_hostServerId h) extraHttpPorts)
+        -- <name>.<pkg>.<branch>.<repo>.<owner> for an extra http port.
+        portDomain h name = name <> "." <> hostToDomainName h
 
         httpRouters =
           Map.fromList
             $ concatMap
               ( \h ->
                   [routerMapPair (hostToDomainName h) (hostToDomainName h)]
-                    <> if h ^. isPrimary then [routerMapPair (hostToDomainName h) (hostToPrimaryDomainName h)] else []
+                    <> (if h ^. isPrimary then [routerMapPair (hostToDomainName h) (hostToPrimaryDomainName h)] else [])
+                    <> [routerMapPair (portDomain h name) (portDomain h name) | (name, _) <- portsFor h]
               )
               hosts
-        httpService host =
+        serviceForUrl url =
           [aesonQQ|
             { loadBalancer:
                   { servers: [
-                     { url: #{"http://" <> _hostIpV4Addr host}}
+                     { url: #{url} }
                     ]
                   }
             }
           |]
-        httpServices = Map.fromList $ [(hostToDomainName h, httpService h) | h <- hosts]
+        httpServices =
+          Map.fromList
+            $ [(hostToDomainName h, serviceForUrl ("http://" <> _hostIpV4Addr h)) | h <- hosts]
+            <> [ (portDomain h name, serviceForUrl ("http://" <> _hostIpV4Addr h <> ":" <> cs (show port)))
+               | h <- hosts,
+                 (name, port) <- portsFor h
+               ]
      in [aesonQQ|
          {
           http:
@@ -108,6 +132,7 @@ getHostsForTraefik :: M HostList
 getHostsForTraefik = do
   baseUrl <- view #baseUrl
   domain <- view #hostingDomain
+  extraHttpPorts <- map (\(sid, blob) -> (sid, parseHttpPorts blob)) <$> DB.getServerExposures
   hosts <-
     DB.getAllRunningHosts
       <&> filter
@@ -117,7 +142,7 @@ getHostsForTraefik = do
               && (isValidSubdomainString (host ^. branch . to getBranch) || isJust (host ^. pullRequest))
               && isValidSubdomainString (host ^. packageName . to getPackageName)
         )
-  pure $ HostList hosts baseUrl domain
+  pure $ HostList hosts baseUrl domain extraHttpPorts
 
 postHostsHeartbeat :: [Text] -> M NoContent
 postHostsHeartbeat hosts = NoContent <$ DB.upsertHeartbeat hosts
@@ -187,14 +212,17 @@ data OnDemandResolverDomainNames = OnDemandResolverDomainNames
 getDomainsForOnDemandResolver :: M OnDemandResolverDomainNames
 getDomainsForOnDemandResolver = do
   domain <- view #hostingDomain
+  extraHttpPorts <- map (\(sid, blob) -> (sid, parseHttpPorts blob)) <$> DB.getServerExposures
   runningHosts <- DB.getAllRunningHosts
+  let portsFor h = fromMaybe [] (lookup (_hostServerId h) extraHttpPorts)
   pure
     $ OnDemandResolverDomainNames
       { domains =
           concatMap
             ( \host ->
                 [hostToDomainName host <> "." <> domain]
-                  <> if host ^. isPrimary then [hostToPrimaryDomainName host <> "." <> domain] else []
+                  <> (if host ^. isPrimary then [hostToPrimaryDomainName host <> "." <> domain] else [])
+                  <> [name <> "." <> hostToDomainName host <> "." <> domain | (name, _) <- portsFor host]
             )
             runningHosts
       }

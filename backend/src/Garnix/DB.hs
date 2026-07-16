@@ -4,6 +4,7 @@ import Control.Exception.Safe qualified
 import Control.Exception.Safe qualified as Safe
 import Control.Lens
 import Control.Monad.Trans.Control (liftBaseOp_)
+import Data.Aeson qualified as Aeson
 import Data.ByteString qualified
 import Data.Map qualified as Map
 import Data.Map.Strict (Map, fromList)
@@ -1581,6 +1582,35 @@ appendToServerDeployLog serverId logs = do
         SET deploy_logs = deploy_logs || ${logs} || E'\n'
         WHERE id = ${serverId}
       |]
+
+-- | Store a server's SSH/port exposure blob (see add-servers-exposed.sql). The
+-- value is encoded to text and cast to jsonb, so we don't need a jsonb PGColumn
+-- instance.
+setServerExposed :: ServerId -> Aeson.Value -> M ()
+setServerExposed serverId val = do
+  let encoded = cs (Aeson.encode val) :: Text
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE servers
+        SET exposed = ${encoded}::jsonb
+        WHERE id = ${serverId}
+      |]
+
+-- | The exposure blobs of all live servers, as an assoc list (keyed by ServerId
+-- which has no Ord instance). Read back as text and decoded; unparseable rows
+-- are dropped. Consumers join this against Host/RunningServer by server id.
+getServerExposures :: M [(ServerId, Aeson.Value)]
+getServerExposures = do
+  rows <-
+    pgQuery
+      [pgSQL|
+        SELECT servers.id, servers.exposed::text
+        FROM servers
+        WHERE servers.ended_at IS NULL
+        AND servers.exposed IS NOT NULL
+      |]
+  pure [(sid, v) | (sid, mt) <- rows, t <- toList mt, Just v <- [Aeson.decode (cs t)]]
 
 -- * Server pool
 
