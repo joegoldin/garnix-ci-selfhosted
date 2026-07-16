@@ -19,6 +19,9 @@ module Garnix.YamlConfig
     ServerSection (..),
     ServerPort (..),
     ServerPortType (..),
+    sshKeys,
+    sshExpose,
+    ports,
     _garnixConfigActions,
     actions,
     asAttributeMatcher,
@@ -63,7 +66,10 @@ import Garnix.Monad
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude
 import Garnix.Sandbox
-import Garnix.Types
+-- Hide ServerToSpinUp's sshKeys/sshExpose field selectors: they collide with
+-- this module's makeFields lenses of the same name (ServerSection), which we
+-- export instead. YamlConfig doesn't use ServerToSpinUp.
+import Garnix.Types hiding (sshExpose, sshKeys)
 import System.Directory (doesFileExist)
 
 getConfigFromFlake :: (HasCallStack) => M (Maybe GarnixConfig)
