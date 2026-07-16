@@ -10,6 +10,7 @@ import logoIcon from "@/components/icons/logo.svg";
 import { BuildsIcon } from "@/components/icons/builds";
 import { ModulesIcon } from "@/components/icons/modules";
 import { ServerIcon } from "@/components/icons/servers";
+import { MonitoringIcon } from "@/components/icons/monitoring";
 import { DocumentationIcon } from "@/components/icons/documentation";
 import { AccountIcon } from "@/components/icons/account";
 import { SettingsIcon } from "@/components/icons/settings";
@@ -17,6 +18,7 @@ import { LogoutIcon } from "@/components/icons/logout";
 import hamburgerMenuIcon from "@/components/icons/hamburgerMenu.svg";
 import { trackClick } from "@/utils/analytics";
 import { filterNull } from "@/utils";
+import { useConfig } from "@/store/configContext";
 import styles from "./styles.module.css";
 
 type Props = {
@@ -42,29 +44,39 @@ type BasicLinkProps = {
   eventName?: string;
 };
 
-const MAIN_LINK_GROUP: Array<LinkProps> = filterNull([
-  {
-    icon: <BuildsIcon className={styles.icon} />,
-    label: "Builds",
-    href: "/",
-  },
-  {
-    icon: <ServerIcon className={styles.icon} />,
-    label: "Servers",
-    href: "/servers",
-  },
-  {
-    icon: <ModulesIcon className={styles.icon} />,
-    label: "Modules",
-    href: "/modules/configure",
-  },
-  {
-    icon: <DocumentationIcon className={styles.icon} />,
-    label: "Documentation",
-    href: "/docs",
-    openNewPage: true,
-  },
-]);
+// Monitoring is self-host only (its endpoint refuses outside self-host mode),
+// so the nav item is gated on the same flag.
+const mainLinkGroup = (selfHostMode: boolean): Array<LinkProps> =>
+  filterNull([
+    {
+      icon: <BuildsIcon className={styles.icon} />,
+      label: "Builds",
+      href: "/",
+    },
+    {
+      icon: <ServerIcon className={styles.icon} />,
+      label: "Servers",
+      href: "/servers",
+    },
+    {
+      icon: <ModulesIcon className={styles.icon} />,
+      label: "Modules",
+      href: "/modules/configure",
+    },
+    selfHostMode
+      ? {
+          icon: <MonitoringIcon className={styles.icon} />,
+          label: "Monitoring",
+          href: "/monitoring",
+        }
+      : null,
+    {
+      icon: <DocumentationIcon className={styles.icon} />,
+      label: "Documentation",
+      href: "/docs",
+      openNewPage: true,
+    },
+  ]);
 
 const ACCOUNT_LINK_GROUP = (router: AppRouterInstance): LinkProps[] => [
   {
@@ -92,6 +104,7 @@ export const Navigation = ({ className }: Props) => {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = React.useState(false);
   const router = useRouter();
+  const { selfHostMode } = useConfig();
   return (
     <div className={`${styles.container} ${className}`}>
       <div className={styles.header}>
@@ -125,7 +138,7 @@ export const Navigation = ({ className }: Props) => {
         className={`${styles.linkGroupContainer} ${menuOpen && styles.open}`}
       >
         <div className={styles.linkGroup}>
-          {MAIN_LINK_GROUP.map((link) => (
+          {mainLinkGroup(selfHostMode).map((link) => (
             <NavLink key={link.label} link={link} pathname={pathname} />
           ))}
         </div>
