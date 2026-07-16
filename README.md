@@ -62,6 +62,13 @@ NixOS machine. Everything below uses example values — substitute your own:
   instance alongside GitHub (both work at once). Push webhooks trigger builds and
   results report back as Gitea commit statuses. Off unless `giteaUrl` is set. See
   [the Gitea section](#optional-gitea-as-a-second-forge).
+- **Monitoring page** (`/monitoring`, sidebar → "Monitoring") — a self-host
+  dashboard of instance (Prometheus), host (node-exporter), job, and deployment
+  stats. See [Monitoring](#monitoring).
+- **SSH into deployed servers + extra ports** — `garnix.yaml` `servers[]` gains
+  `sshKeys`/`sshExpose`/`ports`; reach guests via tailscale, ProxyJump, or DNAT,
+  and expose extra http/tcp ports. See
+  [SSH into a deployed server](#ssh-into-a-deployed-server-and-expose-extra-ports).
 - **sops made optional** — bring your own secrets manager (agenix, sops, plain
   files); the backend reads `/run/secrets/<name>` paths or env vars.
 - Single-host adaptations: no Hetzner fleet required (`buildMachines` for
@@ -500,6 +507,62 @@ Machine tiers map to guest resources (20 GiB root + 20 GiB overlay for all):
 Deferred (documented, not implemented): guest IPv6 (recorded as `""`),
 heartbeat-based reaping (disabled in self-host; deploys tear servers down),
 and pool autostart across host reboots (the pool refills itself).
+
+### SSH into a deployed server, and expose extra ports
+
+`garnix.yaml` `servers[]` entries take three optional networking fields:
+
+```yaml
+servers:
+  - configuration: myServer
+    deployment:
+      branch: main
+    # Extra authorized keys for the guest's `garnix` user (in addition to the
+    # deployer's GitHub keys, which are authorized automatically).
+    sshKeys:
+      - "ssh-ed25519 AAAA... me@laptop"
+    # Also publish SSH on a public host port via DNAT (see below).
+    sshExpose: true
+    # Extra ports. `http` -> a Traefik subdomain; `tcp` -> a raw host port.
+    ports:
+      - { name: api, port: 8080, type: http }
+      - { name: db,  port: 5432, type: tcp }
+```
+
+**SSH.** When a server declares `sshKeys` or `sshExpose`, garnix drops an
+`authorized_keys` file onto the guest's `garnix` user at deploy time (the
+deployer's `github.com/<user>.keys` plus any `sshKeys`). Three ways to reach it,
+shown with copyable commands on the **Servers** page:
+
+- **Tailscale** — advertise the guest subnet from the host
+  (`services.tailscale.useRoutingFeatures = "server"` +
+  `--advertise-routes=10.111.0.0/24`, approved in the tailnet admin), then
+  `ssh garnix@<internal-ip>` directly.
+- **ProxyJump** — `ssh -J <host> garnix@<internal-ip>`, jumping through the
+  garnix host (`services.garnixServer.sshHost`).
+- **DNAT** — with `sshExpose: true`, the provisioner opens a deterministic
+  public host port (`sshExposePortBase + id%1000`); `ssh -p <port> garnix@<host>`.
+
+**Extra ports.** `http` ports are served at `<name>.<pkg>.<branch>.<repo>.<owner>.<hostingDomain>`
+via Traefik (on-demand TLS issues for them automatically). `tcp` ports get a
+public host port via DNAT (`tcpExposePortBase + id*20 + i`); the host:port is
+shown on the Servers page. Set `services.garnixServer.sshHost` and the
+provisioner's `exposePortRange` (firewall) for the DNAT methods.
+
+### Monitoring
+
+A self-host-only **Monitoring** page (sidebar, between Modules and
+Documentation) aggregates, via `GET /api/monitoring`:
+
+- **Instance** — garnix's own Prometheus (`services.garnixServer.metricsScrapeUrl`,
+  default `127.0.0.1:<metricsPort>/metrics`): queue depths, builds attempted,
+  cache-push ratio.
+- **Host** — the machine's `node-exporter`
+  (`services.garnixServer.nodeExporterUrl`, default `127.0.0.1:9100/metrics`):
+  load, memory, disk, CPU count. Run
+  `services.prometheus.exporters.node` bound to loopback.
+- **Jobs** — running/pending builds + actions/deploys and recent build durations.
+- **Deployments** — the live servers (from `/api/hosts`).
 
 ### Locking a deployed server behind Authentik (or any OIDC provider)
 
