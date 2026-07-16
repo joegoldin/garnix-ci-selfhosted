@@ -253,6 +253,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
   hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
+  metricsScrapeUrl' <- maybe "http://127.0.0.1:8323/metrics" cs <$> lookupEnv "GARNIX_METRICS_SCRAPE_URL"
+  nodeExporterUrl' <- maybe "http://127.0.0.1:9100/metrics" cs <$> lookupEnv "GARNIX_NODE_EXPORTER_URL"
   -- garnix's own OIDC client, for deployments opting into `authentik: default`.
   defaultAuthentik' <- do
     issuer <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_ISSUER"
@@ -391,6 +393,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               manager = mgr,
               baseUrl = cs burl,
               hostingDomain = hostingDomain',
+              metricsScrapeUrl = metricsScrapeUrl',
+              nodeExporterUrl = nodeExporterUrl',
               cacheUrl = cacheUrl',
               cachePublicKey = cachePublicKey',
               selfHostMode = selfHostMode',

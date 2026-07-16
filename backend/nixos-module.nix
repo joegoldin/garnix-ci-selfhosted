@@ -126,6 +126,18 @@ in
             When null, the upstream default (garnix.me) is used.
           '';
         };
+        metricsScrapeUrl = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "http://127.0.0.1:8323/metrics";
+          description = "Where the self-host monitoring page scrapes garnix's own Prometheus metrics. Defaults to http://127.0.0.1:<metricsPort>/metrics.";
+        };
+        nodeExporterUrl = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "http://127.0.0.1:9100/metrics";
+          description = "Where the self-host monitoring page scrapes host (node-exporter) metrics.";
+        };
         provisionerSocket = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -436,6 +448,12 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.provisionerSocket != null) [
           "GARNIX_PROVISIONER_SOCKET=${config.services.garnixServer.provisionerSocket}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.metricsScrapeUrl != null) [
+          "GARNIX_METRICS_SCRAPE_URL=${config.services.garnixServer.metricsScrapeUrl}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.nodeExporterUrl != null) [
+          "GARNIX_NODE_EXPORTER_URL=${config.services.garnixServer.nodeExporterUrl}"
         ]
         ++ lib.optionals (config.services.garnixServer.defaultAuthentik != null) [
           "GARNIX_DEFAULT_AUTHENTIK_ISSUER=${config.services.garnixServer.defaultAuthentik.issuerUrl}"

@@ -477,6 +477,43 @@ cancelOrphanedWork = do
       |]
   pure (orphanedBuilds, orphanedRuns)
 
+-- | (runningBuilds, pendingBuilds, runningRuns, pendingRuns) across the whole
+-- instance, for the self-host monitoring page. Running = started but not
+-- finished; pending = created but not started.
+getJobCounts :: M (Int64, Int64, Int64, Int64)
+getJobCounts = do
+  [(rb, pb)] <-
+    pgQuery
+      [pgSQL|!
+        SELECT
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NOT NULL),
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL)
+        FROM builds
+      |]
+  [(rr, pr)] <-
+    pgQuery
+      [pgSQL|!
+        SELECT
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NOT NULL),
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL)
+        FROM runs
+      |]
+  pure (rb, pb, rr, pr)
+
+-- | The N most recently finished builds, with their wall-clock duration in
+-- seconds, for the monitoring page's "recent builds" list.
+getRecentBuildDurations :: Int64 -> M [(Text, Maybe Status, Double)]
+getRecentBuildDurations limit =
+  map (\(pkg, status, secs) -> (getPackageName pkg, status, secs))
+    <$> pgQuery
+      [pgSQL|
+        SELECT package, status, EXTRACT(EPOCH FROM (end_time - start_time))::float8
+        FROM builds
+        WHERE end_time IS NOT NULL AND package_type <> 'overall'
+        ORDER BY end_time DESC
+        LIMIT ${limit}
+      |]
+
 -- | Cancel every still-unfinished build of *older* pushes to the same branch
 -- (same repo, different commit, not a PR from a fork). Used when garnix.yaml
 -- sets cancelSupersededBuilds; running builds notice via abortOnCancellation.

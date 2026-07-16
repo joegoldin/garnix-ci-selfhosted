@@ -83,6 +83,10 @@ data Env = Env
     -- | Base domain under which deployed servers are exposed (upstream:
     -- "garnix.me"). Overridden via GARNIX_HOSTING_DOMAIN for self-hosting.
     hostingDomain :: Text,
+    -- | URL of garnix's own Prometheus metrics (self-host monitoring page).
+    metricsScrapeUrl :: Text,
+    -- | URL of the host node-exporter metrics (self-host monitoring page).
+    nodeExporterUrl :: Text,
     cacheUrl :: Text,
     cachePublicKey :: Text,
     selfHostMode :: Bool,

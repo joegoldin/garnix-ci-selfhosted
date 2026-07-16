@@ -42,6 +42,7 @@ library
       Garnix.API.Commits
       Garnix.API.ConfigSchema
       Garnix.API.Configure
+      Garnix.API.Monitoring
       Garnix.API.Dev
       Garnix.API.GhWebhooks
       Garnix.API.GiteaWebhooks
@@ -815,6 +816,7 @@ test-suite spec
       Garnix.API.Commits
       Garnix.API.ConfigSchema
       Garnix.API.Configure
+      Garnix.API.Monitoring
       Garnix.API.Dev
       Garnix.API.GhWebhooks
       Garnix.API.GiteaWebhooks
