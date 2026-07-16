@@ -56,6 +56,10 @@
       isNormalUser = true;
       extraGroups = [ "wheel" ];
       openssh.authorizedKeys.keys = [ config.garnix.guest.sshPublicKey ];
+      # User SSH access (the three methods: tailscale/proxyjump/DNAT). The
+      # backend drops the deployer's GitHub keys + garnix.yaml sshKeys here at
+      # deploy time (copyAuthorizedKeys). sshd tolerates the file being absent.
+      openssh.authorizedKeys.keyFiles = [ "/var/garnix/keys/authorized_keys" ];
     };
     security.sudo.wheelNeedsPassword = false;
     # Guests live on a host-only bridge; Traefik fronts them.

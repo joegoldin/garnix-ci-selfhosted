@@ -43,8 +43,17 @@ SSH_PUBKEY_FILE = os.environ["PROVISIONER_SSH_PUBKEY_FILE"]
 
 DNSMASQ_HOSTS = os.path.join(STATE_DIR, "dnsmasq-hosts")
 SPECS_DIR = os.path.join(STATE_DIR, "specs")
+EXPOSED_DIR = os.path.join(STATE_DIR, "exposed")
 MICROVMS_DIR = "/var/lib/microvms"
 GCROOTS_DIR = "/nix/var/nix/gcroots/microvm"
+
+# Public-facing NIC that inbound DNAT traffic arrives on, plus the host-port
+# bases for SSH / raw-TCP exposure (see do_expose + nixos-module.nix).
+UPLINK = os.environ.get("PROVISIONER_UPLINK", "eth0")
+SSH_PORT_BASE = int(os.environ.get("PROVISIONER_SSH_PORT_BASE", "22000"))
+TCP_PORT_BASE = int(os.environ.get("PROVISIONER_TCP_PORT_BASE", "32000"))
+# Each VM gets a contiguous block of this many host ports for tcp exposure.
+TCP_PORTS_PER_VM = 20
 
 SSH_WAIT_SECONDS = 120
 
@@ -159,8 +168,78 @@ def wait_for_ssh(ip: str, timeout: float):
     raise RuntimeError(f"guest {ip} did not open tcp/22 within {int(timeout)}s")
 
 
+def _iptables(op: str, table, chain: str, rest: list):
+    cmd = ["iptables"]
+    if table:
+        cmd += ["-t", table]
+    cmd += [op, chain] + rest
+    # Deletes may fail (rule absent); adds run only after a delete, so they stay
+    # unique. Never fatal — a failed rule shouldn't abort a deploy.
+    run(cmd, check=False)
+
+
+def _dnat_specs(host_port: int, guest_ip: str, guest_port: int):
+    """(table, chain, rest-args) for the PREROUTING DNAT + FORWARD ACCEPT."""
+    return [
+        (
+            "nat",
+            "PREROUTING",
+            ["-i", UPLINK, "-p", "tcp", "--dport", str(host_port),
+             "-j", "DNAT", "--to-destination", f"{guest_ip}:{guest_port}"],
+        ),
+        (
+            None,
+            "FORWARD",
+            ["-p", "tcp", "-d", guest_ip, "--dport", str(guest_port), "-j", "ACCEPT"],
+        ),
+    ]
+
+
+def add_dnat(host_port: int, guest_ip: str, guest_port: int):
+    for table, chain, rest in _dnat_specs(host_port, guest_ip, guest_port):
+        _iptables("-D", table, chain, rest)  # idempotent: clear a stale copy first
+        _iptables("-A", table, chain, rest)
+
+
+def del_dnat(host_port: int, guest_ip: str, guest_port: int):
+    for table, chain, rest in _dnat_specs(host_port, guest_ip, guest_port):
+        _iptables("-D", table, chain, rest)
+
+
+def _exposure_path(name: str) -> str:
+    return os.path.join(EXPOSED_DIR, f"{name}.json")
+
+
+def remove_exposure(name: str):
+    """Delete any DNAT rules previously added for this VM, and the state file."""
+    try:
+        with open(_exposure_path(name)) as f:
+            state = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return
+    ip = state.get("ip", vm_ip_from_name(name))
+    for rule in state.get("rules", []):
+        del_dnat(int(rule["host"]), ip, int(rule["guest"]))
+    try:
+        os.unlink(_exposure_path(name))
+    except FileNotFoundError:
+        pass
+
+
+def write_exposure(name: str, ip: str, rules: list):
+    os.makedirs(EXPOSED_DIR, exist_ok=True)
+    with open(_exposure_path(name), "w") as f:
+        json.dump({"ip": ip, "rules": rules}, f)
+
+
+def vm_ip_from_name(name: str) -> str:
+    m = re.match(r"^garnix-(\d+)$", name)
+    return vm_ip(int(m.group(1))) if m else ""
+
+
 def cleanup_vm(name: str):
     """Best-effort teardown of every trace of a guest (idempotent)."""
+    remove_exposure(name)
     run(["systemctl", "stop", f"microvm@{name}.service"], check=False)
     shutil.rmtree(os.path.join(MICROVMS_DIR, name), ignore_errors=True)
     shutil.rmtree(os.path.join(SPECS_DIR, name), ignore_errors=True)
@@ -216,7 +295,37 @@ def do_status(req: dict) -> dict:
     return {"status": "running" if state == "active" else "off"}
 
 
-ACTIONS = {"create": do_create, "destroy": do_destroy, "status": do_status}
+def do_expose(req: dict) -> dict:
+    """Publish a guest's SSH and/or tcp ports on the host via DNAT. Host ports
+    are deterministic per VM so re-exposing is stable. Rules are recorded so
+    cleanup_vm can remove them on destroy. Response:
+      {"ssh_port": Int|null, "tcp_ports": [{"guest": Int, "host": Int}, ...]}."""
+    vm_id = int(req["id"])
+    name = vm_name(vm_id)
+    ip = vm_ip(vm_id)
+    ssh_expose = bool(req.get("ssh_expose", False))
+    tcp_ports = [int(p) for p in req.get("tcp_ports", [])]
+    with mutate_lock:
+        # Re-exposing replaces prior rules (idempotent).
+        remove_exposure(name)
+        rules = []
+        ssh_port = None
+        if ssh_expose:
+            ssh_port = SSH_PORT_BASE + vm_id % 1000
+            add_dnat(ssh_port, ip, 22)
+            rules.append({"host": ssh_port, "guest": 22})
+        tcp_result = []
+        for i, guest in enumerate(tcp_ports[:TCP_PORTS_PER_VM]):
+            host_port = TCP_PORT_BASE + (vm_id % 500) * TCP_PORTS_PER_VM + i
+            add_dnat(host_port, ip, guest)
+            rules.append({"host": host_port, "guest": guest})
+            tcp_result.append({"guest": guest, "host": host_port})
+        write_exposure(name, ip, rules)
+    log.info("exposed %s: ssh_port=%s tcp=%s", name, ssh_port, tcp_result)
+    return {"ssh_port": ssh_port, "tcp_ports": tcp_result}
+
+
+ACTIONS = {"create": do_create, "destroy": do_destroy, "status": do_status, "expose": do_expose}
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -249,6 +358,7 @@ class Server(socketserver.ThreadingUnixStreamServer):
 def main():
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(levelname)s %(message)s")
     os.makedirs(SPECS_DIR, exist_ok=True)
+    os.makedirs(EXPOSED_DIR, exist_ok=True)
     if not os.path.exists(DNSMASQ_HOSTS):
         open(DNSMASQ_HOSTS, "a").close()
     try:

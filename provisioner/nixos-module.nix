@@ -73,6 +73,35 @@ in
       default = "garnix";
       description = "Group granted write access to the daemon socket (the backend's group).";
     };
+    sshExposePortBase = lib.mkOption {
+      type = lib.types.int;
+      default = 22000;
+      description = ''
+        Base host port for per-VM SSH exposure (garnix.yaml sshExpose). A guest
+        with id N is reachable at sshExposePortBase + (N mod 1000).
+      '';
+    };
+    tcpExposePortBase = lib.mkOption {
+      type = lib.types.int;
+      default = 32000;
+      description = ''
+        Base host port for per-VM raw-tcp exposure (garnix.yaml ports type=tcp).
+        Each VM gets a contiguous block of 20 host ports.
+      '';
+    };
+    exposePortRange = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          from = lib.mkOption { type = lib.types.port; default = 22000; };
+          to = lib.mkOption { type = lib.types.port; default = 41999; };
+        };
+      };
+      default = { from = 22000; to = 41999; };
+      description = ''
+        Host TCP port range opened on the uplink for DNAT'd SSH/tcp exposure.
+        Must cover both sshExposePortBase (+1000) and tcpExposePortBase (+ 500*20).
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -108,6 +137,15 @@ in
     # everything else guest→host is dropped by the default policy. Guest egress
     # to the internet goes through NAT (above), not the host firewall's INPUT.
     networking.firewall.interfaces.${cfg.bridge}.allowedUDPPorts = [ 67 ];
+
+    # Open the DNAT exposure range on the uplink. The DNAT itself (added per-VM
+    # by the daemon's `expose` action in PREROUTING) rewrites the destination to
+    # a guest IP before the routing decision, so these ports reach guests via
+    # FORWARD (also opened per-VM) rather than the host — this range opening is
+    # belt-and-suspenders for host firewalls that filter the uplink strictly.
+    networking.firewall.interfaces.${cfg.uplinkInterface}.allowedTCPPortRanges = [
+      { from = cfg.exposePortRange.from; to = cfg.exposePortRange.to; }
+    ];
 
     # Isolate guests from one another: drop forwarding between two ports of the
     # guest bridge, so a compromised guest can't reach its neighbours (the pool
@@ -156,6 +194,7 @@ in
     systemd.tmpfiles.rules = [
       "d ${stateDir} 0755 root root -"
       "d ${stateDir}/specs 0755 root root -"
+      "d ${stateDir}/exposed 0755 root root -"
       "f ${stateDir}/dnsmasq-hosts 0644 root root -"
     ];
 
@@ -169,6 +208,7 @@ in
       path = [
         pkgs.nix
         pkgs.openssh
+        pkgs.iptables
         "/run/current-system/sw"
       ];
       environment = {
@@ -181,6 +221,9 @@ in
         PROVISIONER_MICROVM = cfg.microvmFlake;
         PROVISIONER_GUEST_PROFILE = "${./guest-profile.nix}";
         PROVISIONER_SSH_PUBKEY_FILE = pubkeyPath;
+        PROVISIONER_UPLINK = cfg.uplinkInterface;
+        PROVISIONER_SSH_PORT_BASE = toString cfg.sshExposePortBase;
+        PROVISIONER_TCP_PORT_BASE = toString cfg.tcpExposePortBase;
       };
       serviceConfig = {
         # Derive the guest-facing public key from the hosting private key so
