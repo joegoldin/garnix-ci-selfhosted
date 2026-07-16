@@ -12,7 +12,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     microvm.url = "github:microvm-nix/microvm.nix";
     microvm.inputs.nixpkgs.follows = "nixpkgs";
-    garnix-ci.url = "github:joegoldin/garnix-ci/self-hosting";
+    garnix-ci.url = "github:joegoldin/garnix-ci-selfhosted";
   };
   outputs = { self, nixpkgs, microvm, garnix-ci }: {
     garnix.config.servers = [

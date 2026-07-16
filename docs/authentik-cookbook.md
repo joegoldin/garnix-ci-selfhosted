@@ -46,14 +46,14 @@ Instead of clicking through the Authentik UI, drive its REST API:
 # dedicated: token + entitlement both defaulted. Creates a provider + app + the
 # "hello-locked-user" entitlement -> "hello-locked-users" group, writes the
 # encrypted secret file, and prints the config block.
-nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- \
+nix run github:joegoldin/garnix-ci-selfhosted#provisioner_authentikProvision -- \
   --authentik-url https://authentik.example.com \
   --name hello-locked \
   --public-url https://hello-locked.main.myrepo.myorg.apps.example.com \
   --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
 
 # shared: reuse an existing provider "garnix-shared"; extra role shown explicitly
-nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- --mode shared \
+nix run github:joegoldin/garnix-ci-selfhosted#provisioner_authentikProvision -- --mode shared \
   --provider garnix-shared \
   --authentik-url https://authentik.example.com \
   --name reports \

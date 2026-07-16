@@ -111,7 +111,7 @@ via netrc).
 
 ```nix
 {
-  inputs.garnix-ci.url = "github:joegoldin/garnix-ci/self-hosting";
+  inputs.garnix-ci.url = "github:joegoldin/garnix-ci-selfhosted";
 
   # in your host's modules:
   imports = [ inputs.garnix-ci.nixosModules.garnix ];
