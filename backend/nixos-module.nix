@@ -129,8 +129,8 @@ in
         metricsScrapeUrl = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
-          example = "http://127.0.0.1:8323/metrics";
-          description = "Where the self-host monitoring page scrapes garnix's own Prometheus metrics. Defaults to http://127.0.0.1:<metricsPort>/metrics.";
+          example = "http://127.0.0.1:8323/";
+          description = "Where the self-host monitoring page scrapes garnix's own Prometheus metrics. The endpoint serves at the root path (not /metrics). Defaults to http://127.0.0.1:<metricsPort>/.";
         };
         nodeExporterUrl = lib.mkOption {
           type = lib.types.nullOr lib.types.str;

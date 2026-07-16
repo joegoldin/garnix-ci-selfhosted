@@ -555,8 +555,8 @@ A self-host-only **Monitoring** page (sidebar, between Modules and
 Documentation) aggregates, via `GET /api/monitoring`:
 
 - **Instance** — garnix's own Prometheus (`services.garnixServer.metricsScrapeUrl`,
-  default `127.0.0.1:<metricsPort>/metrics`): queue depths, builds attempted,
-  cache-push ratio.
+  default `127.0.0.1:<metricsPort>/` — the endpoint serves at the root path):
+  queue depths, builds attempted, cache-push ratio.
 - **Host** — the machine's `node-exporter`
   (`services.garnixServer.nodeExporterUrl`, default `127.0.0.1:9100/metrics`):
   load, memory, disk, CPU count. Run

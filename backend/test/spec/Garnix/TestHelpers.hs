@@ -91,7 +91,8 @@ defaultRepoInfo =
     { _repoInfoInstallationAuth = error "defaultEventInfo does not set installation auth",
       _repoInfoGhToken = GhToken "",
       _repoInfoGhRepoOwner = "owner",
-      _repoInfoGhRepoName = "repo"
+      _repoInfoGhRepoName = "repo",
+      _repoInfoForge = ForgeGithub
     }
 
 eventRepoName :: Lens' CheckSuiteEvent (GhRepoOwner, GhRepoName)
@@ -309,7 +310,8 @@ testBuild f = do
               _buildWantsIncrementalism = False,
               _buildEvalHost = Just "garnix-server-test",
               _buildUploadedToCache = Just False,
-              _buildAlreadyBuilt = Just False
+              _buildAlreadyBuilt = Just False,
+              _buildForge = ForgeGithub
             }
   do
     [build] <-
@@ -382,7 +384,8 @@ testBuild f = do
           wants_incrementalism,
           eval_host,
           uploaded_to_cache,
-          already_built
+          already_built,
+          forge
       |]
     pure build
 
