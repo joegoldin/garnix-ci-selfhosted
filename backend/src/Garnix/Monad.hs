@@ -71,6 +71,10 @@ data Env = Env
     buildLogsReportingPort :: Maybe Int,
     githubInterface :: GithubInterface,
     hetznerInterface :: HetznerInterface,
+    -- | Path to the local microVM provisioner daemon's unix socket, when
+    -- self-hosting (GARNIX_PROVISIONER_SOCKET). 'Nothing' means the Hetzner
+    -- Cloud path. Used to reach the daemon's post-provision @expose@ action.
+    provisionerSocket :: Maybe FilePath,
     serverPoolConfig :: [(ServerTier, Int)],
     -- | A thread-safe version of `CWD`
     workingDir :: FilePath,

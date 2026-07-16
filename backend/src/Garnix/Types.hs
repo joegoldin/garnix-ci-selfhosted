@@ -1573,7 +1573,26 @@ data ServerToSpinUp = ServerToSpinUp
     domainIsPrimary :: Bool,
     -- | garnix.yaml servers[].authentik == "default": drop garnix's own OIDC
     -- credentials onto the guest at deploy time (see copyDefaultAuthentikEnv).
-    useDefaultAuthentik :: Bool
+    useDefaultAuthentik :: Bool,
+    -- | garnix.yaml servers[].sshKeys: extra authorized keys for the guest's
+    -- garnix user (in addition to the deployer's GitHub keys).
+    sshKeys :: [Text],
+    -- | garnix.yaml servers[].sshExpose: also open a public SSH DNAT port.
+    sshExpose :: Bool,
+    -- | garnix.yaml servers[].ports of type http: (name, guest port).
+    httpPorts :: [(Text, Int)],
+    -- | garnix.yaml servers[].ports of type tcp: (name, guest port).
+    tcpPorts :: [(Text, Int)]
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | What the provisioner allocated when exposing a server's SSH/TCP ports via
+-- host-port DNAT. HTTP ports are handled by Traefik (not here).
+data ExposeResult = ExposeResult
+  { -- | The public host SSH port (when sshExpose was requested), else Nothing.
+    _exposeResultSshPort :: Maybe Int,
+    -- | (guest port, allocated host port) for each requested tcp port.
+    _exposeResultTcpPorts :: [(Int, Int)]
   }
   deriving stock (Show, Eq, Generic)
 

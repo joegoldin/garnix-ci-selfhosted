@@ -73,15 +73,15 @@ getDeployPlan ::
 getDeployPlan reporter commitInfo deploymentType = do
   withErrorReporter reporter commitInfo $ do
     cfg <- getConfig
-    let wantedPackagesMapping :: Map PackageName (ServerTier, Bool, Maybe Text) = Map.fromList $ case deploymentType of
+    let wantedPackagesMapping :: Map PackageName (ServerTier, Bool, ServerSection) = Map.fromList $ case deploymentType of
           BranchDeployment thisBranch -> flip mapMaybe (cfg ^. serverSection)
             $ \s -> case s ^. deploySection of
-              OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary, s ^. authentikSection))
+              OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary, s))
               _ -> Nothing
           GhPrDeployment _prId ->
             (cfg ^. serverSection)
               & filter (\s -> s ^. deploySection == OnPullRequest)
-              & map (\s -> (s ^. configuration, (def, False, s ^. authentikSection)))
+              & map (\s -> (s ^. configuration, (def, False, s)))
     let wantedPackages = Map.keys wantedPackagesMapping
     existing <- DB.getRunningServersOf (commitInfo ^. repoInfo) deploymentType
     wantedBuilds <- withPolling (PollingConfig (fromSeconds @Int 2) (fromHours @Int 2)) $ do
@@ -123,12 +123,27 @@ getDeployPlan reporter commitInfo deploymentType = do
         & filter (`notElem` (snd <$> toRedeploy))
         & mapM
           ( \build -> case Map.lookup (build ^. package) wantedPackagesMapping of
-              Just (serverTier, domainIsPrimary, authentikYaml) -> do
-                useDefaultAuthentik <- case authentikYaml of
+              Just (serverTier, domainIsPrimary, section) -> do
+                useDefaultAuthentik <- case _serverSectionAuthentikSection section of
                   Nothing -> pure False
                   Just "default" -> pure True
                   Just other -> throw $ OtherError $ "Unsupported servers[].authentik value " <> show other <> "; only \"default\" is supported"
-                pure $ ServerToSpinUp {serverTier, build, domainIsPrimary, useDefaultAuthentik}
+                -- Split garnix.yaml servers[].ports into http (Traefik subdomains)
+                -- and tcp (raw host-port DNAT); ssh keys/expose come straight
+                -- off the section.
+                let httpPorts = [(_serverPortName p, _serverPortPort p) | p <- _serverSectionPorts section, _serverPortType p == HttpPort]
+                    tcpPorts = [(_serverPortName p, _serverPortPort p) | p <- _serverSectionPorts section, _serverPortType p == TcpPort]
+                pure
+                  $ ServerToSpinUp
+                    { serverTier,
+                      build,
+                      domainIsPrimary,
+                      useDefaultAuthentik,
+                      sshKeys = _serverSectionSshKeys section,
+                      sshExpose = _serverSectionSshExpose section,
+                      httpPorts,
+                      tcpPorts
+                    }
               Nothing -> throw $ OtherError "impossible: wantedPackagesMap should contain all deployable packages"
           )
     let plan = DeployPlan toSpinDown toSpinUp toRedeploy

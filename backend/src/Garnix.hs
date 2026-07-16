@@ -380,6 +380,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               githubWebhookSecret = ghK,
               githubInterface = realGithubInterface,
               hetznerInterface = maybe realHetznerInterface localProvisionerInterface provisionerSocket,
+              provisionerSocket = provisionerSocket,
               serverPoolConfig = serverPool,
               cookieSettings =
                 defaultCookieSettings

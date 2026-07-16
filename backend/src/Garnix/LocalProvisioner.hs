@@ -4,12 +4,12 @@
 -- GARNIX_PROVISIONER_SOCKET is set. The int32 "hetzner id" doubles as the
 -- microVM handle (guest name garnix-<id>), so the DB schema and the whole SSH
 -- deploy path stay unchanged.
-module Garnix.LocalProvisioner (localProvisionerInterface) where
+module Garnix.LocalProvisioner (localProvisionerInterface, exposeServer) where
 
 import Control.Lens hiding ((.=))
 import Data.Aeson (object, (.=))
 import Data.Aeson qualified as Aeson
-import Data.Aeson.Lens (key, _String)
+import Data.Aeson.Lens (key, values, _Integer, _String)
 import Data.ByteString.Char8 qualified as BSC
 import Data.ByteString.Lazy qualified as BSL
 import Garnix.Hosting.ServerPool.Types
@@ -65,6 +65,32 @@ deleteServer' socketPath (HetznerServerId vmId) =
   void
     . provisionerRequest socketPath
     $ object ["action" .= ("destroy" :: Text), "id" .= vmId]
+
+-- | Ask the provisioner daemon to expose a guest's SSH and/or tcp ports via
+-- host-port DNAT. Separate from 'provisionServer' (which stays generic) and
+-- only meaningful for the local provisioner — hence not part of
+-- 'HetznerInterface'. Response shape:
+-- @{"ssh_port": Int|null, "tcp_ports": [{"guest": Int, "host": Int}, ...]}@.
+exposeServer :: FilePath -> HetznerServerId -> Bool -> [Int] -> M ExposeResult
+exposeServer socketPath (HetznerServerId vmId) sshExposeReq tcpGuestPorts = do
+  resp <-
+    provisionerRequest socketPath
+      $ object
+        [ "action" .= ("expose" :: Text),
+          "id" .= vmId,
+          "ssh_expose" .= sshExposeReq,
+          "tcp_ports" .= tcpGuestPorts
+        ]
+  pure
+    ExposeResult
+      { _exposeResultSshPort = fromIntegral <$> (resp ^? key "ssh_port" . _Integer),
+        _exposeResultTcpPorts =
+          [ (fromIntegral g, fromIntegral h)
+          | entry <- resp ^.. key "tcp_ports" . values,
+            g <- toList (entry ^? key "guest" . _Integer),
+            h <- toList (entry ^? key "host" . _Integer)
+          ]
+      }
 
 getServerStatus' :: FilePath -> HetznerServerId -> M Text
 getServerStatus' socketPath (HetznerServerId vmId) = do

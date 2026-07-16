@@ -86,7 +86,7 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
             $ (branch ?~ "main")
             . (repoUser .~ "owner")
             . (repoName .~ "repo")
-        server <- createServer defaultRepoInfo (BranchDeployment "main") (ServerToSpinUp I16x32 build False)
+        server <- createServer defaultRepoInfo (BranchDeployment "main") (ServerToSpinUp I16x32 build False False [] False [] [])
         server ^. tier `shouldBeM` I16x32
         running <- DB.getRunningServersOf defaultRepoInfo (BranchDeployment "main")
         fromSingleton running ^. tier `shouldBeM` I16x32
