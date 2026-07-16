@@ -507,8 +507,10 @@ getRecentBuildDurations :: Int64 -> M [(Text, Maybe Status, Double)]
 getRecentBuildDurations limit =
   map (\(pkg, status, secs) -> (getPackageName pkg, status, secs))
     <$> pgQuery
+      -- COALESCE(...,0) so the EXTRACT expression is non-null (Double, not
+      -- Maybe Double) for postgresql-typed.
       [pgSQL|
-        SELECT package, status, EXTRACT(EPOCH FROM (end_time - start_time))::float8
+        SELECT package, status, COALESCE(EXTRACT(EPOCH FROM (end_time - start_time))::float8, 0)
         FROM builds
         WHERE end_time IS NOT NULL AND package_type <> 'overall'
         ORDER BY end_time DESC
