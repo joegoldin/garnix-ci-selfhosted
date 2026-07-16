@@ -84,5 +84,12 @@ export const cancelCommit = async (
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "POST", `commits/${commit}/cancel`);
 
+// Restarts every failed/timed-out build for the commit server-side (or the
+// whole commit when the eval itself failed). NoContent response.
+export const restartFailedCommit = async (
+  commit: string,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(z.any(), "POST", `commits/${commit}/restart-failed`);
+
 export const getReqUserUrl = (build: Build | CommitSummary) =>
   `https://github.com/${build.reqUser}`;

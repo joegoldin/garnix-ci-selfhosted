@@ -366,6 +366,113 @@ makeNewBuildForGithubRunId reqUser ghRunId evalHost = do
     [] -> throw $ NoSuchBuildRunId ghRunId
     _ -> throw $ OtherError "Impossible: more than one result"
 
+-- | Clone a build row into a fresh pending build (same package/commit/forge,
+-- new requesting user). Forge-agnostic sibling of 'makeNewBuildForGithubRunId'
+-- (which is keyed on the GitHub check-run id); used by the restart-failed
+-- endpoint, where Gitea builds have no GitHub run id.
+makeNewBuildForBuildId :: GhLogin -> BuildId -> Text -> M Build
+makeNewBuildForBuildId reqUser buildId evalHost = do
+  now <- liftIO getCurrentTime
+  res <-
+    pgQueryPrism
+      _Build
+      [pgSQL|
+    INSERT INTO builds
+      ( repo_user,
+        repo_name,
+        pr_from_fork,
+        branch,
+        repo_is_public,
+        git_commit,
+        package,
+        package_type,
+        system,
+        req_user,
+        status,
+        start_time,
+        end_time,
+        drv_path,
+        output_paths,
+        github_run_id,
+        persistence_name,
+        wants_incrementalism,
+        eval_host,
+        uploaded_to_cache,
+        forge)
+      SELECT
+        repo_user,
+        repo_name,
+        pr_from_fork,
+        branch,
+        repo_is_public,
+        git_commit,
+        package,
+        package_type,
+        system,
+        ${reqUser},
+        NULL,
+        ${now},
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        wants_incrementalism,
+        ${evalHost},
+        FALSE,
+        forge
+      FROM builds
+      WHERE id = ${buildId}
+    RETURNING
+      id,
+      repo_user,
+      repo_name,
+      pr_from_fork,
+      branch,
+      repo_is_public,
+      git_commit,
+      package,
+      package_type,
+      system,
+      req_user,
+      status,
+      start_time,
+      end_time,
+      drv_path,
+      output_paths,
+      github_run_id,
+      persistence_name,
+      wants_incrementalism,
+      eval_host,
+      uploaded_to_cache,
+      already_built,
+      forge
+  |]
+  case res of
+    [r] -> pure r
+    [] -> throw $ NoSuchBuild buildId
+    _ -> throw $ OtherError "Impossible: more than one result"
+
+-- | Cancel every still-unfinished build of *older* pushes to the same branch
+-- (same repo, different commit, not a PR from a fork). Used when garnix.yaml
+-- sets cancelSupersededBuilds; running builds notice via abortOnCancellation.
+cancelSupersededBuilds :: GhRepoOwner -> GhRepoName -> Branch -> CommitHash -> UTCTime -> M ()
+cancelSupersededBuilds repoOwner repoName branch' commitHash newerThan = do
+  now <- liftIO getCurrentTime
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE builds
+        SET status = ${Just Cancelled}, end_time = ${now}
+        WHERE repo_user = ${repoOwner}
+          AND repo_name = ${repoName}
+          AND branch = ${branch'}
+          AND pr_from_fork IS NULL
+          AND git_commit <> ${commitHash}
+          AND status IS NULL
+          AND start_time < ${newerThan}
+      |]
+
 getLatestBuildsMatching :: RepoInfo -> CommitHash -> M [Build]
 getLatestBuildsMatching repoInfo commit = do
   pgQueryPrism

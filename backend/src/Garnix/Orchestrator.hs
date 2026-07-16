@@ -4,6 +4,8 @@ module Garnix.Orchestrator
   ( handlePullRequest,
     handleCommit,
     handleRerun,
+    restartBuild,
+    restartCommit,
     RerunEvent (..),
   )
 where
@@ -13,15 +15,18 @@ import Garnix.Build (buildFlake, rerunBuild)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withInternalCacheToken)
 import Garnix.DB qualified as DB
+import Garnix.GiteaInterface (requireGiteaConfig)
 import Garnix.Hosting.Deploy (rolloutNewServerVersion)
 import Garnix.Monad
 import Garnix.Monad.Async (emptyPromise, resolve, spawn)
 import Garnix.Prelude
+import Garnix.Reporters.GiteaReporter (mkGiteaReporter)
 import Garnix.Reporters.GithubReporter (mkGithubReporter)
 import Garnix.Reporters.OpenSearchReporter (openSearchReporter)
 import Garnix.Types hiding (ghRunId)
 import Garnix.Types qualified as Types
 import GitHub.App.Auth qualified as GH
+import GitHub.Data.Id (Id (Id))
 
 data RerunEvent = RerunEvent
   { reqUser :: GhLogin,
@@ -95,6 +100,60 @@ handleRerun ev = do
     let reporter = openSearchReporter <> mkGithubReporter (commitInfo ^. repoInfo) (commitInfo ^. commit)
     assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
     withSpan commitInfo $ rerunBuild reporter build' commitInfo
+
+-- | Reconstruct the CommitInfo + status reporter for an existing build row,
+-- forge-aware. Used by the restart endpoints, which unlike the webhook
+-- handlers have no event payload to draw auth from.
+commitInfoForBuild :: GhLogin -> Build -> M (CommitInfo, Reporter)
+commitInfoForBuild reqUser' build = do
+  repoInfo' <- case build ^. forge of
+    ForgeGitea -> do
+      cfg <- requireGiteaConfig
+      pure $ RepoInfo ForgeGitea Nothing (GhToken (_giteaConfigApiToken cfg)) (build ^. repoUser) (build ^. repoName)
+    ForgeGithub -> do
+      installationId <- getGarnixInstallationId (build ^. repoUser) (build ^. repoName)
+      iAuth <- case installationId of
+        Nothing -> throw $ OtherError "Failed to look up installation auth for restart"
+        Just installationId' -> getInstallation (Id $ fromInteger installationId')
+      token <- getAccessToken iAuth
+      pure $ RepoInfo ForgeGithub (Just iAuth) token (build ^. repoUser) (build ^. repoName)
+  reporter <- case build ^. forge of
+    ForgeGitea -> do
+      cfg <- requireGiteaConfig
+      pure $ openSearchReporter <> mkGiteaReporter cfg repoInfo' (build ^. gitCommit)
+    ForgeGithub -> pure $ openSearchReporter <> mkGithubReporter repoInfo' (build ^. gitCommit)
+  let commitInfo =
+        CommitInfo
+          { _commitInfoReqUser = reqUser',
+            _commitInfoRepoPublicity = build ^. Types.repoIsPublic,
+            _commitInfoRepoInfo = repoInfo',
+            _commitInfoBranch = build ^. branch,
+            _commitInfoPrFromFork = build ^. prFromFork,
+            _commitInfoCommit = build ^. gitCommit
+          }
+  pure (commitInfo, reporter)
+
+-- | Restart a single (typically failed) build: clone its row into a fresh
+-- pending build and re-run just that package. Forge-agnostic sibling of
+-- 'handleRerun' (which is driven by GitHub check-run webhooks and keyed on
+-- the GitHub run id Gitea builds don't have).
+restartBuild :: (HasCallStack) => GhLogin -> Build -> M ()
+restartBuild reqUser' oldBuild = do
+  hostname <- view #hostname
+  build' <- DB.makeNewBuildForBuildId reqUser' (oldBuild ^. id) hostname
+  withSpan (build' ^. id) $ do
+    (commitInfo, reporter) <- commitInfoForBuild reqUser' build'
+    assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
+    withSpan commitInfo $ rerunBuild reporter build' commitInfo
+
+-- | Re-run the whole commit (fresh eval, then all builds/actions). Used when
+-- the failure is the eval/overall build itself, which has no per-package
+-- build to restart.
+restartCommit :: (HasCallStack) => GhLogin -> Build -> M ()
+restartCommit reqUser' build = do
+  (commitInfo, reporter) <- commitInfoForBuild reqUser' build
+  assertIsAllowedToBuild (build ^. repoUser) (build ^. repoName)
+  void $ handleCommit reporter True commitInfo
 
 assertIsAllowedToBuild :: GhRepoOwner -> GhRepoName -> M ()
 assertIsAllowedToBuild owner repo = do

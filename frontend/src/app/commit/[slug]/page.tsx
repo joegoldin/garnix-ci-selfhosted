@@ -13,7 +13,11 @@ import { useLoading } from "@/hooks/useLoading";
 import { BuildStatus } from "@/services/build";
 import { Err, Ok } from "@/services";
 import { fromSecs } from "@/utils/duration";
-import { getCommit, cancelCommit } from "@/services/commit";
+import {
+  getCommit,
+  cancelCommit,
+  restartFailedCommit,
+} from "@/services/commit";
 import styles from "./styles.module.css";
 
 const Page = ({ params }: { params: { slug: string } }) => {
@@ -43,13 +47,24 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 <Text type="h1" className={styles.h1}>
                   Commit [{formatCommitSha(commit.summary)}]
                 </Text>
-                {commit.summary.pending + commit.summary.running > 0 && (
-                  <CancelAllButton
-                    slug={params.slug}
-                    pendingCount={commit.summary.pending + commit.summary.running}
-                    reload={reloadCommit}
-                  />
-                )}
+                <div className={styles.headerActions}>
+                  {commit.summary.failed > 0 && (
+                    <RestartFailedButton
+                      slug={params.slug}
+                      failedCount={commit.summary.failed}
+                      reload={reloadCommit}
+                    />
+                  )}
+                  {commit.summary.pending + commit.summary.running > 0 && (
+                    <CancelAllButton
+                      slug={params.slug}
+                      pendingCount={
+                        commit.summary.pending + commit.summary.running
+                      }
+                      reload={reloadCommit}
+                    />
+                  )}
+                </div>
               </div>
               <CommitBuildsSummary commit={commit.summary} />
             <div className={styles.modules}>
@@ -134,6 +149,52 @@ const CancelAllButton = ({
               <Button onClick={() => setOpen(false)}>Nevermind</Button>
               <Button style="warning" loading={busy} onClick={cancelAll}>
                 Cancel all builds
+              </Button>
+            </ModalActions>
+          </ModalSection>
+        </FloatingModal>
+      )}
+    </>
+  );
+};
+
+const RestartFailedButton = ({
+  slug,
+  failedCount,
+  reload,
+}: {
+  slug: string;
+  failedCount: number;
+  reload: () => void;
+}) => {
+  const [open, setOpen] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const restartFailed = async () => {
+    setBusy(true);
+    await restartFailedCommit(slug);
+    setBusy(false);
+    setOpen(false);
+    reload();
+  };
+  return (
+    <>
+      <Button onClick={() => setOpen(true)}>Restart failed</Button>
+      {open && (
+        <FloatingModal onRequestClose={() => setOpen(false)}>
+          <ModalSection>
+            <Text type="h1">Restart failed builds?</Text>
+          </ModalSection>
+          <ModalSection>
+            <p className={styles.modalText}>
+              This will restart {failedCount} failed build
+              {failedCount === 1 ? "" : "s"} for this commit.
+            </p>
+          </ModalSection>
+          <ModalSection>
+            <ModalActions align="right">
+              <Button onClick={() => setOpen(false)}>Nevermind</Button>
+              <Button loading={busy} onClick={restartFailed}>
+                Restart failed builds
               </Button>
             </ModalActions>
           </ModalSection>
