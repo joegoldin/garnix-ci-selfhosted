@@ -21,7 +21,7 @@ import Garnix.Monad
 import Garnix.Monad.Async (joinAll, joinAll_, resolve, spawn)
 import Garnix.Prelude
 import Garnix.Types as Types
-import Garnix.YamlConfig (Action, ExcludeBranches (..), GarnixConfig, IncrementalizeBuildsSection (..), flakeDir, incrementalizeBuildsSection)
+import Garnix.YamlConfig (Action, ExcludeBranches (..), GarnixConfig, IncrementalizeBuildsSection (..), cancelSupersededBuilds, flakeDir, incrementalizeBuildsSection)
 
 runBuildFlake :: (HasCallStack) => Reporter -> BuildKind -> CommitInfo -> Remote -> M ()
 runBuildFlake reporter buildKind commitInfo withCheckout = do
@@ -40,6 +40,17 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
         runWithCheckout withCheckout commitInfo $ \config -> do
           withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
             plan <- getPlan repoOwner >>= applyConfiguredTimeouts repoConfig
+            -- Opt-in via garnix.yaml: a new push supersedes older commits on
+            -- the same branch, so cancel their queued/running builds.
+            when (config ^. cancelSupersededBuilds) $ case commitInfo ^. branch of
+              Nothing -> pure ()
+              Just currentBranch ->
+                DB.cancelSupersededBuilds
+                  (commitInfo ^. repoInfo . ghRepoOwner)
+                  (commitInfo ^. repoInfo . ghRepoName)
+                  currentBranch
+                  (commitInfo ^. commit)
+                  (startingBuild ^. startTime)
             initialBuilds <- setupBuilds reporter commitInfo config plan
             initialActions <- setupActions reporter commitInfo config
             updatedBuild <-

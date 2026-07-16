@@ -22,6 +22,7 @@ module Garnix.YamlConfig
     asAttributeMatcher,
     branchSection,
     buildSections,
+    cancelSupersededBuilds,
     configuration,
     decodeConfig,
     deploySection,
@@ -375,12 +376,13 @@ data GarnixConfig = GarnixConfig
     _garnixConfigActions :: [Action],
     _garnixConfigModuleSection :: ModuleSection,
     _garnixConfigFodChecks :: Bool,
+    _garnixConfigCancelSupersededBuilds :: Bool,
     _garnixConfigFlakeDir :: FlakeDir
   }
   deriving stock (Eq, Show, Generic)
 
 instance Default GarnixConfig where
-  def = GarnixConfig [def] def [] [] def False (FlakeDir ".")
+  def = GarnixConfig [def] def [] [] def False False (FlakeDir ".")
 
 instance FromJSON GarnixConfig where
   parseJSON = parseJSONViaCodec
@@ -445,6 +447,15 @@ instance HasCodec GarnixConfig where
                   False
                   "Whether FOD checks are enabled for the repo. See https://garnix.io/docs/fod-checks for more information."
                   .= _garnixConfigFodChecks
+              )
+          <*> ( optionalFieldWithDefault
+                  "cancelSupersededBuilds"
+                  False
+                  ( "Whether a new push to a branch cancels still-running and "
+                      <> "queued builds of older commits on the same branch. "
+                      <> "Useful when only the latest commit matters."
+                  )
+                  .= _garnixConfigCancelSupersededBuilds
               )
           <*> ( optionalFieldWithDefault
                   "flakeDir"
