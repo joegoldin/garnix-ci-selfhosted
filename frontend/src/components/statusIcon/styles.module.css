@@ -18,9 +18,8 @@
 }
 
 .cancelled {
-  /* failure.svg's red X (#EF4444) rotated to the pending-orange family, so
-     cancelled reads as "stopped on purpose" rather than gray/failed. */
-  filter: hue-rotate(32deg) saturate(1.4) brightness(1.05);
+  filter: invert(74%) sepia(1%) saturate(0%) hue-rotate(194deg) brightness(82%)
+    contrast(92%);
 }
 
 .pending {

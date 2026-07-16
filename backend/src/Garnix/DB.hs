@@ -653,6 +653,32 @@ registerPush repoOwner repoName commit branch = do
       [_ :: Maybe Bool] -> pure NewPush
       _ -> throw $ OtherError "Impossible: more than one result"
 
+-- | Per-commit run (actions, FOD checks, module publish, deployments) status
+-- counts, for folding into build-only 'CommitSummary' rows on list pages.
+-- Keys are (owner, repo, commit); counts are
+-- (succeeded, failed, cancelled, running, pending).
+getRunCountsGroupedByCommit :: Maybe (GhRepoOwner, GhRepoName) -> Maybe GhLogin -> M [((GhRepoOwner, GhRepoName, CommitHash), (Int64, Int64, Int64, Int64, Int64))]
+getRunCountsGroupedByCommit mRepo mReqUser = do
+  let (mOwner, mName) = (fst <$> mRepo, snd <$> mRepo)
+  map (\(o, r, c, suc, fl, cnc, run, pnd) -> ((o, r, c), (suc, fl, cnc, run, pnd)))
+    <$> pgQuery
+      [pgSQL|!
+        SELECT
+          repo_user,
+          repo_name,
+          git_commit,
+          COUNT(*) FILTER (WHERE status = 'success'),
+          COUNT(*) FILTER (WHERE status = 'failure' OR status = 'timeout'),
+          COUNT(*) FILTER (WHERE status = 'cancelled'),
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NOT NULL),
+          COUNT(*) FILTER (WHERE status IS NULL AND run_started_at IS NULL)
+        FROM runs
+        WHERE (${mOwner}::varchar IS NULL OR repo_user = ${mOwner})
+          AND (${mName}::varchar IS NULL OR repo_name = ${mName})
+          AND (${mReqUser}::varchar IS NULL OR req_user = ${mReqUser})
+        GROUP BY repo_user, repo_name, git_commit
+      |]
+
 getCommitsByOwnerAndRepo :: GhRepoOwner -> GhRepoName -> M [CommitSummary]
 getCommitsByOwnerAndRepo repoOwner repoName = do
   map

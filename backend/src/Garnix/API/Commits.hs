@@ -65,12 +65,30 @@ getCommitsForRepo user repoOwner repoName = do
   repoPublicity <- getRepoPublicityForForge repoOwner repoName
   hasAccess <- hasAccessToRepo user repoPublicity repoOwner repoName
   when (not hasAccess) $ throw NoSuchRepo {_owner = repoOwner, _name = repoName}
-  ListCommits <$> DB.getCommitsByOwnerAndRepo repoOwner repoName
+  commits <- DB.getCommitsByOwnerAndRepo repoOwner repoName
+  runCounts <- DB.getRunCountsGroupedByCommit (Just (repoOwner, repoName)) Nothing
+  pure $ ListCommits (mergeRunCounts runCounts commits)
 
 getCommitsForUser :: User -> M ListCommits
 getCommitsForUser user = do
   commits <- DB.getCommitsForReqUser user
-  pure $ ListCommits {_listCommitsCommits = commits}
+  runCounts <- DB.getRunCountsGroupedByCommit Nothing (Just (user ^. githubLogin))
+  pure $ ListCommits {_listCommitsCommits = mergeRunCounts runCounts commits}
+
+-- | Fold per-commit run counts (actions etc.) into build-only summaries, so
+-- list pages show the same complete status counts as the commit page.
+mergeRunCounts :: [((GhRepoOwner, GhRepoName, CommitHash), (Int64, Int64, Int64, Int64, Int64))] -> [CommitSummary] -> [CommitSummary]
+mergeRunCounts runCounts = map merge
+  where
+    merge s = case lookup (s ^. repoOwner, s ^. repoName, s ^. gitCommit) runCounts of
+      Nothing -> s
+      Just (suc, fl, cnc, run, pnd) ->
+        s
+          & succeeded %~ (+ suc)
+          & failed %~ (+ fl)
+          & cancelled %~ (+ cnc)
+          & running %~ (+ run)
+          & pending %~ (+ pnd)
 
 getSingleCommit :: Maybe User -> CommitHash -> M GetCommit
 getSingleCommit user' commit = do
