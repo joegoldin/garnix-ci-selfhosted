@@ -1610,7 +1610,7 @@ getServerExposures = do
         WHERE servers.ended_at IS NULL
         AND servers.exposed IS NOT NULL
       |]
-  pure [(sid, v) | (sid, mt) <- rows, t <- toList mt, Just v <- [Aeson.decode (cs t)]]
+  pure [(sid, v) | (sid, mt :: Maybe Text) <- rows, t <- toList mt, Just v <- [Aeson.decode (cs t)]]
 
 -- * Server pool
 
