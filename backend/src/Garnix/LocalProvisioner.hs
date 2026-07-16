@@ -1,4 +1,4 @@
--- | A 'HetznerInterface' implementation that provisions local microvm.nix
+-- | A 'Provisioner' implementation that provisions local microvm.nix
 -- guests via the root garnix-provisionerd daemon (newline-delimited JSON over
 -- a unix socket) instead of Hetzner Cloud VMs. Selected when
 -- GARNIX_PROVISIONER_SOCKET is set. The int32 "hetzner id" doubles as the
@@ -19,29 +19,20 @@ import Garnix.Types
 import Network.Socket qualified as Socket
 import Network.Socket.ByteString qualified as SocketBS
 
-localProvisionerInterface :: FilePath -> HetznerInterface
+localProvisionerInterface :: FilePath -> Provisioner
 localProvisionerInterface socketPath =
-  HetznerInterface
-    { _hetznerInterfaceProvisionServer = provisionServer' socketPath,
+  Provisioner
+    { _provisionerProvisionServer = provisionServer' socketPath,
       -- Hetzner labels are cosmetic metadata; local guests have none.
-      _hetznerInterfaceUpdateMetadata = \_ _ _ _ _ -> pure (),
-      _hetznerInterfaceDeleteServer = deleteServer' socketPath,
-      _hetznerInterfaceGetServerStatus = getServerStatus' socketPath
+      _provisionerUpdateMetadata = \_ _ _ _ _ -> pure (),
+      _provisionerDeleteServer = deleteServer' socketPath,
+      _provisionerGetServerStatus = getServerStatus' socketPath
     }
 
--- | Tier -> (vcpu, memory MiB). The tier names encode vCPUxGiB.
-tierResources :: HetznerServerType -> (Int, Int)
-tierResources = \case
-  HetznerCX23 -> (2, 4096)
-  HetznerCPX22 -> (2, 4096)
-  HetznerCX33 -> (4, 8192)
-  HetznerCX43 -> (8, 16384)
-  HetznerCX53 -> (16, 32768)
-
-provisionServer' :: FilePath -> PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> M PreprovisionedServer
-provisionServer' socketPath (PreprovisionedServerId serverId) _location serverType = do
+provisionServer' :: FilePath -> PreprovisionedServerId -> ServerTier -> M PreprovisionedServer
+provisionServer' socketPath (PreprovisionedServerId serverId) serverTier = do
   let vmId :: Int32 = fromIntegral serverId
-      (vcpu, mem) = tierResources serverType
+      (vcpu, mem) = tierResources serverTier
   resp <-
     provisionerRequest socketPath
       $ object ["action" .= ("create" :: Text), "id" .= vmId, "vcpu" .= vcpu, "mem" .= mem]
@@ -52,7 +43,7 @@ provisionServer' socketPath (PreprovisionedServerId serverId) _location serverTy
   pure
     PreprovisionedServer
       { _preprovisionedServerId = PreprovisionedServerId serverId,
-        _preprovisionedServerHetznerServerId = HetznerServerId vmId,
+        _preprovisionedServerProvisionedServerId = ProvisionedServerId vmId,
         _preprovisionedServerIpv4Addr = ipv4,
         -- Local guests are v4-only; servers.ipv6 is NOT NULL so record "".
         _preprovisionedServerIpv6Addr = "",
@@ -60,8 +51,8 @@ provisionServer' socketPath (PreprovisionedServerId serverId) _location serverTy
         _preprovisionedServerReadyAt = Nothing
       }
 
-deleteServer' :: FilePath -> HetznerServerId -> M ()
-deleteServer' socketPath (HetznerServerId vmId) =
+deleteServer' :: FilePath -> ProvisionedServerId -> M ()
+deleteServer' socketPath (ProvisionedServerId vmId) =
   void
     . provisionerRequest socketPath
     $ object ["action" .= ("destroy" :: Text), "id" .= vmId]
@@ -69,10 +60,10 @@ deleteServer' socketPath (HetznerServerId vmId) =
 -- | Ask the provisioner daemon to expose a guest's SSH and/or tcp ports via
 -- host-port DNAT. Separate from 'provisionServer' (which stays generic) and
 -- only meaningful for the local provisioner — hence not part of
--- 'HetznerInterface'. Response shape:
+-- 'Provisioner'. Response shape:
 -- @{"ssh_port": Int|null, "tcp_ports": [{"guest": Int, "host": Int}, ...]}@.
-exposeServer :: FilePath -> HetznerServerId -> Bool -> [Int] -> M ExposeResult
-exposeServer socketPath (HetznerServerId vmId) sshExposeReq tcpGuestPorts = do
+exposeServer :: FilePath -> ProvisionedServerId -> Bool -> [Int] -> M ExposeResult
+exposeServer socketPath (ProvisionedServerId vmId) sshExposeReq tcpGuestPorts = do
   resp <-
     provisionerRequest socketPath
       $ object
@@ -92,8 +83,8 @@ exposeServer socketPath (HetznerServerId vmId) sshExposeReq tcpGuestPorts = do
           ]
       }
 
-getServerStatus' :: FilePath -> HetznerServerId -> M Text
-getServerStatus' socketPath (HetznerServerId vmId) = do
+getServerStatus' :: FilePath -> ProvisionedServerId -> M Text
+getServerStatus' socketPath (ProvisionedServerId vmId) = do
   resp <-
     provisionerRequest socketPath
       $ object ["action" .= ("status" :: Text), "id" .= vmId]

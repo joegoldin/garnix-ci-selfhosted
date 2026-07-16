@@ -476,7 +476,7 @@ spec = do
         result <- testServer.delete (cs ("/api/hosts/" <> getHashId (getServerId (server ^. id))))
         result `shouldHaveStatusCode` 404
         let owner = GhRepoOwner $ user ^. githubLogin
-        server <- DB.getHetznerServerById [owner] (server ^. id)
+        server <- DB.getProvisionerServerById [owner] (server ^. id)
         case server of
           Nothing -> pure ()
           Just _ -> liftIO $ expectationFailure "Server was not deleted"

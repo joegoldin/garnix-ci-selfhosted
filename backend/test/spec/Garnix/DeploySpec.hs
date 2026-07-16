@@ -391,7 +391,7 @@ spec = do
               testServerInfo =
                 ServerInfo
                   { _serverInfoId = ServerId $ 1 ^. from hashIdInt,
-                    _serverInfoHetznerServerId = HetznerServerId 20950838,
+                    _serverInfoProvisionedServerId = ProvisionedServerId 20950838,
                     _serverInfoIpv4Addr = "<none>",
                     _serverInfoIpv6Addr = "<none>",
                     _serverInfoCreatedAt = error "not used",
@@ -1085,7 +1085,7 @@ getAllDbServers = do
     [pgSQL|!
     SELECT
       servers.id,
-      servers.hetzner_id,
+      servers.provisioner_id,
       servers.ipv4,
       servers.ipv6,
       servers.created_at,
@@ -1103,8 +1103,8 @@ getAllDbServers = do
 assertNotExists :: (HasCallStack) => ServerInfo -> M ()
 assertNotExists serverInfo = liftIO $ do
   let HetznerState st = hetznerState
-  let hetznerId = serverInfo ^. hetznerServerId
-  readMVar st >>= \m -> case Map.lookup hetznerId m of
+  let provisionerId = serverInfo ^. provisionedServerId
+  readMVar st >>= \m -> case Map.lookup provisionerId m of
     Nothing -> pure ()
     Just (tid, state, mvar) -> do
       actualState <- liftIO $ readMVar mvar
@@ -1113,8 +1113,8 @@ assertNotExists serverInfo = liftIO $ do
 shouldHaveState :: (HasCallStack) => ServerInfo -> Text -> M ()
 shouldHaveState serverInfo expectedState = liftIO $ do
   let HetznerState st = hetznerState
-  let hetznerId = serverInfo ^. hetznerServerId
-  readMVar st >>= \m -> case Map.lookup hetznerId m of
+  let provisionerId = serverInfo ^. provisionedServerId
+  readMVar st >>= \m -> case Map.lookup provisionerId m of
     Nothing ->
       expectationFailure
         . cs

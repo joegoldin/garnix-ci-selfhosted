@@ -1132,7 +1132,7 @@ addServer build pr now duration = do
     DB.pgExec
       [pgSQL|
         INSERT INTO servers
-          (configuration_build_id, hetzner_id, created_at, ready_at, ended_at, pull_request, ipv4, ipv6, server_tier) VALUES
+          (configuration_build_id, provisioner_id, created_at, ready_at, ended_at, pull_request, ipv4, ipv6, server_tier) VALUES
           (${build ^. id}, 1, ${start}, ${start}, ${end}, ${pr}, '<none>', '<none>', ${def :: ServerTier})
       |]
   case res of

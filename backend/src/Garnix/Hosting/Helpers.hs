@@ -1,24 +1,15 @@
 module Garnix.Hosting.Helpers
   ( getRunningAndRecentServersForOwners,
-    getBranchDeploymentBillingLineItems,
-    calculateBranchDeploymentBillingLineItems,
-    groupIdentifierToLineItemDescription,
-    BranchServerGroupIdentifier (..),
-    BranchServerBillingLineItem (..),
     RunningServer (..),
   )
 where
 
 import Data.Aeson qualified as Aeson
-import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
-import Data.Ord
 import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.DB qualified as DB
-import Garnix.Duration
-import Garnix.Hosting.ServerPool.Types
+import Garnix.Hosting.ServerPool.Types ()
 import Garnix.Monad
-import Garnix.MonetaryCost
 import Garnix.Prelude
 import Garnix.Types
 
@@ -112,136 +103,3 @@ getRunningAndRecentServersForOwners owners = do
       (Just _, Nothing) -> Just Online
       (Just _, Just _) -> Just Ended
       (Nothing, Just _) -> Nothing
-
-data BranchServerGroupIdentifier = BranchServerGroupIdentifier
-  { owner :: GhRepoOwner,
-    repo :: GhRepoName,
-    package :: PackageName,
-    serverTier :: ServerTier
-  }
-  deriving stock (Eq, Ord, Show, Generic)
-
-groupIdentifierToLineItemDescription :: BranchServerGroupIdentifier -> Text
-groupIdentifierToLineItemDescription group =
-  getGhLogin (getGhRepoOwner $ group ^. #owner)
-    <> "/"
-    <> getGhRepoName (group ^. #repo)
-    <> "#"
-    <> getPackageName (group ^. #package)
-    <> " "
-    <> serverTierToText (group ^. #serverTier)
-
-data BranchServerBillingLineItem = BranchServerBillingLineItem
-  { group :: BranchServerGroupIdentifier,
-    includedInPlan :: Bool,
-    usedTime :: Duration,
-    cost :: MonetaryCost
-  }
-  deriving stock (Eq, Ord, Show, Generic)
-
-getBranchDeploymentBillingLineItems :: Int64 -> UTCTime -> UTCTime -> GhRepoOwner -> M [BranchServerBillingLineItem]
-getBranchDeploymentBillingLineItems numFreeServers periodStart periodEnd owner = do
-  now <- liftIO getCurrentTime
-  servers <-
-    -- Note: the `ready_at` and `ended_at` in the WHERE clause is only for
-    -- limiting the returned results, billing period calculation actually
-    -- happens in haskell in the map below.
-    DB.pgQuery
-      [pgSQL|
-          SELECT
-            ready_at,
-            ended_at,
-            server_tier,
-            builds.repo_user,
-            builds.repo_name,
-            builds.package
-          FROM servers
-          INNER JOIN builds
-          ON servers.configuration_build_id = builds.id
-          WHERE builds.repo_user = ${owner}
-          AND ready_at <= ${periodEnd}
-          AND (ended_at IS NULL OR ended_at >= ${periodStart})
-        |]
-  calculateBranchDeploymentBillingLineItems numFreeServers periodStart periodEnd
-    <$> mapM
-      ( \(readyAt :: Maybe UTCTime, endTime :: Maybe UTCTime, serverTier :: ServerTier, repoOwner :: GhRepoOwner, repoName :: GhRepoName, package :: PackageName) -> do
-          startTime <- case readyAt of
-            Just s -> pure s
-            Nothing -> throw $ OtherError "getBranchDeploymentBillingLineItems: Impossible: readyAt is null"
-          let normalizedStart = max periodStart startTime
-          let normalizedEnd = min periodEnd $ fromMaybe now endTime
-          let group = BranchServerGroupIdentifier repoOwner repoName package serverTier
-          let usedTime = normalizedEnd `diffTime` normalizedStart
-          pure (group, usedTime)
-      )
-      servers
-
-calculateBranchDeploymentBillingLineItems :: Int64 -> UTCTime -> UTCTime -> [(BranchServerGroupIdentifier, Duration)] -> [BranchServerBillingLineItem]
-calculateBranchDeploymentBillingLineItems numFreeServers periodStart periodEnd usedTimeByGroup =
-  let totalFreeTime = periodDuration `multiplyDuration` numFreeServers
-   in fst
-        $ foldl'
-          ( \(lineItems, freeTimeRemaining) (group, usedTime) ->
-              let (lineItemsToAdd, newFreeTimeRemaining) = generateLineItems freeTimeRemaining group usedTime
-               in (lineItems ++ lineItemsToAdd, newFreeTimeRemaining)
-          )
-          ([], totalFreeTime)
-        $ sortBy (compare `on` \(group, duration) -> (Down duration, group))
-        $ Map.toList
-        $ Map.fromListWith addDuration
-        $ filter
-          ((> emptyDuration) . snd)
-          usedTimeByGroup
-  where
-    periodDuration :: Duration
-    periodDuration = periodEnd `diffTime` periodStart
-
-    -- Duration returned here is the updated free time remaining
-    generateLineItems :: Duration -> BranchServerGroupIdentifier -> Duration -> ([BranchServerBillingLineItem], Duration)
-    generateLineItems freeTimeRemaining group usedTime
-      | not serverIsEligibleForFreeTier || freeTimeRemaining == emptyDuration =
-          -- There is no free time remaining, or the server is not free. Bill this server for the entire usage
-          ( [ BranchServerBillingLineItem
-                { group = group,
-                  includedInPlan = False,
-                  usedTime = usedTime,
-                  cost = serverCost `multiplyCost` (usedTime `divideDuration` periodDuration)
-                }
-            ],
-            freeTimeRemaining
-          )
-      | freeTimeRemaining >= usedTime =
-          -- We have still enough free time to cover this entire server use
-          ( [ BranchServerBillingLineItem
-                { group = group,
-                  includedInPlan = True,
-                  usedTime = usedTime,
-                  cost = usd 0
-                }
-            ],
-            freeTimeRemaining `subtractDuration` usedTime
-          )
-      | otherwise =
-          -- This server is partly covered by free time, so we split it into two line items
-          ( [ BranchServerBillingLineItem
-                { group = group,
-                  includedInPlan = True,
-                  usedTime = freeTimeRemaining,
-                  cost = usd 0
-                },
-              let unFreeUsedTime = usedTime `subtractDuration` freeTimeRemaining
-               in BranchServerBillingLineItem
-                    { group = group,
-                      includedInPlan = False,
-                      usedTime = unFreeUsedTime,
-                      cost = serverCost `multiplyCost` (unFreeUsedTime `divideDuration` periodDuration)
-                    }
-            ],
-            emptyDuration
-          )
-      where
-        serverIsEligibleForFreeTier :: Bool
-        serverIsEligibleForFreeTier = group ^. #serverTier == serverTierIncludedWithPlans
-
-        serverCost :: MonetaryCost
-        serverCost = serverTierToCost $ group ^. #serverTier

@@ -59,7 +59,7 @@ import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig)
 import Garnix.Prelude
 import Garnix.TestHelpers.GithubInterface.Deprecated qualified as Deprecated
-import Garnix.TestHelpers.HetznerMock (testHetznerInterface)
+import Garnix.TestHelpers.HetznerMock (testProvisioner)
 import Garnix.Types hiding (pending)
 import GitHub.App.Auth (AppAuth (..))
 import GitHub.Data.Id (Id (..))
@@ -272,7 +272,7 @@ withTestEnvironment tempDir action = do
                   userNixConfig = defaultNixConfig,
                   githubWebhookSecret = "github-webhook-secret",
                   githubInterface = ghInterface,
-                  hetznerInterface = testHetznerInterface,
+                  provisioner = testProvisioner,
                   serverPoolConfig = [],
                   cookieSettings = defaultCookieSettings {cookieXsrfSetting = Nothing},
                   jwtSettings = defaultJWTSettings $ fromSecret $ cs jwtKey,

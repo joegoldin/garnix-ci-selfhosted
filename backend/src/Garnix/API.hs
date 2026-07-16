@@ -20,7 +20,6 @@ import Garnix.API.Hosts
 import Garnix.API.Keys
 import Garnix.API.Modules
 import Garnix.API.Runs (RunAPI, runAPI)
-import Garnix.API.Stripe (StripeWebhookAPI, stripeWebhookAPI)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
@@ -39,7 +38,6 @@ data WholeAPI r = WholeAPI
         :- "api"
           :> "events"
           :> ( "github" :> ToServantApi GhWebhookAPI
-                 :<|> "stripe" :> StripeWebhookAPI
                  :<|> "gitea" :> ToServantApi GiteaWebhookAPI
              ),
     account :: r :- "api" :> "account" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AccountAPI,
@@ -89,7 +87,7 @@ data ProjectAPI r = ProjectAPI
 wholeAPI :: WholeAPI (AsServerT M)
 wholeAPI =
   WholeAPI
-    { events = toServant ghWebhookAPI :<|> stripeWebhookAPI :<|> toServant giteaWebhookAPI,
+    { events = toServant ghWebhookAPI :<|> toServant giteaWebhookAPI,
       account = toServant . accountAPI,
       admin = toServant . adminAPI,
       configure = toServant . configureAPI,

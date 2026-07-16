@@ -194,13 +194,13 @@ deleteHost (Authenticated (WebSession user ghToken)) serverId = do
     (GhRepoOwner (user ^. githubLogin) :)
       . map organizationName
       <$> getInstalledOrgs ghToken
-  hetznerServerIds <- do
-    DB.getHetznerServerById orgs serverId >>= \case
+  provisionedServerIds <- do
+    DB.getProvisionerServerById orgs serverId >>= \case
       Nothing -> pure []
       Just serverId -> do
         pure [serverId]
-  case hetznerServerIds of
-    [hetznerServerId] -> do stopServer serverId hetznerServerId
+  case provisionedServerIds of
+    [provisionedServerId] -> do stopServer serverId provisionedServerId
     _ -> throw NotFound
 deleteHost _ _ = throw Unauthorized
 

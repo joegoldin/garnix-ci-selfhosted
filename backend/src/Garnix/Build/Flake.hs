@@ -13,7 +13,7 @@ import Garnix.Build.MetaCheck qualified as MetaCheck
 import Garnix.Build.Package (doBuild)
 import Garnix.Build.Reporting
 import Garnix.DB qualified as DB
-import Garnix.Entitlements (addDefaultEntitlements, applyConfiguredTimeouts, getPlan, hasRemainingCiTime)
+import Garnix.Entitlements (applyConfiguredTimeouts, getPlan)
 import Garnix.GetAttributes
 import Garnix.Hosting.Deploy (rolloutNewServerVersion)
 import Garnix.Modules qualified as Modules
@@ -26,16 +26,11 @@ import Garnix.YamlConfig (Action, ExcludeBranches (..), GarnixConfig, Incrementa
 runBuildFlake :: (HasCallStack) => Reporter -> BuildKind -> CommitInfo -> Remote -> M ()
 runBuildFlake reporter buildKind commitInfo withCheckout = do
   let repoOwner = commitInfo ^. repoInfo . ghRepoOwner
-  addDefaultEntitlements repoOwner
   (startingBuild, startingBuildRunReporter) <- newBuild reporter commitInfo (PackageInfo TypeOverall NoSystem buildStarting) False
   withInternalCacheToken (commitInfo ^. reqUser) $ do
     metaCheckRun <- MetaCheck.newReport reporter commitInfo
     flip catchEither (\err -> MetaCheck.updateFail commitInfo metaCheckRun (Just err) >> rethrowEither err) $ do
       reportOnError startingBuildRunReporter startingBuild commitInfo $ do
-        hasCiTime <- hasRemainingCiTime repoOwner
-        when (not hasCiTime) $ do
-          log Notice $ show (commitInfo ^. repoInfo . ghRepoOwner) <> " ran out of CI time."
-          throw $ EntitlementError "You have exhausted your monthly CI quota"
         repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
         runWithCheckout withCheckout commitInfo $ \config -> do
           withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
@@ -113,17 +108,9 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
                 else MetaCheck.updateFail commitInfo metaCheckRun Nothing
 
 setupBuilds :: Reporter -> CommitInfo -> GarnixConfig -> ProductPlan -> M [(Build, RunReporter)]
-setupBuilds reporter commitInfo config plan = do
-  toBuild <- do
-    attributes <- getAttributesToBuild commitInfo config
-    when (length attributes > fromIntegral (plan ^. maximumPackagesPerFlake)) $ do
-      throw
-        $ OtherError
-        $ "Number of packages too large. Maximum is "
-        <> show (plan ^. maximumPackagesPerFlake)
-        <> ", you have "
-        <> show (length attributes)
-    pure attributes
+setupBuilds reporter commitInfo config _plan = do
+  -- No per-plan package limit in this fork.
+  toBuild <- getAttributesToBuild commitInfo config
   log Informational $ "Will build the following attributes: " <> show toBuild
   forM toBuild $ \attr -> do
     setupBuild reporter config commitInfo attr

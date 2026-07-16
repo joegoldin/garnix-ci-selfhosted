@@ -1133,7 +1133,7 @@ spec = do
           let serverInfo =
                 ServerInfo
                   { _serverInfoId = ServerId $ 1 ^. from hashIdInt,
-                    _serverInfoHetznerServerId = HetznerServerId 1,
+                    _serverInfoProvisionedServerId = ProvisionedServerId 1,
                     _serverInfoIpv4Addr = "<none>",
                     _serverInfoIpv6Addr = "<none>",
                     _serverInfoCreatedAt = error "not set",

@@ -423,7 +423,7 @@ addTestServer f = do
         f
           $ ServerInfo
             { _serverInfoId = undefined,
-              _serverInfoHetznerServerId = HetznerServerId 1,
+              _serverInfoProvisionedServerId = ProvisionedServerId 1,
               _serverInfoIpv4Addr = "<none>",
               _serverInfoIpv6Addr = "<none>",
               _serverInfoCreatedAt = now,
@@ -441,7 +441,7 @@ addTestServer f = do
         INSERT INTO servers
             (
               configuration_build_id,
-              hetzner_id,
+              provisioner_id,
               ipv4,
               ipv6,
               created_at,
@@ -454,7 +454,7 @@ addTestServer f = do
         VALUES
             (
               ${testServer ^. configurationBuildId},
-              ${testServer ^. hetznerServerId},
+              ${testServer ^. provisionedServerId},
               ${testServer ^. ipv4Addr},
               ${testServer ^. ipv6Addr},
               ${testServer ^. createdAt},
@@ -466,7 +466,7 @@ addTestServer f = do
             )
         RETURNING
           id,
-          hetzner_id,
+          provisioner_id,
           ipv4,
           ipv6,
           created_at,

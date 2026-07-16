@@ -15,7 +15,7 @@ where
 import Control.Lens
 import Control.Lens.Regex.Text qualified as RE
 import Control.Monad (mzero)
-import Data.Aeson (defaultOptions, genericParseJSON, withObject)
+import Data.Aeson (withObject)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Aeson.Encoding qualified as Aeson
@@ -31,16 +31,13 @@ import Data.Pool (Pool)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Database.PostgreSQL.Typed.Types (PGStringType)
-import Garnix.Duration
 import Garnix.Hosting.ServerPool.Types
-import Garnix.MonetaryCost
 import Garnix.Nix.Types qualified as Nix
 import Garnix.Prelude
 import Garnix.Types.ExternalLenses
 import Garnix.Types.Keys
 import GitHub.App.Auth (InstallationAuth)
 import Network.HTTP.Types (Header, statusMessage)
-import Network.Wreq qualified as Wreq
 import Prettyprinter qualified as Pretty
 import Servant qualified
 import System.Log.FastLogger as FastLogger
@@ -1348,27 +1345,6 @@ instance FromJSON AuthJwtPayload where
     token <- obj Aeson..:? "github_token"
     pure $ maybe (ApiSession user) (WebSession user) token
 
-newtype CustomerId = CustomerId {getCustomerId :: Text}
-  deriving stock (Generic, Show, Eq)
-  deriving newtype (ToJSON, FromJSON, Wreq.FormValue)
-
-newtype InvoiceId = InvoiceId {getInvoiceId :: Text}
-  deriving stock (Generic, Show, Eq)
-  deriving newtype (ToJSON, FromJSON, Wreq.FormValue)
-
-newtype SubscriptionId = SubscriptionId {getSubscriptionId :: Text}
-  deriving stock (Generic, Show, Eq, Ord)
-  deriving newtype (ToJSON, FromJSON, Wreq.FormValue)
-
-data InstallationStatus
-  = NoActiveInstallation
-  | InstallationRenewing UTCTime
-  | InstallationCancelling UTCTime
-  deriving stock (Eq, Show, Generic)
-
-instance ToJSON InstallationStatus where
-  toEncoding = ourToEncoding
-  toJSON = ourToJSON
 
 data CreatingUser a = CreatingUser
   { _creatingUserExists :: Bool,
@@ -1491,7 +1467,7 @@ newtype PreprovisionedServerId = PreprovisionedServerId {getPreprovisionedServer
 instance Pretty PreprovisionedServerId where
   pretty = pretty . getPreprovisionedServerId
 
-newtype HetznerServerId = HetznerServerId {getHetznerServerId :: Int32}
+newtype ProvisionedServerId = ProvisionedServerId {getProvisionedServerId :: Int32}
   deriving stock (Eq, Show, Ord, Generic)
   deriving newtype
     ( ToJSON,
@@ -1503,12 +1479,12 @@ newtype HetznerServerId = HetznerServerId {getHetznerServerId :: Int32}
       Enum
     )
 
-instance Pretty HetznerServerId where
-  pretty = pretty . show . getHetznerServerId
+instance Pretty ProvisionedServerId where
+  pretty = pretty . show . getProvisionedServerId
 
 data ServerInfo = ServerInfo
   { _serverInfoId :: ServerId,
-    _serverInfoHetznerServerId :: HetznerServerId,
+    _serverInfoProvisionedServerId :: ProvisionedServerId,
     _serverInfoIpv4Addr :: Text,
     _serverInfoIpv6Addr :: Text,
     _serverInfoCreatedAt :: UTCTime,
@@ -1530,7 +1506,7 @@ instance Pretty ServerInfo where
         2
         ( vsep
             [ "id:" <+> pretty (_serverInfoId s),
-              "hetzner id:" <+> pretty (_serverInfoHetznerServerId s),
+              "hetzner id:" <+> pretty (_serverInfoProvisionedServerId s),
               "ipv4:" <+> pretty (_serverInfoIpv4Addr s),
               "ipv6:" <+> pretty (_serverInfoIpv6Addr s),
               "created at:" <+> pretty (show $ _serverInfoCreatedAt s),
@@ -1557,7 +1533,7 @@ ghPrDeployment = fromDeploymentType (const Nothing) Just
 
 data PreprovisionedServer = PreprovisionedServer
   { _preprovisionedServerId :: PreprovisionedServerId,
-    _preprovisionedServerHetznerServerId :: HetznerServerId,
+    _preprovisionedServerProvisionedServerId :: ProvisionedServerId,
     _preprovisionedServerIpv4Addr :: Text,
     _preprovisionedServerIpv6Addr :: Text,
     _preprovisionedServerCreatedAt :: UTCTime,
@@ -1684,7 +1660,7 @@ data Host = Host
     _hostDrvPath :: Maybe FilePath,
     _hostPersistenceName :: Maybe Text,
     _hostServerId :: ServerId,
-    _hostHetznerId :: HetznerServerId,
+    _hostProvisionerId :: ProvisionedServerId,
     _hostIsPrimary :: Bool
   }
   deriving stock (Eq, Show, Generic)
@@ -1846,46 +1822,20 @@ newtype Memory = Memory Int64
       PGParameter "bigint"
     )
 
+-- | In this self-hosting fork a "plan" only carries the eval/build timeouts
+-- (safety limits set on the Configure page). DisplayName/description are shown
+-- on the account usage page; there is no billing or per-plan limit.
 data ProductPlan = ProductPlan
   { _productPlanDisplayName :: Text,
     _productPlanDescription :: Maybe Text,
-    _productPlanBaseCiTime :: Duration,
-    _productPlanMaximumPrDeploymentTime :: Duration,
-    _productPlanIncludedBranchDeploymentHosts :: Int64,
-    _productPlanMaximumPackagesPerFlake :: Int32,
     _productPlanPackageEvaluationTimeout :: Int16,
-    _productPlanPackageBuildTimeout :: Int16,
-    _productPlanExtraUsage :: ExtraUsageLimits,
-    _productPlanIsPaid :: Bool
+    _productPlanPackageBuildTimeout :: Int16
   }
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON ProductPlan where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
-
-data ExtraUsageLimits = ExtraUsageLimits
-  { ciTime :: Duration,
-    prDeployTime :: Duration,
-    hostingSpend :: MonetaryCost
-  }
-  deriving (Eq, Show, Generic, ToJSON)
-
-instance FromJSON ExtraUsageLimits where
-  parseJSON = withObject "ExtraUsageLimits" $ \v -> do
-    limits <- genericParseJSON defaultOptions $ Aeson.Object v
-    when (limits ^. #ciTime < emptyDuration) $ fail "CI time cannot be negative"
-    when (limits ^. #prDeployTime < emptyDuration) $ fail "PR deploy time cannot be negative"
-    when (limits ^. #hostingSpend < usd 0) $ fail "Hosting spend cannot be negative"
-    pure limits
-
-emptyUsageLimits :: ExtraUsageLimits
-emptyUsageLimits =
-  ExtraUsageLimits
-    { ciTime = emptyDuration,
-      prDeployTime = emptyDuration,
-      hostingSpend = usd 0
-    }
 
 toBytes :: Memory -> Int64
 toBytes (Memory bytes) = bytes

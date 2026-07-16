@@ -41,7 +41,6 @@ import Garnix.Monad.Pool (Pool)
 import Garnix.Nix.Types (StoreHash)
 import Garnix.Nix.Types qualified as Nix
 import Garnix.Prelude
-import Garnix.StripeLib.Types qualified as StripeLib
 import Garnix.Types hiding (ghRunId, statusCode)
 import GitHub qualified as GH
 import GitHub.App.Auth (InstallationAuth)
@@ -70,7 +69,7 @@ data Env = Env
     githubClientId :: Text,
     buildLogsReportingPort :: Maybe Int,
     githubInterface :: GithubInterface,
-    hetznerInterface :: HetznerInterface,
+    provisioner :: Provisioner,
     -- | Path to the local microVM provisioner daemon's unix socket, when
     -- self-hosting (GARNIX_PROVISIONER_SOCKET). 'Nothing' means the Hetzner
     -- Cloud path. Used to reach the daemon's post-provision @expose@ action.
@@ -114,12 +113,10 @@ data Env = Env
     repoSecretsEncryptionPubKey :: RepoSecretsEncryptionPubKey,
     logger :: LogItem -> IO (),
     buildLogsDir :: FilePath,
-    hetznerToken :: StrictByteString,
     opensearchQueryUrl :: String,
     opensearchPassword :: ByteString,
     nixEvalPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
     s3UploadPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
-    stripe :: StripeEnv,
     mocks :: Maybe EnvMocks,
     emptyDir :: FilePath,
     spanCtx :: [(Text, Text)],
@@ -134,7 +131,6 @@ data Env = Env
 data TestFeature
   = DevApi
   | OpenSearchMocks
-  | StripeMocks
   | CacheUploadMocks
   | FodCheckMocks
   deriving stock (Eq, Show, Read, Ord, Generic, Enum, Bounded)
@@ -186,18 +182,11 @@ data ActionEnv = ActionEnv
   }
   deriving (Generic)
 
-data StripeEnv = StripeEnv
-  { publishableKey :: Text,
-    secretKey :: Text,
-    webhookSecret :: Text
-  }
-  deriving stock (Generic)
-
 data EnvMocks = EnvMocks
   { executeDeployPlanMock ::
       Maybe
         (Mock (Reporter, CommitInfo, DeployPlan, DeploymentType) [ServerInfo]),
-    waitTillServerIsInitializedMock :: Maybe (Mock HetznerServerId Bool),
+    waitTillServerIsInitializedMock :: Maybe (Mock ProvisionedServerId Bool),
     buildFlakeMock ::
       Maybe
         (Mock (Reporter, CommitInfo) (Promise ())),
@@ -214,12 +203,6 @@ data EnvMocks = EnvMocks
     makeOpenSearchMsearchRequestMock ::
       Maybe
         (Mock (Value, Value) BSL.ByteString),
-    createCustomerMock :: Maybe (Mock (GhRepoOwner, StripeLib.Name, Email) StripeLib.CustomerDto),
-    createSubscriptionMock :: Maybe (Mock (CustomerId, StripeLib.PriceId, Text, Text) StripeLib.SubscriptionDto),
-    createInvoiceItemMock :: Maybe (Mock (CustomerId, InvoiceId, Text, StripeLib.UnitAmount, Int64) ()),
-    listSubscriptionsMock :: Maybe (Mock CustomerId StripeLib.SubscriptionListDto),
-    cancelSubscriptionMock :: Maybe (Mock SubscriptionId ()),
-    getPriceMock :: Maybe (Mock StripeLib.PriceId StripeLib.PriceDto),
     getBuildPlanMock :: Maybe (Mock ByteString Nix.Plan),
     buildPkgMock :: Maybe (Mock (Maybe FodChecker, RunReporter, BuildKind, FlakeDir, RepoConfig, ProductPlan, Build) Build),
     s3CacheUploadMock :: Maybe (Mock (RunReporter, GhRepoOwner, GhRepoName, EvaluationResult, RepoPublicity) ()),
@@ -238,12 +221,6 @@ emptyMocks =
       queryOpenSearchMock = Nothing,
       startServerMock = Nothing,
       makeOpenSearchMsearchRequestMock = Nothing,
-      createCustomerMock = Nothing,
-      createSubscriptionMock = Nothing,
-      createInvoiceItemMock = Nothing,
-      listSubscriptionsMock = Nothing,
-      cancelSubscriptionMock = Nothing,
-      getPriceMock = Nothing,
       getBuildPlanMock = Nothing,
       setupServerMock = Nothing,
       buildPkgMock = Nothing,
@@ -405,13 +382,13 @@ data PullRequest = PullRequest
     _pullRequestBaseBranch :: Branch
   }
 
--- * HetznerInterface
+-- * Provisioner
 
-data HetznerInterface = HetznerInterface
-  { _hetznerInterfaceProvisionServer :: PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> M PreprovisionedServer,
-    _hetznerInterfaceUpdateMetadata :: RepoInfo -> DeploymentType -> Build -> ServerId -> HetznerServerId -> M (),
-    _hetznerInterfaceDeleteServer :: HetznerServerId -> M (),
-    _hetznerInterfaceGetServerStatus :: HetznerServerId -> M Text
+data Provisioner = Provisioner
+  { _provisionerProvisionServer :: PreprovisionedServerId -> ServerTier -> M PreprovisionedServer,
+    _provisionerUpdateMetadata :: RepoInfo -> DeploymentType -> Build -> ServerId -> ProvisionedServerId -> M (),
+    _provisionerDeleteServer :: ProvisionedServerId -> M (),
+    _provisionerGetServerStatus :: ProvisionedServerId -> M Text
   }
 
 makeFields ''PullRequest
@@ -501,25 +478,25 @@ withWreqOptions action = do
   let options = Wreq.defaults & Wreq.manager .~ Right manager
   liftIO $ action options
 
-provisionServer :: PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> M PreprovisionedServer
-provisionServer sId loc typ = do
-  iface <- view #hetznerInterface
-  _hetznerInterfaceProvisionServer iface sId loc typ
+provisionServer :: PreprovisionedServerId -> ServerTier -> M PreprovisionedServer
+provisionServer sId tier = do
+  iface <- view #provisioner
+  _provisionerProvisionServer iface sId tier
 
-updateMetadata :: RepoInfo -> DeploymentType -> Build -> ServerId -> HetznerServerId -> M ()
-updateMetadata repoInfo deploymentType build serverId hetznerServerId = do
-  iface <- view #hetznerInterface
-  _hetznerInterfaceUpdateMetadata iface repoInfo deploymentType build serverId hetznerServerId
+updateMetadata :: RepoInfo -> DeploymentType -> Build -> ServerId -> ProvisionedServerId -> M ()
+updateMetadata repoInfo deploymentType build serverId provisionedServerId = do
+  iface <- view #provisioner
+  _provisionerUpdateMetadata iface repoInfo deploymentType build serverId provisionedServerId
 
-deleteServer :: HetznerServerId -> M ()
+deleteServer :: ProvisionedServerId -> M ()
 deleteServer sId = do
-  iface <- view #hetznerInterface
-  _hetznerInterfaceDeleteServer iface sId
+  iface <- view #provisioner
+  _provisionerDeleteServer iface sId
 
-getServerStatus :: HetznerServerId -> M Text
+getServerStatus :: ProvisionedServerId -> M Text
 getServerStatus sId = do
-  iface <- view #hetznerInterface
-  _hetznerInterfaceGetServerStatus iface sId
+  iface <- view #provisioner
+  _provisionerGetServerStatus iface sId
 
 getNixXdgCacheDir :: M String
 getNixXdgCacheDir =

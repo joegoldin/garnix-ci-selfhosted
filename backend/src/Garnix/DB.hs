@@ -1660,7 +1660,7 @@ updatePreprovisionedServer s = do
     pgExec
       [pgSQL|
         UPDATE server_pool
-        SET hetzner_id = ${s ^. hetznerServerId},
+        SET provisioner_id = ${s ^. provisionedServerId},
             ipv4 = ${s ^. ipv4Addr},
             ipv6 = ${s ^. ipv6Addr},
             ready_at = ${s ^. readyAt}
@@ -1699,8 +1699,8 @@ claimServerDB serverToSpinUp pullRequest =
       pgQuery
         [pgSQL|
           DELETE FROM server_pool
-          WHERE hetzner_id IN (
-            SELECT hetzner_id
+          WHERE provisioner_id IN (
+            SELECT provisioner_id
             FROM server_pool
             WHERE
               ready_at IS NOT NULL AND
@@ -1708,16 +1708,16 @@ claimServerDB serverToSpinUp pullRequest =
             ORDER BY ready_at ASC
             LIMIT 1
             )
-          RETURNING hetzner_id, ipv4, ipv6, server_tier
+          RETURNING provisioner_id, ipv4, ipv6, server_tier
         |]
     case claimed of
       [] -> pure Nothing
-      [(Just hetznerId, Just ipv4, Just ipv6, tier)] -> Just <$> newServer hetznerId ipv4 ipv6 tier
-      [_] -> throw $ OtherError "Impossible: hetzner_id, ipv4 or ipv6 is NULL"
+      [(Just provisionerId, Just ipv4, Just ipv6, tier)] -> Just <$> newServer provisionerId ipv4 ipv6 tier
+      [_] -> throw $ OtherError "Impossible: provisioner_id, ipv4 or ipv6 is NULL"
       _ : _ -> throw $ OtherError "Impossible: LIMIT 1 returned more than 1"
   where
-    newServer :: HetznerServerId -> Text -> Text -> ServerTier -> M ServerInfo
-    newServer hetznerId ipv4 ipv6 tier = do
+    newServer :: ProvisionedServerId -> Text -> Text -> ServerTier -> M ServerInfo
+    newServer provisionerId ipv4 ipv6 tier = do
       let buildId = serverToSpinUp ^. #build . id
       let domainIsPrimary = serverToSpinUp ^. #domainIsPrimary
       changes <-
@@ -1730,7 +1730,7 @@ claimServerDB serverToSpinUp pullRequest =
               , created_at
               , deploy_logs
               , pull_request
-              , hetzner_id
+              , provisioner_id
               , ipv4
               , ipv6
               , server_tier
@@ -1742,7 +1742,7 @@ claimServerDB serverToSpinUp pullRequest =
               , NOW()
               , ''
               , ${pullRequest}
-              , ${hetznerId}
+              , ${provisionerId}
               , ${ipv4}
               , ${ipv6}
               , ${tier}
@@ -1750,7 +1750,7 @@ claimServerDB serverToSpinUp pullRequest =
               )
             RETURNING
               id,
-              hetzner_id,
+              provisioner_id,
               ipv4,
               ipv6,
               created_at,
@@ -1775,7 +1775,7 @@ updateServerPostDeploy s = do
     pgExec
       [pgSQL|
         UPDATE servers
-        SET hetzner_id = ${s ^. hetznerServerId},
+        SET provisioner_id = ${s ^. provisionedServerId},
             configuration_build_id = ${s ^. configurationBuildId},
             ipv4 = ${s ^. ipv4Addr},
             ipv6  = ${s ^. ipv6Addr},
@@ -1835,7 +1835,7 @@ getShutdownCandidates = do
           builds.drv_path,
           builds.persistence_name,
           servers.id,
-          servers.hetzner_id,
+          servers.provisioner_id,
           servers.is_primary
         FROM servers
         INNER JOIN builds
@@ -1863,7 +1863,7 @@ getAllRunningHosts = do
         builds.drv_path,
         builds.persistence_name,
         servers.id,
-        servers.hetzner_id,
+        servers.provisioner_id,
         servers.is_primary
       FROM servers
       INNER JOIN builds
@@ -1880,7 +1880,7 @@ getRunningServersOf repoInfo deploymentType = do
       [pgSQL|
         SELECT
           servers.id,
-          servers.hetzner_id,
+          servers.provisioner_id,
           servers.ipv4,
           servers.ipv6,
           servers.created_at,
@@ -1904,7 +1904,7 @@ getRunningServersOf repoInfo deploymentType = do
       [pgSQL|
         SELECT
           servers.id,
-          servers.hetzner_id,
+          servers.provisioner_id,
           servers.ipv4,
           servers.ipv6,
           servers.created_at,
@@ -1924,12 +1924,12 @@ getRunningServersOf repoInfo deploymentType = do
         AND servers.pull_request = ${prId}
       |]
 
-getHetznerServerById :: [GhRepoOwner] -> ServerId -> M (Maybe HetznerServerId)
-getHetznerServerById owner serverId = do
+getProvisionerServerById :: [GhRepoOwner] -> ServerId -> M (Maybe ProvisionedServerId)
+getProvisionerServerById owner serverId = do
   res <-
     pgQuery
       [pgSQL|
-        SELECT hetzner_id
+        SELECT provisioner_id
         FROM servers
         INNER JOIN builds
         ON servers.configuration_build_id = builds.id
@@ -1938,7 +1938,7 @@ getHetznerServerById owner serverId = do
         AND ended_at is null;
       |]
   case res of
-    [Just hetznerId] -> pure $ Just hetznerId
+    [Just provisionerId] -> pure $ Just provisionerId
     [] -> pure Nothing
     _ -> throw $ OtherError "Impossible: more than one result"
 
@@ -2005,32 +2005,10 @@ getCurrentMonthUsages owners = do
           repo_user,
           SUM(LEAST(120 * 60, date_part('EPOCH', (end_time - start_time)))) AS total_build_time
         FROM builds
-        LEFT JOIN installations ON installations.repo_owner = builds.repo_user
         WHERE repo_user = ANY(${owners})
-        AND end_time >=
-          CASE
-            -- if we're within the period, use start date
-            WHEN current_period_end > NOW() THEN current_period_start
-            -- if we don't have a period, use monthly cycles
-            WHEN current_period_end IS NULL then date_trunc('month', NOW())
-            -- otherwise, start from the end of the last period
-            ELSE current_period_end
-          END
-        AND comped = false
+        AND end_time >= date_trunc('month', NOW())
         GROUP BY repo_user
       |]
-
-updatePeriodForCustomer :: CustomerId -> UTCTime -> UTCTime -> M ()
-updatePeriodForCustomer (CustomerId customerId) startDate endDate =
-  void
-    $ pgExec
-      [pgSQL|
-      UPDATE installations
-        SET current_period_start = ${startDate},
-            current_period_end = ${endDate}
-        WHERE
-          stripe_customer = ${customerId}
-    |]
 
 getRepoKeyDB :: GhRepoOwner -> GhRepoName -> M (Maybe (PublicKey, PrivateKey))
 getRepoKeyDB owner name = do
@@ -2151,72 +2129,6 @@ addToWaitlist email = do
       |]
 
 -- * Installations
-
-getRepoOwnerForStripeCustomer :: CustomerId -> M (Maybe GhRepoOwner)
-getRepoOwnerForStripeCustomer customer = do
-  res :: [Maybe GhRepoOwner] <-
-    pgQuery
-      [pgSQL|
-        SELECT repo_owner
-        FROM installations
-        WHERE stripe_customer = ${getCustomerId customer}
-      |]
-  case res of
-    [Just owner] -> pure $ Just owner
-    [Nothing] -> pure Nothing
-    [] -> pure Nothing
-    _ : _ : _ -> throw $ OtherError "impossible: stripe_customer is unique"
-
-getInstallationStripeCustomer :: GhRepoOwner -> M (Maybe CustomerId)
-getInstallationStripeCustomer repoOwner = do
-  res :: [Maybe Text] <-
-    pgQuery
-      [pgSQL|
-        SELECT stripe_customer
-        FROM installations
-        WHERE repo_owner = ${repoOwner}
-      |]
-  case res of
-    [Just id] -> pure $ Just $ CustomerId id
-    [Nothing] -> pure Nothing
-    [] -> pure Nothing
-    _ : _ : _ -> throw $ OtherError "impossible: repo_owner is unique"
-
-setStripeCustomerId :: GhRepoOwner -> CustomerId -> M ()
-setStripeCustomerId repoOwner stripeCustomerId = do
-  void
-    $ pgExec
-      [pgSQL|
-        INSERT INTO installations
-        (repo_owner, stripe_customer) VALUES
-        (${repoOwner}, ${getCustomerId stripeCustomerId})
-      |]
-
-setRequestedCancellation :: GhRepoOwner -> Bool -> M ()
-setRequestedCancellation repoOwner requestedCancelation = do
-  void
-    $ pgExec
-      [pgSQL|
-        UPDATE installations
-        SET requested_cancellation = ${requestedCancelation}
-        WHERE repo_owner = ${repoOwner}
-      |]
-
-getInstallationStatus :: GhRepoOwner -> M InstallationStatus
-getInstallationStatus repoOwner = do
-  res :: [(Maybe UTCTime, Bool)] <-
-    pgQuery
-      [pgSQL|
-        SELECT current_period_end, requested_cancellation
-        FROM installations
-        WHERE repo_owner = ${repoOwner}
-      |]
-  case res of
-    [] -> pure NoActiveInstallation
-    [(Nothing, _)] -> pure NoActiveInstallation
-    [(Just endDate, False)] -> pure $ InstallationRenewing endDate
-    [(Just endDate, True)] -> pure $ InstallationCancelling endDate
-    _ : _ : _ -> throw $ OtherError "impossible: repo_owner is unique"
 
 getIncrementalTarget :: Build -> [CommitHash] -> M [Build]
 getIncrementalTarget build commits =

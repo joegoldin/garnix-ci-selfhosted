@@ -4,9 +4,6 @@ module Garnix.Hosting.Deploy
     stopUnusedServers,
     stopServer,
     redeployServer,
-    -- Exported for tests
-    _costBreakdown,
-    DeployCounts (..),
     checkDeployPlan,
   )
 where
@@ -25,13 +22,11 @@ import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.LocalProvisioner (exposeServer)
 import Garnix.Duration
-import Garnix.Entitlements qualified as Entitlements
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Monad
 import Garnix.Monad.Polling (PollingConfig (PollingConfig), withPolling)
 import Garnix.Monad.SubProcess (runSubProcess)
-import Garnix.MonetaryCost
 import Garnix.Nix.StorePath (withStorePath)
 import Garnix.Nix.Types
 import Garnix.Prelude
@@ -61,7 +56,7 @@ stopUnusedServers = do
   (PrHostList runningServers) <- DB.getShutdownCandidates
   heartbeat <- DB.getRecentHeartbeats
   let toSpinDown = filter (haveNotSentHeartbeat domain heartbeat) runningServers
-  traverse_ (\s -> stopServer (s ^. serverId) (s ^. hetznerId)) toSpinDown
+  traverse_ (\s -> stopServer (s ^. serverId) (s ^. provisionerId)) toSpinDown
   where
     haveNotSentHeartbeat :: Text -> [Text] -> Host -> Bool
     haveNotSentHeartbeat domain heartbeats host =
@@ -173,108 +168,9 @@ checkDeployPlan ::
   DeployPlan ->
   M ()
 checkDeployPlan repoInfo deploymentType plan = do
-  checkEntitlement (ghPrDeployment deploymentType) plan (repoInfo ^. ghRepoOwner)
-  checkServerTiers repoInfo plan
+  -- No billing/entitlement limits in this fork: only structural checks remain.
   checkSubdomainValidity repoInfo deploymentType $ fmap (^. #build) $ plan ^. #toSpinUp
   checkAllBuildsSucceeded plan
-
-data DeployCounts = DeployCounts
-  { includedInPlan :: Int64,
-    notIncludedInPlan :: Int64
-  }
-  deriving (Generic, Show)
-
-totalCount :: DeployCounts -> Int64
-totalCount d = d ^. #includedInPlan + d ^. #notIncludedInPlan
-
-costForTierDeployment :: ServerTier -> DeployCounts -> MonetaryCost
-costForTierDeployment tier deployCounts = serverTierToCost tier `multiplyCost` (deployCounts ^. #notIncludedInPlan)
-
-totalDeploymentCost :: Map ServerTier DeployCounts -> MonetaryCost
-totalDeploymentCost =
-  foldr' addCost (usd 0)
-    . map (uncurry costForTierDeployment)
-    . Map.toList
-
-_costBreakdown :: Map ServerTier DeployCounts -> [Text]
-_costBreakdown m =
-  m
-    & Map.toList
-    & filter (\(_, d) -> totalCount d > 0)
-    & map
-      ( \(tier, deployCounts) ->
-          let tierCostStr = formatCost (serverTierToCost tier)
-           in serverTierToText tier
-                <> " (x"
-                <> show (totalCount deployCounts)
-                <> ") = "
-                <> formatCost (costForTierDeployment tier deployCounts)
-                <> case deployCounts of
-                  DeployCounts 0 1 -> ""
-                  DeployCounts 0 _ -> " (" <> tierCostStr <> " each)"
-                  DeployCounts n 0 -> " (" <> show n <> " included in plan)"
-                  DeployCounts n 1 -> " (" <> show n <> " included in plan)"
-                  DeployCounts inc notInc ->
-                    " (" <> show inc <> " included in plan, " <> show notInc <> " not included at " <> tierCostStr <> " each)"
-      )
-
-checkEntitlement :: Maybe GhPullRequestId -> DeployPlan -> GhRepoOwner -> M ()
-checkEntitlement mPrId plan repoOwner = do
-  hostingLimits <- Entitlements.getHosting repoOwner
-  case mPrId of
-    Just _ -> do
-      when (hostingLimits ^. #maxPrDeploymentTime == emptyDuration)
-        $ throw
-        $ EntitlementError
-        $ "Sorry, hosting is not allowed for "
-        <> getGhLogin (getGhRepoOwner repoOwner)
-        <> "."
-      usedMinutes <- DB.getPrDeployDurationForOwner repoOwner
-      when (usedMinutes > hostingLimits ^. #maxPrDeploymentTime)
-        $ throw
-        $ EntitlementError "Sorry, you have exhausted all your PR deployment minutes."
-    Nothing -> do
-      currentHosts <- DB.getRunningBranchServersForOwner repoOwner
-      let allHostsAfterDeploy :: Map ServerTier DeployCounts =
-            currentHosts
-              & adjustCount succ (plan ^.. #toSpinUp . each . #serverTier)
-              & adjustCount pred (plan ^.. #toSpinDown . each . tier)
-              & Map.mapWithKey
-                ( \tier count ->
-                    let includedInPlan =
-                          if tier == serverTierIncludedWithPlans
-                            then min count (hostingLimits ^. #planIncludedBranchDeploymentHosts)
-                            else 0
-                     in DeployCounts
-                          { includedInPlan,
-                            notIncludedInPlan = count - includedInPlan
-                          }
-                )
-      let costAfterDeploy = totalDeploymentCost allHostsAfterDeploy
-      when (costAfterDeploy > hostingLimits ^. #extraBranchHostingSpend) $ do
-        throw
-          $ EntitlementError
-          $ "Deploying this would result in "
-          <> formatCost costAfterDeploy
-          <> " extra monthly server cost above your plan. "
-          <> ( if hostingLimits ^. #extraBranchHostingSpend > usd 0
-                 then "However, you have configured a max spend of " <> formatCost (hostingLimits ^. #extraBranchHostingSpend) <> " per month on deployed hosts. "
-                 else "You have not configured any additional spending budget on deployed hosts. "
-             )
-          <> "You can configure this spending limit on your account page at garnix.io.\n\n"
-          <> "Here is a breakdown of what would be deployed by this commit and the associated costs:\n"
-          <> T.unlines (map ("  " <>) $ _costBreakdown allHostsAfterDeploy)
-  where
-    adjustCount :: (Int64 -> Int64) -> [ServerTier] -> Map ServerTier Int64 -> Map ServerTier Int64
-    adjustCount adjust servers map = foldr' (Map.alter (Just . adjust . fromMaybe 0)) map servers
-
-checkServerTiers :: RepoInfo -> DeployPlan -> M ()
-checkServerTiers repoInfo plan = do
-  hostingLimits <- Entitlements.getHosting (repoInfo ^. ghRepoOwner)
-  unless (hostingLimits ^. #largerServers) $ do
-    forM_ (plan ^.. #toSpinUp . each . #serverTier) $ \serverTier ->
-      when (serverTier /= def) $ do
-        throw $ EntitlementError $ "Only server tier `" <> serverTierToText def <> "` supported."
 
 checkSubdomainValidity ::
   RepoInfo ->
@@ -332,12 +228,12 @@ executeDeployPlan = curry4
     serverInfos <- Async.mapConcurrently (startServer reporter commitInfo deploymentType) wantedServers
     redeployedServers <- Async.mapConcurrently (uncurry (redeployServer reporter commitInfo deploymentType)) redeployServers
     deployedServerInfos <- toggleServerFlags serverInfos currentServers <?> "Toggling servers ready flags."
-    Async.mapConcurrently_ (\s -> stopServer (s ^. id) (s ^. hetznerServerId)) currentServers
+    Async.mapConcurrently_ (\s -> stopServer (s ^. id) (s ^. provisionedServerId)) currentServers
     return (deployedServerInfos <> redeployedServers)
 
-stopServer :: ServerId -> HetznerServerId -> M ()
-stopServer serverId hetznerId = do
-  deleteServer hetznerId
+stopServer :: ServerId -> ProvisionedServerId -> M ()
+stopServer serverId provisionerId = do
+  deleteServer provisionerId
   DB.deleteServerDB serverId
 
 startServer ::
@@ -587,7 +483,7 @@ exposeServerPorts server serverToSpinUp = do
   case socket of
     Just sock
       | sshExpose' || not (null tcpGuestPorts) ->
-          Just <$> exposeServer sock (_serverInfoHetznerServerId server) sshExpose' tcpGuestPorts
+          Just <$> exposeServer sock (_serverInfoProvisionedServerId server) sshExpose' tcpGuestPorts
     _ -> pure Nothing
 
 -- | The per-server exposure blob stored in servers.exposed:

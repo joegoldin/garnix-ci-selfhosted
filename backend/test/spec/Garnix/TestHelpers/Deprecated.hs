@@ -100,8 +100,8 @@ withMockRepo flake yaml branch action = do
         ghInterface <- Deprecated.testGithubInterface mockGithubRepo buildRef
         let env =
               env'
-                & #hetznerInterface
-                .~ testHetznerInterface
+                & #provisioner
+                .~ testProvisioner
                 & #githubInterface
                 .~ ghInterface
                 & #s3CacheEnv

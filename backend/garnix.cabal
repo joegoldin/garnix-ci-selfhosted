@@ -51,7 +51,6 @@ library
       Garnix.API.Keys
       Garnix.API.Modules
       Garnix.API.Runs
-      Garnix.API.Stripe
       Garnix.Async
       Garnix.Attribute
       Garnix.Build
@@ -81,7 +80,6 @@ library
       Garnix.GiteaInterface
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
-      Garnix.HetznerInterface
       Garnix.Hosting.Deploy
       Garnix.Hosting.Helpers
       Garnix.Hosting.ServerPool
@@ -103,7 +101,6 @@ library
       Garnix.Monad.Pool
       Garnix.Monad.SubProcess
       Garnix.Monad.SubProcess.Deprecated
-      Garnix.MonetaryCost
       Garnix.Nix.PathInfo
       Garnix.Nix.Plan
       Garnix.Nix.StorePath
@@ -121,8 +118,6 @@ library
       Garnix.S3Cache
       Garnix.SafeUnix
       Garnix.Sandbox
-      Garnix.StripeLib
-      Garnix.StripeLib.Types
       Garnix.Types
       Garnix.Types.ExternalLenses
       Garnix.Types.Keys
@@ -751,13 +746,10 @@ test-suite spec
       Garnix.DB.FeatureFlagsSpec
       Garnix.DBSpec
       Garnix.DeploySpec
-      Garnix.EntitlementsSpec
       Garnix.ExpiringCacheSpec
       Garnix.FlakeInputAuthorizationSpec
       Garnix.GetAttributesSpec
       Garnix.GithubInterfaceSpec
-      Garnix.HetznerInterfaceSpec
-      Garnix.Hosting.BillingSpec
       Garnix.Hosting.DeploySpec
       Garnix.Hosting.ServerPoolSpec
       Garnix.IncrementalSpec
@@ -779,14 +771,12 @@ test-suite spec
       Garnix.Reporters.UtilsSpec
       Garnix.S3CacheSpec
       Garnix.SandboxSpec
-      Garnix.StripeLibSpec
       Garnix.TestHelpers
       Garnix.TestHelpers.Common
       Garnix.TestHelpers.Deprecated
       Garnix.TestHelpers.GithubInterface
       Garnix.TestHelpers.GithubInterface.Deprecated
       Garnix.TestHelpers.GithubInterface.Internal
-      Garnix.TestHelpers.HetznerMock
       Garnix.TestHelpers.Monad
       Garnix.TestHelpers.NixosVmScripts
       Garnix.TestHelpers.Reporter
@@ -825,7 +815,6 @@ test-suite spec
       Garnix.API.Keys
       Garnix.API.Modules
       Garnix.API.Runs
-      Garnix.API.Stripe
       Garnix.Async
       Garnix.Attribute
       Garnix.Build
@@ -855,7 +844,6 @@ test-suite spec
       Garnix.GiteaInterface
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
-      Garnix.HetznerInterface
       Garnix.Hosting.Deploy
       Garnix.Hosting.Helpers
       Garnix.Hosting.ServerPool
@@ -877,7 +865,6 @@ test-suite spec
       Garnix.Monad.Pool
       Garnix.Monad.SubProcess
       Garnix.Monad.SubProcess.Deprecated
-      Garnix.MonetaryCost
       Garnix.Nix.PathInfo
       Garnix.Nix.Plan
       Garnix.Nix.StorePath
@@ -895,8 +882,6 @@ test-suite spec
       Garnix.S3Cache
       Garnix.SafeUnix
       Garnix.Sandbox
-      Garnix.StripeLib
-      Garnix.StripeLib.Types
       Garnix.Types
       Garnix.Types.ExternalLenses
       Garnix.Types.Keys

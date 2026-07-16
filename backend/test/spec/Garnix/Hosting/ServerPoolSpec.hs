@@ -27,7 +27,7 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
 
     it "tries other locations if provisioning fails" $ do
       mvar <- newMVar (0, False)
-      let f = hetznerInterfaceModifyProvisionServer $ \provision -> do
+      let f = provisionerModifyProvisionServer $ \provision -> do
             join $ modifyMVar mvar $ \(servers, hasFailed) ->
               pure
                 $ if not hasFailed
@@ -47,7 +47,7 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
                 flip concatMap (enumerate @HetznerLocation) $ \location ->
                   replicate poolSize (location, hetznerServerType)
       mvar <- newMVar []
-      let f = hetznerInterfaceModifyProvisionServerWithParams $ \id loc typ provision -> do
+      let f = provisionerModifyProvisionServerWithParams $ \id loc typ provision -> do
             size <- modifyMVar mvar (\xs -> pure (xs <> [(loc, typ)], length xs + 1))
             if size == length expectedRetries
               then do
@@ -67,7 +67,7 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
                   replicate poolSize (location, hetznerServerType)
       local (#serverPoolConfig .~ [(I2x4, 1)]) $ do
         mvar <- newMVar []
-        let f = hetznerInterfaceModifyProvisionServerWithParams $ \id loc typ provision -> do
+        let f = provisionerModifyProvisionServerWithParams $ \id loc typ provision -> do
               size <- modifyMVar mvar (\xs -> pure (xs <> [(loc, typ)], length xs + 1))
               if size == length expectedRetries
                 then do
@@ -101,7 +101,7 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
         let server =
               ServerInfo
                 { _serverInfoId = ServerId $ 1 ^. from hashIdInt,
-                  _serverInfoHetznerServerId = HetznerServerId 20950838,
+                  _serverInfoProvisionedServerId = ProvisionedServerId 20950838,
                   _serverInfoIpv4Addr = "1.2.3.4",
                   _serverInfoIpv6Addr = "<none>",
                   _serverInfoCreatedAt = error "not used",
@@ -131,22 +131,22 @@ getPoolSize = do
   view #serverPoolConfig
     <&> sum . map snd
 
-hetznerInterfaceModifyProvisionServer :: (M PreprovisionedServer -> M PreprovisionedServer) -> Env -> Env
-hetznerInterfaceModifyProvisionServer f env =
+provisionerModifyProvisionServer :: (M PreprovisionedServer -> M PreprovisionedServer) -> Env -> Env
+provisionerModifyProvisionServer f env =
   env
-    & #hetznerInterface %~ \i ->
+    & #provisioner %~ \i ->
       i
-        { _hetznerInterfaceProvisionServer = \x loc typ -> do
-            f $ _hetznerInterfaceProvisionServer i x loc typ
+        { _provisionerProvisionServer = \x loc typ -> do
+            f $ _provisionerProvisionServer i x loc typ
         }
 
 type ProvisionServerType = (PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> M PreprovisionedServer)
 
-hetznerInterfaceModifyProvisionServerWithParams :: (PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> ProvisionServerType -> M PreprovisionedServer) -> Env -> Env
-hetznerInterfaceModifyProvisionServerWithParams f env =
+provisionerModifyProvisionServerWithParams :: (PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> ProvisionServerType -> M PreprovisionedServer) -> Env -> Env
+provisionerModifyProvisionServerWithParams f env =
   env
-    & #hetznerInterface %~ \i ->
+    & #provisioner %~ \i ->
       i
-        { _hetznerInterfaceProvisionServer = \x loc typ -> do
-            f x loc typ (_hetznerInterfaceProvisionServer i)
+        { _provisionerProvisionServer = \x loc typ -> do
+            f x loc typ (_provisionerProvisionServer i)
         }

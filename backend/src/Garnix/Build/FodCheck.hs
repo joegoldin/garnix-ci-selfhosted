@@ -21,7 +21,7 @@ import Data.Row (Rec, type (.+), type (.==))
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.IO qualified as T
-import Garnix.BuildLogs.Types (LogLine (LogLine), mkLogLine)
+import Garnix.BuildLogs.Types (LogLine (LogLine))
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags qualified as FeatureFlags
 import Garnix.DB.FeatureFlags.Types qualified as FeatureFlags
@@ -74,19 +74,14 @@ withFodChecker reporter commitInfo plan action = do
   pure a
 
 getFodChecker :: Reporter -> CommitInfo -> ProductPlan -> M (Maybe FodChecker)
-getFodChecker reporter commitInfo plan = do
+getFodChecker reporter commitInfo _plan = do
   garnixConfig <- YamlConfig.getConfig
   if garnixConfig ^. YamlConfig.fodChecks
     then do
       run <- DB.newRun "FOD checks" commitInfo
       runReporter <- createNewRun reporter (ReportRun run)
-      if plan ^. isPaid || (commitInfo ^. repoInfo . ghRepoOwner == "garnix-io")
-        then do
-          Just <$> mkFodChecker runReporter
-        else do
-          reportLogs runReporter $ mkLogLine "`fodChecks` are enabled in your garnix.yaml, but that feature requires a paid plan."
-          reportComplete runReporter RunReportStatusFailure
-          pure Nothing
+      -- No billing in this fork: FOD checks are available to everyone.
+      Just <$> mkFodChecker runReporter
     else do
       randomlyEnabled <- FeatureFlags.isFeatureOn FeatureFlags.FodChecks
       if randomlyEnabled

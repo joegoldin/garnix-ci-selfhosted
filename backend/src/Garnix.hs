@@ -26,7 +26,6 @@ import Garnix.DB.FeatureFlags (withRecachedFeatureFlags)
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
 import Garnix.Duration
 import Garnix.GithubInterface
-import Garnix.HetznerInterface
 import Garnix.Hosting.Deploy (stopUnusedServers)
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
@@ -36,7 +35,6 @@ import Garnix.Monad.Metrics (registerMetrics, serveMetrics)
 import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig, fromNetRcFile)
 import Garnix.Prelude
-import Garnix.StripeLib qualified
 import Garnix.Types
 import Garnix.UserLogs
 import GitHub.App.Auth (AppAuth (..))
@@ -54,7 +52,6 @@ import Servant.Auth.Server
     fromSecret,
   )
 import Servant.GitHub.Webhook
-import Stripe.Concepts qualified
 import System.Directory
 import System.Environment (getEnv)
 import System.Systemd.Daemon (notifyReady)
@@ -91,19 +88,6 @@ envMocks testFeatures = do
           $ envMocks
             { storeLogLineMock = Just storeLogLineMock,
               queryOpenSearchMock = Just queryOpenSearchMock
-            }
-      StripeMocks -> do
-        let envMocks = fromMaybe emptyMocks mEnvMocks
-        (createCustomerMock, createSubscriptionMock, createInvoiceMock, listSubscriptionsMock, cancelSubscriptionMock, getPriceMock) <- Garnix.StripeLib.testImplementation
-        pure
-          $ Just
-          $ envMocks
-            { createCustomerMock = Just createCustomerMock,
-              createSubscriptionMock = Just createSubscriptionMock,
-              createInvoiceItemMock = Just createInvoiceMock,
-              listSubscriptionsMock = Just listSubscriptionsMock,
-              cancelSubscriptionMock = Just cancelSubscriptionMock,
-              getPriceMock = Just getPriceMock
             }
       CacheUploadMocks -> do
         let envMocks = fromMaybe emptyMocks mEnvMocks
@@ -268,25 +252,22 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   -- single small local VM warm unless GARNIX_SERVER_POOL overrides it
   -- (format: "i2x4:1,i4x8:0").
   poolEnv <- lookupEnv "GARNIX_SERVER_POOL"
-  let parseTier t = case T.toLower t of
-        "i2x4" -> Just I2x4
-        "i4x8" -> Just I4x8
-        "i8x16" -> Just I8x16
-        "i16x32" -> Just I16x32
-        _ -> Nothing
+  let parseTier t = lookup (T.toLower t) (map swap serverTierTextMapping)
       parsePool s =
         catMaybes
           [ (,) <$> parseTier tier <*> readMaybe (cs count)
           | entry <- T.splitOn "," (cs s),
             [tier, count] <- [T.splitOn ":" entry]
           ]
-      defaultPool
-        | selfHostMode' = [(I2x4, 1)]
-        | otherwise = [(I2x4, 10), (I4x8, 2), (I8x16, 1), (I16x32, 1)]
-      serverPool = maybe defaultPool parsePool poolEnv
-  -- When a local provisioner daemon socket is configured, deployments go to
-  -- local microVMs behind the HetznerInterface seam instead of Hetzner Cloud.
-  provisionerSocket <- lookupEnv "GARNIX_PROVISIONER_SOCKET"
+      -- Self-host keeps a single default-size (i1x1) local VM warm unless
+      -- GARNIX_SERVER_POOL overrides it (format: "i1x1:1,i4x4:0").
+      serverPool = maybe [(I1x1, 1)] parsePool poolEnv
+  -- This fork provisions local microVMs only; the provisioner daemon socket is
+  -- required (there is no Hetzner Cloud fallback).
+  provisionerSocket <-
+    lookupEnv "GARNIX_PROVISIONER_SOCKET" >>= \case
+      Just s -> pure s
+      Nothing -> error "GARNIX_PROVISIONER_SOCKET must be set (this fork provisions local microVMs only)."
   -- Optional self-hosted Gitea forge. Enabled only when GITEA_URL is set;
   -- otherwise garnix stays GitHub-only. Token + webhook secret are read from
   -- env or /run/secrets, whitespace-stripped (a trailing newline breaks the
@@ -312,9 +293,6 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   -- (see Garnix.Sandbox) and NIX_CONFIG points nix at it, so the builds can
   -- substitute from authenticated caches instead of rebuilding.
   buildNetRc <- fmap (fromNetRcFile . NetRcFile . cs) <$> lookupEnv "GARNIX_BUILD_NETRC_FILE"
-  hetznerTok <-
-    lookupEnv "HETZNER_TOKEN"
-      >>= maybe (BSC.readFile "/run/secrets/hetzner-token") (pure . cs)
   opensearchQueryUrl <- fromMaybe "https://opensearch.garnix.io/_msearch" <$> lookupEnv "OPENSEARCH_URL"
   opensearchPass <-
     lookupEnv "OPENSEARCH_API"
@@ -345,24 +323,6 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   metrics <- registerMetrics
   nixEvalPool <- Garnix.Monad.Pool.newPool 50 metrics #evalQueueWaitTime #evalQueueLen
   s3UploadPool <- Garnix.Monad.Pool.newPool 100 metrics #s3QueueWaitTime #s3QueueLen
-  stripe <- do
-    -- In self-host mode there is no billing, so the Stripe secrets are optional:
-    -- fall back to a dummy value when neither the env var nor the secrets file
-    -- is present, so startup never crashes for want of billing credentials.
-    let readStripeSecret envVar secretFile =
-          lookupEnv envVar
-            >>= maybe
-              (if selfHostMode' then pure "dummy-unused" else T.readFile secretFile)
-              (pure . cs)
-    publishableKey <- readStripeSecret "STRIPE_PUBLISHABLE_KEY" "/run/secrets/stripe-publishable-key"
-    secretKey <- readStripeSecret "STRIPE_SECRET_KEY" "/run/secrets/stripe-secret-key"
-    webhookSecret <- readStripeSecret "STRIPE_WEBHOOK_SECRET" "/run/secrets/stripe-webhook-secret"
-    pure
-      $ StripeEnv
-        { publishableKey,
-          secretKey,
-          webhookSecret
-        }
   Cradle.StdoutTrimmed hostname <- Cradle.run $ Cradle.cmd "hostname"
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
@@ -382,8 +342,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               userNixConfig = maybe defaultNixConfig (defaultNixConfig <>) buildNetRc,
               githubWebhookSecret = ghK,
               githubInterface = realGithubInterface,
-              hetznerInterface = maybe realHetznerInterface localProvisionerInterface provisionerSocket,
-              provisionerSocket = provisionerSocket,
+              provisioner = localProvisionerInterface provisionerSocket,
+              provisionerSocket = Just provisionerSocket,
               serverPoolConfig = serverPool,
               cookieSettings =
                 defaultCookieSettings
@@ -409,7 +369,6 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               defaultAuthentik = defaultAuthentik',
               logger = defaultLogger,
               buildLogsDir = buildLogsDir',
-              hetznerToken = hetznerTok,
               opensearchQueryUrl = opensearchQueryUrl,
               opensearchPassword = opensearchPass,
               sshUserHostingKeys = sshKeys,
@@ -422,7 +381,6 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
                   },
               nixEvalPool = nixEvalPool,
               s3UploadPool = s3UploadPool,
-              stripe = stripe,
               mocks = mocks,
               spanCtx = [],
               metrics = metrics,
@@ -502,8 +460,7 @@ type ContextList =
      GitHubKey CheckSuiteEvent,
      GitHubKey CheckRunEvent,
      GitHubKey PullRequestEvent,
-     GitHubKey PushEvent,
-     Stripe.Concepts.WebhookSecretKey
+     GitHubKey PushEvent
    ]
 
 toApplication :: Env -> Application
@@ -518,7 +475,6 @@ toApplication env =
           :. ghKey
           :. ghKey
           :. ghKey
-          :. Stripe.Concepts.textToWebhookSecretKey (env ^. #stripe . #webhookSecret)
           :. EmptyContext
       contextProxy :: Proxy ContextList
       contextProxy = Proxy

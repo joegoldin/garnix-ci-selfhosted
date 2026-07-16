@@ -7,18 +7,16 @@ module Garnix.Hosting.ServerPool
 where
 
 import Cradle
-import Data.List.Extra (enumerate)
 import Data.Text qualified as T
 import Garnix.DB qualified as DB
 import Garnix.Duration
-import Garnix.Hosting.ServerPool.Types
+import Garnix.Hosting.ServerPool.Types ()
 import Garnix.Monad
 import Garnix.Monad.Async (timeoutThrowing)
 import Garnix.Monad.NoThrow qualified as NoThrow
 import Garnix.Monad.SubProcess (runSubProcess_)
 import Garnix.Monad.SubProcess.Deprecated qualified as Deprecated
 import Garnix.Prelude
-import Garnix.Request (retrySequence)
 import Garnix.Types
 
 createServer :: RepoInfo -> DeploymentType -> ServerToSpinUp -> M ServerInfo
@@ -49,7 +47,7 @@ createServer repoInfo deployType serverToSpinUp = do
         )
         []
     )
-  updateMetadata repoInfo deployType (serverToSpinUp ^. #build) (server ^. id) (server ^. hetznerServerId)
+  updateMetadata repoInfo deployType (serverToSpinUp ^. #build) (server ^. id) (server ^. provisionedServerId)
   pure server
 
 initializeProvisioningPool :: M ThreadId
@@ -66,25 +64,18 @@ initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ 
           log Informational $ "Will preprovision " <> show toProvision <> " more " <> show serverTier <> " servers. " <> show missingFromPool <> " total servers needed."
           NoThrow.replicateConcurrently_ toProvision $ do
             id' <- DB.newServerInPool serverTier
-            let candidates :: [(HetznerLocation, HetznerServerType)]
-                candidates = do
-                  hetznerServerType <- serverTierToHetznerServerType serverTier
-                  location <- enumerate @HetznerLocation
-                  pure (location, hetznerServerType)
-            let doIt loc hetznerServerType = do
-                  server <- provisionServer id' loc hetznerServerType <?> ("Preprovisioning server " <> show id')
-                  DB.updatePreprovisionedServer server
-                  setupServer server
-                  DB.setPreprovisionedReady (server ^. id)
-            ( retrySequence . (`fmap` candidates) $ \(loc, hetznerServerType) ->
-                doIt loc hetznerServerType <?> ("ServerPool: Provisioning server '" <> show serverTier <> "' in '" <> show loc <> "'")
+            ( do
+                server <- provisionServer id' serverTier <?> ("Preprovisioning server " <> show id')
+                DB.updatePreprovisionedServer server
+                setupServer server
+                DB.setPreprovisionedReady (server ^. id)
               )
               `onError` DB.deleteServerFromPool id'
 
 setupServer :: PreprovisionedServer -> M ()
 setupServer preprovisionedServer = do
   isInitialized <-
-    waitTillServerIsInitialized (preprovisionedServer ^. hetznerServerId)
+    waitTillServerIsInitialized (preprovisionedServer ^. provisionedServerId)
       <?> "Waiting for server to be initialized"
   unless isInitialized
     . throw
@@ -99,13 +90,13 @@ setupServer preprovisionedServer = do
     <> show preprovisionedServer
   return ()
 
-waitTillServerIsInitialized :: HetznerServerId -> M Bool
+waitTillServerIsInitialized :: ProvisionedServerId -> M Bool
 waitTillServerIsInitialized = mockable #waitTillServerIsInitializedMock $ loop 100
   where
     delay :: Duration
     delay = fromSeconds @Int 1
 
-    loop :: Int -> HetznerServerId -> M Bool
+    loop :: Int -> ProvisionedServerId -> M Bool
     loop n hId
       | n <= 0 = pure False
       | otherwise = do
