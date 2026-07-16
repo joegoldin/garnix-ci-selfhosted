@@ -322,7 +322,8 @@ CREATE TABLE servers (
     pull_request bigint,
     ready_at timestamp with time zone,
     server_tier text NOT NULL,
-    is_primary boolean DEFAULT false NOT NULL
+    is_primary boolean DEFAULT false NOT NULL,
+    exposed jsonb
 );
 
 CREATE SEQUENCE servers_id_seq
