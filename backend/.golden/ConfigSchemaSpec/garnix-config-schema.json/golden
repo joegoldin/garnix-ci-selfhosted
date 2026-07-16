@@ -96,6 +96,10 @@
                         }
                     ]
                 },
+                "cancelSupersededBuilds": {
+                    "$comment": "Whether a new push to a branch cancels still-running and queued builds of older commits on the same branch. Useful when only the latest commit matters.",
+                    "type": "boolean"
+                },
                 "flakeDir": {
                     "$comment": "The directory containing your flake.nix relative from the repo root (if not in the repo root).",
                     "type": "string"
