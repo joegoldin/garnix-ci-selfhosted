@@ -19,9 +19,13 @@ import {
 import styles from "./styles.module.css";
 
 // Build/eval timeouts are stored as whole minutes; the UI works in hours.
+// "" (empty) -> null = cleared (falls back to the 1h default); "0" -> 0 = no
+// limit; otherwise rounded to whole minutes with a 1-minute floor.
 const hoursToMinutes = (s: string): number | null => {
+  if (s.trim() === "") return null;
   const h = parseFloat(s);
-  if (isNaN(h) || h <= 0) return null;
+  if (isNaN(h) || h < 0) return null;
+  if (h === 0) return 0;
   return Math.max(1, Math.round(h * 60));
 };
 const minutesToHours = (m: number | null): string =>
@@ -52,11 +56,7 @@ const Page = () => {
             Configure GitHub App →
           </Button>
           {giteaUrl.length > 0 && (
-            <Button
-              href={`${giteaUrl}/-/admin/hooks`}
-              target="_blank"
-              style="secondary"
-            >
+            <Button href={`${giteaUrl}/-/admin/hooks`} target="_blank">
               Configure Gitea webhooks →
             </Button>
           )}
@@ -70,8 +70,9 @@ const Page = () => {
           </Text>
           <Text className={styles.help}>
             Cap how long a build may run before it is stopped. The cap applies
-            to both the evaluation and build phases. Leave the default empty for
-            no limit.
+            to both the evaluation and build phases. Defaults to 1 hour when
+            left empty; enter 0 for no limit. Lowering a limit also cancels any
+            in-progress build already past it.
           </Text>
           {settings.loading ? (
             <Loading />
@@ -145,7 +146,7 @@ const BuildTimeoutSettings = ({
           type="number"
           min="0"
           step="0.5"
-          placeholder="none"
+          placeholder="1 (default)"
           value={defaultHours}
           onChange={(e) => setDefaultHours(e.target.value)}
         />

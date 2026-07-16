@@ -3,15 +3,26 @@ import { Text } from "@/components/text";
 import { Modal, ModalActions, ModalSection } from "@/components/modal";
 import { CommitBuildsSummary } from "@/components/build";
 import { Button } from "@/components/button";
+import { Select } from "@/components/select";
 import { GithubIcon } from "@/components/icons/github";
 import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
-import { getCommits, getCommitsForRepo } from "@/services/commit";
+import { CommitSummary, getCommits, getCommitsForRepo } from "@/services/commit";
 import { fromSecs } from "@/utils/duration";
 import { Link } from "@/components/link";
 import styles from "./styles.module.css";
 
 type CommitListFor = "reqUser" | { owner: string; repo: string };
+
+type CommitStatus = "Running" | "Failed" | "Succeeded" | "Cancelled";
+
+// A commit's overall state, most-in-progress first.
+const commitStatus = (c: CommitSummary): CommitStatus => {
+  if (c.pending + c.running > 0) return "Running";
+  if (c.failed > 0) return "Failed";
+  if (c.cancelled > 0) return "Cancelled";
+  return "Succeeded";
+};
 
 export const CommitList = (props: {
   for: CommitListFor;
@@ -28,6 +39,10 @@ export const CommitList = (props: {
     [props.for],
   );
 
+  const [statusFilter, setStatusFilter] = React.useState<CommitStatus | null>(
+    null,
+  );
+
   const loadingCommits = useLoading(getCommitsFn, { poll: fromSecs(5) });
   if (loadingCommits.loading) return null;
   if (!loadingCommits.data.ok) {
@@ -36,6 +51,9 @@ export const CommitList = (props: {
     );
   }
   const commits = loadingCommits.data.data;
+  const shown = statusFilter
+    ? commits.filter((c) => commitStatus(c) === statusFilter)
+    : commits;
   return commits.length > 0 ? (
     <div className={styles.container}>
       <div className={styles.header}>
@@ -44,8 +62,21 @@ export const CommitList = (props: {
         </Text>
         {props.headerRight}
       </div>
+      <div className={styles.filters}>
+        <Select
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={[
+            [null, "All Builds"],
+            ["Running", "Running"],
+            ["Failed", "Failed"],
+            ["Succeeded", "Succeeded"],
+            ["Cancelled", "Cancelled"],
+          ]}
+        />
+      </div>
       <ol>
-        {commits.map((commit) => (
+        {shown.map((commit) => (
           <CommitBuildsSummary
             className={styles.build}
             key={commit.gitCommit}

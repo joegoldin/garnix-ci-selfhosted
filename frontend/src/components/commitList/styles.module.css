@@ -46,6 +46,15 @@
   margin-bottom: 0;
 }
 
+.filters {
+  display: flex;
+  margin-bottom: 16px;
+}
+
+.filters > * {
+  margin-right: 10px;
+}
+
 .link {
   text-decoration: underline;
 }

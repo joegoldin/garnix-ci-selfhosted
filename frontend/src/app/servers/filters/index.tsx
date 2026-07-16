@@ -13,7 +13,7 @@ export const useFilters = () => {
   const [filters, setFilters] = React.useState<Filters>({
     repo: null,
     type: null,
-    status: null,
+    status: "Online",
   });
   const shouldDisplay = (s: RunningServer) =>
     (filters.repo ? filters.repo === `${s.repo_owner}/${s.repo_name}` : true) &&

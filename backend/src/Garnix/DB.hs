@@ -162,6 +162,44 @@ setRepoBuildTimeout repoOwner repoName mMinutes =
           DO UPDATE SET build_timeout_minutes = ${mMinutes}
       |]
 
+-- | Cancel in-progress builds already running longer than @minutes@ (0 = no
+-- limit, cancels nothing), so lowering a timeout takes effect immediately
+-- instead of only applying to future builds. The running build's cancellation
+-- poller (see 'Garnix.Build.Package.abortOnCancellation') then aborts it.
+-- @Just (owner, repo)@ scopes to one repo; @Nothing@ (a global-default change)
+-- scopes to every repo that has no per-repo override.
+cancelRunningBuildsExceeding :: Int32 -> Maybe (GhRepoOwner, GhRepoName) -> M ()
+cancelRunningBuildsExceeding minutes scope
+  | minutes <= 0 = pure ()
+  | otherwise =
+      void $ case scope of
+        Just (repoOwner, repoName) ->
+          pgExec
+            [pgSQL|
+              UPDATE builds
+              SET status = ${Just Cancelled}, end_time = now()
+              WHERE status IS NULL
+                AND run_started_at IS NOT NULL
+                AND now() - run_started_at > make_interval(mins => ${minutes})
+                AND repo_user = ${repoOwner}
+                AND repo_name = ${repoName}
+            |]
+        Nothing ->
+          pgExec
+            [pgSQL|
+              UPDATE builds
+              SET status = ${Just Cancelled}, end_time = now()
+              WHERE status IS NULL
+                AND run_started_at IS NOT NULL
+                AND now() - run_started_at > make_interval(mins => ${minutes})
+                AND NOT EXISTS (
+                  SELECT 1 FROM repo_config rc
+                  WHERE rc.repo_user = builds.repo_user
+                    AND rc.repo_name = builds.repo_name
+                    AND rc.build_timeout_minutes IS NOT NULL
+                )
+            |]
+
 -- | Upsert the admin-configurable fields of a repo's config. Used by the admin
 -- API to allow a public repo to use private flake inputs and to route its cache
 -- to the private (authenticated) bucket.

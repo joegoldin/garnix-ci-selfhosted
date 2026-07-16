@@ -16,6 +16,7 @@ module Garnix.Entitlements
     getPlan,
     getPlans,
     applyConfiguredTimeouts,
+    defaultBuildTimeoutMinutes,
     getPlanByProductToken,
     getPlanByName,
 
@@ -292,19 +293,26 @@ mergePlans allPlans = case filter (isJust . snd) allPlans of
 -- default, which wins over the plan's own timeout; when neither is set the plan
 -- is returned unchanged. The same cap is applied to both the evaluation and
 -- build phases, and is clamped to the Int16 minute range the plan fields use.
+-- | Build/eval cap (minutes) applied when nothing is configured anywhere.
+defaultBuildTimeoutMinutes :: Int32
+defaultBuildTimeoutMinutes = 60
+
 applyConfiguredTimeouts :: RepoConfig -> ProductPlan -> M ProductPlan
 applyConfiguredTimeouts repoConfig plan = do
   globalDefault <- DB.getDefaultBuildTimeout
   let mMinutes = case repoConfig ^. buildTimeoutMinutes of
         Just m -> Just m
         Nothing -> globalDefault
+      setTimeout minutes =
+        plan
+          & packageBuildTimeout .~ minutes
+          & packageEvaluationTimeout .~ minutes
   pure $ case mMinutes of
-    Nothing -> plan
-    Just minutes ->
-      let capped = min 32767 (max 1 minutes)
-       in plan
-            & packageBuildTimeout .~ fromIntegral capped
-            & packageEvaluationTimeout .~ fromIntegral capped
+    -- Nothing set (repo or global): default cap of 1 hour.
+    Nothing -> setTimeout (fromIntegral defaultBuildTimeoutMinutes)
+    -- 0 explicitly means "no limit".
+    Just 0 -> setTimeout maxBound
+    Just minutes -> setTimeout (fromIntegral (min 32767 (max 1 minutes)))
 
 getPlan :: GhRepoOwner -> M ProductPlan
 getPlan repoOwner =

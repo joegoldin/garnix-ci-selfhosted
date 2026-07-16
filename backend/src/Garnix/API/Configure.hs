@@ -16,6 +16,7 @@ where
 import Control.Lens
 import Garnix.API.Admin (requireAdmin)
 import Garnix.DB qualified as DB
+import Garnix.Entitlements (defaultBuildTimeoutMinutes)
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
@@ -102,24 +103,35 @@ configureAPI auth =
             },
       _configureAPISetDefault = \dto -> do
         requireSelfHostConfig auth
-        DB.setDefaultBuildTimeout (clamp <$> _setTimeoutDtoMinutes dto)
+        let mNew = clamp <$> _setTimeoutDtoMinutes dto
+        DB.setDefaultBuildTimeout mNew
+        -- Cancel builds already past the new effective cap (repos without an
+        -- override). A cleared default (Nothing) means the 1h default now.
+        DB.cancelRunningBuildsExceeding (fromMaybe defaultBuildTimeoutMinutes mNew) Nothing
         pure NoContent,
       _configureAPISetRepo = \owner repo dto -> do
         requireSelfHostConfig auth
         case _setTimeoutDtoMinutes dto of
           Nothing -> throw $ OtherError "A timeout (in minutes) is required"
-          Just m -> DB.setRepoBuildTimeout owner repo (Just (clamp m))
+          Just m -> do
+            let c = clamp m
+            DB.setRepoBuildTimeout owner repo (Just c)
+            DB.cancelRunningBuildsExceeding c (Just (owner, repo))
         pure NoContent,
       _configureAPIDeleteRepo = \owner repo -> do
         requireSelfHostConfig auth
         DB.setRepoBuildTimeout owner repo Nothing
+        -- Removing the override reverts this repo to the global default (or 1h).
+        globalDefault <- DB.getDefaultBuildTimeout
+        DB.cancelRunningBuildsExceeding (fromMaybe defaultBuildTimeoutMinutes globalDefault) (Just (owner, repo))
         pure NoContent
     }
   where
-    -- Keep values within the Int16 minute range the plan timeout fields use,
-    -- with a 1-minute floor.
+    -- Keep values within the Int16 minute range the plan timeout fields use.
+    -- 0 is allowed and means "no limit"; the 1-hour default applies only when
+    -- the value is cleared (Nothing), not when it is explicitly 0.
     clamp :: Int32 -> Int32
-    clamp = min 32767 . max 1
+    clamp = min 32767 . max 0
 
 -- | Throw 'Unauthorized' unless self-host mode is on and the caller is an admin.
 requireSelfHostConfig :: AuthResult AuthJwtPayload -> M ()
