@@ -326,6 +326,17 @@ builds:
     - "nixosConfigurations.*"
 ```
 
+**Only the latest commit matters?** Set `cancelSupersededBuilds: true` in
+`garnix.yaml` and a new push to a branch cancels the still-queued/running
+builds of older commits on that branch (PR-from-fork builds are untouched).
+Off by default.
+
+**Restarting and cancelling from the UI:** a commit page shows **Restart
+failed** (re-runs each failed/timed-out build; if the eval itself failed, the
+whole commit is re-run) and **Cancel all** (stops every queued/running build)
+— both with confirmation. Cancelled builds render as an orange ✗, distinct
+from red failures.
+
 **Private flake inputs:** `git+ssh://` inputs can never work in CI (the sandbox
 has no SSH key) — use `github:` refs; garnix injects its App token for those.
 If a **public** repo has **private** `github:` inputs, self-host mode allows it
