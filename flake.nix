@@ -124,6 +124,7 @@
           frontend = import ./frontend subDirInputs;
           frontend-age-wasm = import ./frontend/age-wasm subDirInputs;
           examples = import ./examples subDirInputs;
+          provisioner = import ./provisioner subDirInputs;
         in
         {
           apps = lib.mapAttrs
@@ -133,7 +134,8 @@
               meta.description = drv.meta.description;
             })
             (namespace "backend" backend.commands //
-            namespace "examples" examples.commands
+            namespace "examples" examples.commands //
+            namespace "provisioner" provisioner.commands
             );
 
           checks =
@@ -144,7 +146,8 @@
           packages =
             namespace "backend" backend.packages //
             namespace "frontend" frontend.packages //
-            namespace "frontend" (namespace "ageWasm" frontend-age-wasm.packages);
+            namespace "frontend" (namespace "ageWasm" frontend-age-wasm.packages) //
+            namespace "provisioner" provisioner.commands;
 
           formatter = treefmt.wrapper;
 

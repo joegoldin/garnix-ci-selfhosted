@@ -45,6 +45,31 @@ in
   options.garnix.authentik = {
     enable = lib.mkEnableOption "Authentik/OIDC protection in front of the deployed service";
 
+    mode = lib.mkOption {
+      type = lib.types.enum [ "dedicated" "shared" ];
+      default = "dedicated";
+      description = ''
+        How this deployment maps onto Authentik. The runtime gate is the same
+        either way; this only changes the setup convention (and adds guardrails).
+
+        - "dedicated" (default, recommended): this deployment has its own
+          Authentik application + OIDC provider, so it shows up as its own app
+          in Authentik and access is governed by that application's entitlement
+          bindings (who may log in at all). `allowedGroups` is optional
+          defense-in-depth. Create it with the `authentik-provision` helper.
+
+        - "shared": reuse one existing Authentik application/provider across many
+          deployments (same clientId / client secret / issuer) and gate each
+          deployment purely by a custom scope's claim. Adding an app is then
+          just one more scope mapping on the shared provider — no new provider
+          or secret. Because the shared app lets in anyone entitled to *it*, the
+          claim gate here is mandatory: you MUST set a custom `scope` and a
+          non-empty `allowedGroups` checked against `groupsClaim`, or anyone who
+          can log into the shared app would reach this service. Assertions below
+          enforce that.
+      '';
+    };
+
     publicUrl = lib.mkOption {
       type = lib.types.str;
       example = "https://app.main.myrepo.myorg.apps.example.com";
@@ -127,6 +152,31 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # In shared mode the OIDC app is reused across deployments, so the shared
+    # app's entitlements can't distinguish this service — the scope-claim gate
+    # is the only per-app control. Require it, or the gate is wide open.
+    assertions = [
+      {
+        assertion = cfg.mode == "dedicated" || cfg.allowedGroups != [ ];
+        message = ''
+          garnix.authentik.mode = "shared" requires a non-empty `allowedGroups`:
+          it is the only per-app access control in shared mode (the shared
+          application admits anyone entitled to it). Set allowedGroups to the
+          value your scope mapping emits for this app, or use mode = "dedicated".
+        '';
+      }
+      {
+        assertion = cfg.mode == "dedicated" || cfg.scope != "openid profile email";
+        message = ''
+          garnix.authentik.mode = "shared" requires a custom `scope` that pulls
+          this app's gating claim (e.g. "openid profile email <app>-entitlements").
+          With only the default scopes the claim `allowedGroups` checks is never
+          issued, so every login would be rejected (or, worse, allowed if the
+          claim is absent). Add the shared provider's per-app scope mapping.
+        '';
+      }
+    ];
+
     # Prepare the oauth2-proxy env file (client + cookie secret) on the guest,
     # decrypting the client secret with the repo key. Runs as root because the
     # repo key is 0400 root; the key is delivered post-boot by garnix over SSH,

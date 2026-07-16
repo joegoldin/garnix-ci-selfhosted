@@ -55,6 +55,9 @@
           garnix.guest.sshPublicKey = "<YOUR HOSTING PUBLIC KEY>";
           garnix.authentik = {
             enable = true;
+            # mode defaults to "dedicated" (this app gets its own Authentik
+            # provider). For one shared provider across many apps, see the
+            # "shared mode" section of docs/authentik-cookbook.md.
             publicUrl = "https://hello-locked.main.<repo>.<owner>.<hostingDomain>";
             issuerUrl = "https://<authentik-host>/application/o/hello-locked/";
             clientId = "<oidc client id>";

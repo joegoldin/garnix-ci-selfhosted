@@ -5,6 +5,63 @@ This walks through putting a garnix-deployed server behind Authentik login using
 **Authentik application entitlements** so you control *which users get which
 apps*.
 
+## Two ways to map apps onto Authentik
+
+`garnix.authentik.mode` picks how a deployment relates to Authentik. The runtime
+gate (oauth2-proxy + nginx forward-auth) is identical; only the Authentik-side
+setup differs.
+
+| | `mode = "dedicated"` (default) | `mode = "shared"` |
+|---|---|---|
+| Authentik object | its **own** application + provider | reuses **one existing** provider/app |
+| Shows in Authentik as | its own app (clean per-app UX) | just the shared app |
+| Secret | its own clientId + client secret | shared clientId/secret (no new secret) |
+| Access control | the app's **entitlement bindings** | a per-app **scope's claim** (mandatory) |
+| Adding an app costs | a new provider + app + secret | one more **scope mapping** on the shared provider |
+
+**Dedicated is the ideal** — each app is a first-class Authentik application you
+can entitle independently. **Shared** is the lightweight path: set up one
+provider once (with a regex redirect URI), then each new app is just another
+scope mapping — no new secrets to mint or encrypt. Both are covered below, and
+the `authentik-provision` helper (§0) automates either.
+
+## 0. Automate it: the `authentik-provision` helper
+
+Instead of clicking through the Authentik UI, drive its REST API:
+
+```sh
+# dedicated: create a fresh provider + app, gate on a group, encrypt the secret
+nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- \
+  --authentik-url https://authentik.example.com \
+  --token-file /run/agenix/authentik-api-token \
+  --name hello-locked \
+  --public-url https://hello-locked.main.myrepo.myorg.apps.example.com \
+  --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public \
+  --group hello-locked-users
+
+# shared: add a per-app scope mapping to an existing provider named "garnix-shared"
+nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- --mode shared \
+  --provider garnix-shared \
+  --authentik-url https://authentik.example.com \
+  --token-file /run/agenix/authentik-api-token \
+  --name reports \
+  --public-url https://reports.main.myrepo.myorg.apps.example.com \
+  --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public \
+  --group reports-users
+```
+
+It creates the provider/application (dedicated) or the scope mapping + regex
+redirect (shared), ensures the group, age-encrypts the client secret to the
+repo's public key, and prints a ready-to-paste `garnix.authentik = { … };` block
+on stdout (progress notes go to stderr).
+
+Get an API token from Authentik (**Directory → Tokens**, or a service account),
+and store it in agenix so it's not on your shell history — see
+[§6](#6-store-the-authentik-api-token-in-agenix). The helper reads it from
+`--token-file`, `--token`, or `$AUTHENTIK_TOKEN`.
+
+The sections below describe what the helper does, so you can also do it by hand.
+
 ## How the pieces fit
 
 ```
@@ -130,6 +187,84 @@ modules = [
 
 Push to your deploy branch; garnix builds and deploys the guest. Hitting the
 app's URL now bounces you through Authentik, and only entitled users get in.
+
+## Shared mode: one provider, many apps
+
+If you'd rather not mint a provider + secret per app, run everything through a
+single shared Authentik application and distinguish apps by a per-app scope.
+
+**Set up the shared provider once:**
+
+1. Create one OAuth2/OpenID provider (**Confidential**) and application, exactly
+   as in §1 — call it e.g. `garnix-shared`.
+2. Give its provider a **regex redirect URI** so every garnix app host is
+   covered without editing it again. In **Providers → garnix-shared → Redirect
+   URIs**, add a `regex` entry:
+   ```
+   ^https://[^/]+\.apps\.example\.com/oauth2/callback$
+   ```
+   (the helper adds this for you on the first shared app).
+3. Note the shared **clientId**, **client secret**, and **issuer**
+   (`https://<authentik-host>/application/o/garnix-shared/`).
+
+**For each app, add just a scope mapping** (§3 style) named for the app, e.g.
+scope name `reports-entitlements`, emitting the user's groups under a claim:
+
+```python
+return {"groups": [group.name for group in request.user.ak_groups.all()]}
+```
+
+Add it to the shared provider's **Selected Scopes**, and gate the deployment on
+the claim:
+
+```nix
+garnix.authentik = {
+  enable = true;
+  mode = "shared";
+  publicUrl = "https://reports.main.myrepo.myorg.apps.example.com";
+  issuerUrl = "https://authentik.example.com/application/o/garnix-shared/";  # the SHARED app
+  clientId = "<shared client id>";
+  clientSecretAge = ''-----BEGIN AGE ENCRYPTED FILE-----
+    ...
+    -----END AGE ENCRYPTED FILE-----'';   # the SHARED secret, encrypted to THIS repo's key
+  scope = "openid profile email reports-entitlements";  # the app's scope
+  groupsClaim = "groups";
+  allowedGroups = [ "reports-users" ];   # REQUIRED in shared mode — the only per-app gate
+  upstream = "127.0.0.1:8080";
+};
+```
+
+In shared mode the module **asserts** that `scope` is customized and
+`allowedGroups` is non-empty: because the shared app admits anyone entitled to
+it, the scope's claim check is the sole thing keeping `reports` and `payroll`
+apart. The same shared secret is reused everywhere — you still encrypt it to each
+repo's key (each repo has its own repo-key), which the helper does for you.
+
+## 6. Store the Authentik API token in agenix
+
+So the helper's token isn't in your shell history or environment, keep it as an
+agenix secret readable by your user:
+
+1. Add a rule in `dotfiles-secrets/secrets.nix` (the `users` list already keys
+   secrets to your personal + workstation keys):
+   ```nix
+   "authentik-api-token.age".publicKeys = users;
+   ```
+2. Create/encrypt it (opens `$EDITOR`; paste the token, save):
+   ```sh
+   cd ~/Development/dotfiles-secrets
+   agenix -e authentik-api-token.age
+   ```
+3. Expose it on your workstation (e.g. torrent) so it decrypts to
+   `/run/agenix/authentik-api-token`, owned by you:
+   ```nix
+   age.secrets.authentik-api-token = {
+     file = "${inputs.dotfiles-secrets}/authentik-api-token.age";
+     owner = meta.username;
+     mode = "0400";
+   };
+   ```
+4. Point the helper at it: `--token-file /run/agenix/authentik-api-token`.
 
 ## Gotchas
 
