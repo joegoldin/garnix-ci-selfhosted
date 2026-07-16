@@ -7,3 +7,5 @@ add-build-timeout-config 2026-07-14T19:00:00Z joegoldin <joe@joegold.in> # Confi
 add-builds-run-started-at 2026-07-14T20:00:00Z joegoldin <joe@joegold.in> # Record when a build starts executing (pending vs running)
 add-runs-run-started-at 2026-07-16T08:00:00Z joegoldin <joe@joegold.in> # Runs stay pending until first output (run_started_at on runs)
 add-servers-exposed 2026-07-16T16:00:00Z joegoldin <joe@joegold.in> # servers.exposed jsonb: ssh/port DNAT exposure for deployed servers
+drop-billing-and-plans 2026-07-16T19:00:00Z joegoldin <joe@joegold.in> # Self-host only: drop product/plan/usage-limit tables + Stripe columns
+rename-hetzner-id-to-provisioner-id 2026-07-16T19:30:00Z joegoldin <joe@joegold.in> # Local-provisioner only: rename hetzner_id -> provisioner_id
