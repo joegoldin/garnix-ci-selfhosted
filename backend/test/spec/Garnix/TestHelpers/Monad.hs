@@ -314,7 +314,14 @@ withTestEnvironment tempDir action = do
                   hostname = "garnix-server-test",
                   githubLogDebounceDuration = fromSeconds 0,
                   featureFlagConfig,
-                  fodCheckPool
+                  fodCheckPool,
+                  hostingDomain = "garnix.me",
+                  metricsScrapeUrl = "http://127.0.0.1:8323/metrics",
+                  nodeExporterUrl = "http://127.0.0.1:9100/metrics",
+                  sshHost = "",
+                  provisionerSocket = Nothing,
+                  giteaConfig = Nothing,
+                  defaultAuthentik = Nothing
                 }
         action env
   where
