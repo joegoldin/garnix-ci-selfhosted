@@ -8,12 +8,13 @@
 # to), so every request must carry a valid Authentik session before it reaches
 # your service.
 #
-# Secrets: the OIDC client secret is supplied as an *age ciphertext* encrypted
-# to the repo's public key (GET /api/keys/<owner>/<repo>/repo-key.public). It is
-# safe to commit — it is decrypted at runtime on the guest with the repo private
-# key garnix drops at /var/garnix/keys/repo-key (root-only, 0400). No plaintext
-# secret ever lands in the world-readable nix store. The cookie secret is
-# generated once on the guest and persisted.
+# Secrets: the OIDC client secret is supplied as an *age ciphertext file*
+# encrypted to the repo's public key (GET /api/keys/<owner>/<repo>/repo-key.public)
+# and referenced by path (clientSecretFile). Commit the .age file to your repo;
+# it is copied into the store (still encrypted) and decrypted at runtime on the
+# guest with the repo private key garnix drops at /var/garnix/keys/repo-key
+# (root-only, 0400). No plaintext secret ever lands in the world-readable nix
+# store. The cookie secret is generated once on the guest and persisted.
 #
 # Example (in your deployed config):
 #
@@ -24,11 +25,7 @@
 #     clientId = "abc123";
 #     allowedGroups = [ "my-app-users" ];   # omit to allow any authenticated user
 #     upstream = "127.0.0.1:8080";          # your service (must NOT listen on :80)
-#     clientSecretAge = ''
-#       -----BEGIN AGE ENCRYPTED FILE-----
-#       ...
-#       -----END AGE ENCRYPTED FILE-----
-#     '';
+#     clientSecretFile = ./secrets/myapp-client-secret.age;  # committed .age file
 #   };
 #   services.myThing.port = 8080;           # your actual app, behind the gate
 { lib, config, pkgs, ... }:
@@ -91,12 +88,15 @@ in
       description = "OIDC client ID for this application in Authentik.";
     };
 
-    clientSecretAge = lib.mkOption {
-      type = lib.types.str;
+    clientSecretFile = lib.mkOption {
+      type = lib.types.path;
+      example = lib.literalExpression "./secrets/myapp-client-secret.age";
       description = ''
-        The OIDC client secret, as an age ciphertext encrypted to this repo's
-        public key (from GET /api/keys/<owner>/<repo>/repo-key.public). Safe to
-        commit; decrypted at runtime with the repo key on the guest.
+        Path to the OIDC client secret as an age ciphertext *file*, encrypted to
+        this repo's public key (from GET /api/keys/<owner>/<repo>/repo-key.public).
+        Commit the .age file to your repo and reference it here by path — it is
+        copied into the store (still encrypted) and decrypted at runtime with the
+        repo key on the guest. No plaintext ever lands in the store.
       '';
     };
 
@@ -203,7 +203,7 @@ in
           echo "garnix-authentik: ${repoKey} never appeared; cannot decrypt client secret" >&2
           exit 1
         fi
-        client_secret="$(printf '%s' ${lib.escapeShellArg cfg.clientSecretAge} | age --decrypt -i ${repoKey})"
+        client_secret="$(age --decrypt -i ${repoKey} < ${cfg.clientSecretFile})"
         # Cookie secret: generate once, persist across restarts within this guest.
         if [ ! -s ${stateDir}/cookie-secret ]; then
           head -c 32 /dev/urandom | base64 -w0 > ${stateDir}/cookie-secret

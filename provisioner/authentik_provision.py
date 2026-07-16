@@ -3,40 +3,57 @@
 ready-to-paste `garnix.authentik` config block.
 
 It drives the Authentik REST API (/api/v3) on your self-hosted instance and
-age-encrypts the client secret to the repo's public key, so nothing secret ever
-lands in the nix store. Two modes mirror the garnix-authentik module:
+writes the client secret to a committed `.age` file (encrypted to the repo's
+public key), so nothing secret lands in the nix store. Two modes mirror the
+garnix-authentik module:
 
   dedicated  (default) — create a fresh OAuth2/OpenID provider + application, so
-             the app appears on its own in Authentik and access is governed by
-             that application's entitlements. Emits a new clientId + client
-             secret. This is the "ideal" setup.
+             the app appears on its own in Authentik. Emits a new clientId +
+             client secret. This is the "ideal" setup.
 
   shared     — reuse an existing provider/application (same clientId/secret/
              issuer) across many deployments. Instead of a new provider it adds
-             one per-app *scope mapping* to the shared provider and gates this
-             deployment on that scope's claim. Cheap to add apps; no new secret.
+             one per-app *scope mapping* to the shared provider. No new secret.
+
+Access control (both modes) follows the Authentik **application entitlements**
+pattern: the helper creates the named entitlements on the application and a
+scope mapping whose expression reads
+`request.user.app_entitlements(provider.application)` and maps each entitlement
+name to a group name emitted under `--claim` (default `groups`), e.g.
+
+  entitlement_names = {
+      e.name for e in request.user.app_entitlements(provider.application)
+  }
+  groups = []
+  if "reports-user" in entitlement_names:
+      groups.append("reports-users")
+  return {"groups": groups}
+
+You bind users/groups to those entitlements in Authentik; oauth2-proxy on the
+guest gates on the emitted group via garnix.authentik.allowedGroups.
 
 Auth: pass an Authentik API token (Directory → Tokens, or a service account) via
---token or the AUTHENTIK_TOKEN env var, and the instance URL via --authentik-url
-or AUTHENTIK_URL.
+--token, --token-file, or the AUTHENTIK_TOKEN env var, and the instance URL via
+--authentik-url or AUTHENTIK_URL.
 
 Examples:
 
-  # dedicated app, gated by group membership, secret encrypted to the repo key
+  # dedicated: new provider + app, entitlement "hello-user" -> group "hello-users"
   authentik-provision \\
-    --authentik-url https://authentik.example.com --token "$AUTHENTIK_TOKEN" \\
-    --name hello-locked \\
+    --authentik-url https://authentik.example.com \\
+    --token-file /run/agenix/authentik-api-token \\
+    --name hello-locked --entitlement hello-user=hello-users \\
     --public-url https://hello-locked.main.myrepo.myorg.apps.example.com \\
-    --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public \\
-    --group hello-locked-users
+    --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
 
-  # shared: add a scope mapping to an existing provider named "garnix-shared"
+  # shared: add a scope mapping + entitlements to an existing "garnix-shared" provider
   authentik-provision --mode shared --provider garnix-shared \\
-    --authentik-url https://authentik.example.com --token "$AUTHENTIK_TOKEN" \\
-    --name reports \\
+    --authentik-url https://authentik.example.com \\
+    --token-file /run/agenix/authentik-api-token \\
+    --name reports --entitlement reports-user=reports-users \\
+    --entitlement reports-admin=reports-admins \\
     --public-url https://reports.main.myrepo.myorg.apps.example.com \\
-    --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public \\
-    --group reports-users
+    --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
 """
 import argparse
 import json
@@ -51,6 +68,42 @@ import urllib.request
 def die(msg):
     print(f"authentik-provision: error: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def parse_entitlement_pairs(specs, slug):
+    """Turn --entitlement SPECs into (entitlement_name, group_name) pairs.
+
+    A SPEC is either ``ENT`` (group defaults to ENT) or ``ENT=GROUP``. With no
+    specs, default to a single ``<slug>-user`` -> ``<slug>-users`` pair.
+    """
+    if not specs:
+        return [(f"{slug}-user", f"{slug}-users")]
+    pairs = []
+    for spec in specs:
+        ent, sep, group = spec.partition("=")
+        ent = ent.strip()
+        group = group.strip() if sep else ent
+        if not ent or not group:
+            die(f"invalid --entitlement {spec!r} (expected ENT or ENT=GROUP)")
+        pairs.append((ent, group))
+    return pairs
+
+
+def scope_mapping_expression(pairs, claim):
+    """Build the Authentik scope-mapping expression that maps this app's
+    entitlements to group names under `claim` (the pattern from the garnix
+    "garnix groups" mapping, generalized per app)."""
+    lines = [
+        "entitlement_names = {",
+        "    e.name for e in request.user.app_entitlements(provider.application)",
+        "}",
+        "groups = []",
+    ]
+    for ent, group in pairs:
+        lines.append(f'if "{ent}" in entitlement_names:')
+        lines.append(f'    groups.append("{group}")')
+    lines.append(f'return {{"{claim}": groups}}')
+    return "\n".join(lines)
 
 
 class Authentik:
@@ -134,9 +187,8 @@ class Authentik:
         # The managed openid/email/profile scope mappings shipped with Authentik.
         res = self.get(self.scope_pm_path(), {"page_size": 100})
         wanted = {"openid", "email", "profile"}
-        pks = [m["pk"] for m in res.get("results", [])
-               if m.get("scope_name") in wanted]
-        return pks
+        return [m["pk"] for m in res.get("results", [])
+                if m.get("scope_name") in wanted]
 
     def find_scope_mapping(self, scope_name):
         res = self.get(self.scope_pm_path(), {"scope_name": scope_name})
@@ -145,15 +197,13 @@ class Authentik:
                 return m
         return None
 
-    def ensure_scope_mapping(self, name, scope_name, claim):
+    def ensure_scope_mapping(self, name, scope_name, expression):
+        """Create the scope mapping if absent; if present, update its expression
+        so re-running the helper keeps the entitlement->group logic current."""
         existing = self.find_scope_mapping(scope_name)
-        expression = (
-            "# garnix-authentik: surface the user's group names under the\n"
-            f"# '{claim}' claim so the deployment's allowedGroups gate can check it.\n"
-            f'return {{"{claim}": [group.name for group in '
-            "request.user.ak_groups.all()]}"
-        )
         if existing:
+            self.patch(f"{self.scope_pm_path()}{existing['pk']}/",
+                       {"name": name, "expression": expression})
             return existing["pk"], False
         created = self.post(self.scope_pm_path(), {
             "name": name,
@@ -172,12 +222,33 @@ class Authentik:
                 return self.get(f"/providers/oauth2/{p['pk']}/")
         die(f"no OAuth2 provider matching '{ref}' (use its exact name or pk)")
 
-    def ensure_group(self, name):
-        res = self.get("/core/groups/", {"name": name})
-        for g in res.get("results", []):
-            if g.get("name") == name:
-                return g
-        return self.post("/core/groups/", {"name": name})
+    def find_application_for_provider(self, provider_pk):
+        apps = self.get("/core/applications/", {"page_size": 100}).get("results", [])
+        for a in apps:
+            if a.get("provider") == provider_pk:
+                return a
+        return None
+
+    def ensure_entitlement(self, app_pk, name):
+        """Ensure an application entitlement `name` exists on the application.
+
+        Returns (obj_or_None, warning_or_None). Application entitlements are a
+        preview API (Authentik 2024.8+); if it's missing we warn rather than die
+        so the rest of the provisioning still succeeds.
+        """
+        try:
+            res = self.get("/core/application_entitlements/", {"app": app_pk})
+        except RuntimeError as e:
+            return None, f"entitlements API unavailable ({e}); create '{name}' by hand"
+        for ent in res.get("results", []):
+            if ent.get("name") == name:
+                return ent, None
+        try:
+            created = self.post("/core/application_entitlements/",
+                                {"name": name, "app": app_pk})
+            return created, None
+        except RuntimeError as e:
+            return None, f"could not create entitlement '{name}': {e}"
 
 
 def encrypt_secret(plaintext, recipients_file):
@@ -207,14 +278,26 @@ def redirect_uri_entry(url, matching_mode):
     return {"matching_mode": matching_mode, "url": url}
 
 
-def indent(block, spaces):
-    pad = " " * spaces
-    return "\n".join(pad + line if line else line for line in block.splitlines())
+def app_host_regex(public_url):
+    """A redirect-URI regex that covers every garnix app host under the same
+    apps domain, so one shared provider needn't be edited per app."""
+    host = urllib.parse.urlparse(public_url).hostname or ""
+    apex = ".".join(host.split(".")[-4:]) if host.count(".") >= 3 else host
+    return r"^https://[^/]+\." + apex.replace(".", r"\.") + r"/oauth2/callback$"
 
 
-def emit_config(mode, public_url, issuer_url, client_id, secret_age,
-                scope, claim, group, upstream):
-    ciphertext = indent(secret_age.strip(), 8)
+def nix_path_literal(path):
+    if path.startswith(("/", "./", "../")):
+        return path
+    return "./" + path
+
+
+def nix_str_list(values):
+    return "[ " + " ".join(f'"{v}"' for v in values) + " ]"
+
+
+def emit_config(mode, public_url, issuer_url, client_id, secret_file_ref,
+                scope, claim, groups, upstream):
     lines = [
         "garnix.authentik = {",
         "  enable = true;",
@@ -222,21 +305,19 @@ def emit_config(mode, public_url, issuer_url, client_id, secret_age,
         f'  publicUrl = "{public_url}";',
         f'  issuerUrl = "{issuer_url}";',
         f'  clientId = "{client_id}";',
-        "  clientSecretAge = ''",
-        ciphertext,
-        "  '';",
+        f"  clientSecretFile = {secret_file_ref};",
     ]
     if mode == "shared" or scope != "openid profile email":
         lines.append(f'  scope = "{scope}";')
-    if group:
+    if groups:
         lines.append(f'  groupsClaim = "{claim}";')
-        lines.append(f'  allowedGroups = [ "{group}" ];')
+        lines.append(f"  allowedGroups = {nix_str_list(groups)};")
     lines.append(f'  upstream = "{upstream}";')
     lines.append("};")
     return "\n".join(lines)
 
 
-def main():
+def build_parser():
     p = argparse.ArgumentParser(
         prog="authentik-provision",
         description="Provision an Authentik OIDC app for a garnix deployment.",
@@ -255,14 +336,14 @@ def main():
                    help="the deployment's external https URL (garnix app URL)")
     p.add_argument("--upstream", default="127.0.0.1:8080",
                    help="host:port your service listens on behind the gate")
-    p.add_argument("--group", default=None,
-                   help="Authentik group to gate on (created if missing). "
-                        "Required in shared mode; optional in dedicated mode "
-                        "(where entitlements can gate instead).")
+    p.add_argument("--entitlement", action="append", default=[], metavar="ENT[=GROUP]",
+                   help="application entitlement to create + gate on, mapped to a "
+                        "group name in the claim (repeatable). Default: "
+                        "<name>-user=<name>-users.")
     p.add_argument("--claim", default="groups",
                    help="token claim the scope mapping emits (default: groups)")
     p.add_argument("--scope-name", default=None,
-                   help="custom OIDC scope name (default: <name>-entitlements)")
+                   help="custom OIDC scope name (default: the app slug)")
     p.add_argument("--provider", default=None,
                    help="shared mode: name or pk of the existing provider to extend")
     p.add_argument("--redirect-mode", choices=["strict", "regex"], default=None,
@@ -274,9 +355,17 @@ def main():
                           "(GET /api/keys/<owner>/<repo>/repo-key.public)")
     grp.add_argument("--repo-pubkey-file",
                      help="path to the repo public key (age recipients file)")
+    p.add_argument("--secret-file", default=None,
+                   help="write the age-encrypted client secret to this path and "
+                        "reference it as clientSecretFile "
+                        "(default: <name>-client-secret.age)")
     p.add_argument("--print-expression", action="store_true",
-                   help="also print the scope-mapping expression for manual setup")
-    args = p.parse_args()
+                   help="also print the generated scope-mapping expression")
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     if not args.token and args.token_file:
         try:
@@ -288,16 +377,15 @@ def main():
         die("--authentik-url (or AUTHENTIK_URL) is required")
     if not args.token:
         die("--token / --token-file (or AUTHENTIK_TOKEN) is required")
-    if args.mode == "shared":
-        if not args.provider:
-            die("--provider is required in shared mode "
-                "(the existing provider to extend)")
-        if not args.group:
-            die("--group is required in shared mode "
-                "(the scope-claim gate is the only per-app control)")
+    if args.mode == "shared" and not args.provider:
+        die("--provider is required in shared mode (the existing provider to extend)")
 
-    scope_name = args.scope_name or f"{args.name}-entitlements"
     slug = args.name.lower().replace(" ", "-")
+    scope_name = args.scope_name or slug
+    pairs = parse_entitlement_pairs(args.entitlement, slug)
+    claim = args.claim
+    groups = [group for _ent, group in pairs]
+    expression = scope_mapping_expression(pairs, claim)
     ak = Authentik(args.authentik_url, args.token)
 
     # Where to encrypt the client secret to.
@@ -307,17 +395,13 @@ def main():
     elif args.repo_pubkey_url:
         pubkey_file = fetch_repo_pubkey(args.repo_pubkey_url, f"/tmp/{slug}-repo.pub")
 
-    # Per-app scope mapping (both modes: it carries the gating claim).
-    mapping_pk = None
-    if args.group:
-        mapping_pk, created = ak.ensure_scope_mapping(
-            name=f"garnix:{slug}:{args.claim}", scope_name=scope_name,
-            claim=args.claim)
-        print(f"→ scope mapping '{scope_name}' "
-              f"({'created' if created else 'exists'}) emitting claim "
-              f"'{args.claim}'", file=sys.stderr)
-        ak.ensure_group(args.group)
-        print(f"→ group '{args.group}' ensured", file=sys.stderr)
+    # The per-app scope mapping (its expression references provider.application,
+    # resolved at token time, so it needs no app pk to create).
+    mapping_pk, created = ak.ensure_scope_mapping(
+        name=f"garnix:{slug}:{claim}", scope_name=scope_name, expression=expression)
+    print(f"→ scope mapping '{scope_name}' "
+          f"({'created' if created else 'updated'}) emitting claim '{claim}'",
+          file=sys.stderr)
 
     if args.mode == "dedicated":
         redirect_mode = args.redirect_mode or "strict"
@@ -325,7 +409,7 @@ def main():
         inval_flow = ak.default_flow("invalidation", required=False) or auth_flow
         signing = ak.signing_key()
         pms = ak.default_scope_mapping_pks()
-        if mapping_pk:
+        if mapping_pk not in pms:
             pms.append(mapping_pk)
         provider = ak.post("/providers/oauth2/", {
             "name": args.name,
@@ -342,11 +426,11 @@ def main():
         full = ak.get(f"/providers/oauth2/{pk}/")
         client_id = full["client_id"]
         client_secret = full["client_secret"]
-        ak.post("/core/applications/", {
+        app = ak.post("/core/applications/", {
             "name": args.name, "slug": slug, "provider": pk,
         })
-        print(f"→ created provider + application '{slug}' (pk {pk})",
-              file=sys.stderr)
+        app_pk = app["pk"]
+        print(f"→ created provider + application '{slug}' (pk {pk})", file=sys.stderr)
         issuer = f"{ak.base}/application/o/{slug}/"
     else:  # shared
         provider = ak.find_provider(args.provider)
@@ -355,68 +439,71 @@ def main():
         client_secret = provider["client_secret"]
         # Add our scope mapping + this app's redirect URI to the shared provider.
         pms = list(provider.get("property_mappings", []))
-        if mapping_pk and mapping_pk not in pms:
+        if mapping_pk not in pms:
             pms.append(mapping_pk)
-        redirect_mode = args.redirect_mode or "regex"
+        redirect_mode = args.redirect_mode or "strict"
         redirects = list(provider.get("redirect_uris", []))
-        new_uri = f"{args.public_url}/oauth2/callback"
         if redirect_mode == "regex":
-            # A regex that covers every garnix app host under this domain, added
-            # once; strict entries for individual apps still work alongside it.
-            host = urllib.parse.urlparse(args.public_url).hostname or ""
-            apex = ".".join(host.split(".")[-4:]) if host.count(".") >= 3 else host
-            pattern = r"^https://[^/]+\." + apex.replace(".", r"\.") + r"/oauth2/callback$"
+            pattern = app_host_regex(args.public_url)
             if not any(r.get("url") == pattern for r in redirects):
                 redirects.append(redirect_uri_entry(pattern, "regex"))
         else:
+            new_uri = f"{args.public_url}/oauth2/callback"
             if not any(r.get("url") == new_uri for r in redirects):
                 redirects.append(redirect_uri_entry(new_uri, "strict"))
         ak.patch(f"/providers/oauth2/{pk}/", {
             "property_mappings": pms, "redirect_uris": redirects,
         })
-        app_slug = provider.get("name", args.provider)
-        # Issuer is the *shared* application's issuer. Try to find the app bound
-        # to this provider; fall back to the provider name as the slug.
-        apps = ak.get("/core/applications/", {"page_size": 100}).get("results", [])
-        shared_slug = next(
-            (a["slug"] for a in apps
-             if a.get("provider") == pk or a.get("provider_obj", {}).get("pk") == pk),
-            app_slug)
+        shared_app = ak.find_application_for_provider(pk)
+        app_pk = shared_app["pk"] if shared_app else None
+        shared_slug = shared_app["slug"] if shared_app else provider.get("name", args.provider)
         issuer = f"{ak.base}/application/o/{shared_slug}/"
         print(f"→ extended shared provider '{args.provider}' with scope "
               f"'{scope_name}' + redirect ({redirect_mode})", file=sys.stderr)
 
-    secret_age = encrypt_secret(client_secret, pubkey_file) if pubkey_file else None
+    # Create the application entitlements the scope mapping keys off.
+    if app_pk is None:
+        print("!! could not resolve the application for entitlement creation; "
+              f"create these entitlements by hand: {', '.join(e for e, _ in pairs)}",
+              file=sys.stderr)
+    else:
+        for ent, _group in pairs:
+            _obj, warn = ak.ensure_entitlement(app_pk, ent)
+            if warn:
+                print(f"!! {warn}", file=sys.stderr)
+            else:
+                print(f"→ entitlement '{ent}' ensured on the application",
+                      file=sys.stderr)
 
-    scope = "openid profile email"
-    if args.group:
-        scope = f"openid profile email {scope_name}"
+    secret_file = args.secret_file or f"{slug}-client-secret.age"
+    scope = f"openid profile email {scope_name}"
 
     print(file=sys.stderr)
-    if secret_age is None:
-        print("!! no --repo-pubkey-url/--repo-pubkey-file given; the clientSecret "
-              "below is PLAINTEXT — encrypt it with `age -R <repo.pub> -a` before "
-              "committing.", file=sys.stderr)
-        secret_block = client_secret
+    if pubkey_file:
+        secret_age = encrypt_secret(client_secret, pubkey_file)
+        with open(secret_file, "w") as f:
+            f.write(secret_age if secret_age.endswith("\n") else secret_age + "\n")
+        print(f"→ wrote encrypted client secret to {secret_file} — commit it; "
+              "it is referenced below by clientSecretFile", file=sys.stderr)
     else:
-        secret_block = secret_age
+        print("!! no --repo-pubkey-url/--repo-pubkey-file given; NOT writing the "
+              f"secret file. Encrypt the client secret yourself into {secret_file}:\n"
+              f"     printf %s '{client_secret}' | age -R repo.pub -a > {secret_file}",
+              file=sys.stderr)
 
+    print("→ bind users/groups to the entitlements "
+          f"({', '.join(e for e, _ in pairs)}) in Authentik to grant access",
+          file=sys.stderr)
     if args.print_expression:
-        print("# scope mapping expression:", file=sys.stderr)
-        print(f'#   return {{"{args.claim}": [group.name for group in '
-              "request.user.ak_groups.all()]}", file=sys.stderr)
+        print("\n# scope mapping expression:", file=sys.stderr)
+        for line in expression.splitlines():
+            print(f"#   {line}", file=sys.stderr)
 
-    # The pasteable config block on stdout.
-    if secret_age is None:
-        # Emit with a placeholder rather than a bare plaintext age field.
-        cfg = emit_config(args.mode, args.public_url, issuer, client_id,
-                          "-----BEGIN AGE ENCRYPTED FILE-----\n"
-                          f"<age -R repo.pub -a of: {secret_block}>\n"
-                          "-----END AGE ENCRYPTED FILE-----",
-                          scope, args.claim, args.group, args.upstream)
-    else:
-        cfg = emit_config(args.mode, args.public_url, issuer, client_id,
-                          secret_age, scope, args.claim, args.group, args.upstream)
+    # The pasteable config block on stdout — always references the .age file by
+    # path (never inline ciphertext).
+    cfg = emit_config(args.mode, args.public_url, issuer, client_id,
+                      nix_path_literal(secret_file), scope, claim, groups,
+                      args.upstream)
     print(cfg)
 
 

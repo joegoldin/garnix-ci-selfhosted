@@ -51,9 +51,11 @@ nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- --mode shar
 ```
 
 It creates the provider/application (dedicated) or the scope mapping + regex
-redirect (shared), ensures the group, age-encrypts the client secret to the
-repo's public key, and prints a ready-to-paste `garnix.authentik = { … };` block
-on stdout (progress notes go to stderr).
+redirect (shared), ensures the group, **writes the client secret to a committed
+`.age` file** (encrypted to the repo's public key, default
+`<name>-client-secret.age`), and prints a ready-to-paste `garnix.authentik = { … };`
+block on stdout that references that file by path — no inline ciphertext.
+Progress notes go to stderr.
 
 Get an API token from Authentik (**Directory → Tokens**, or a service account),
 and store it in agenix so it's not on your shell history — see
@@ -105,32 +107,41 @@ For each app you want to protect:
 
 ## 2. Control access with application entitlements
 
-This is how you get "user A sees app X, user B sees app Y":
+Authentik **application entitlements** are named grants on an application (e.g.
+`garnixadmin`, `garnixuser`, or per-app `myapp-user`). You bind users/groups to
+an entitlement, and a **scope mapping** reads which entitlements the logged-in
+user holds for the app (`request.user.app_entitlements(provider.application)`)
+and turns them into group names in the token. This is the exact pattern the
+`authentik-provision` helper creates, and what the garnix "garnix groups"
+mapping does.
 
-1. Open the **Application → Entitlements** tab (Authentik 2024.8+; on older
-   versions use **Bindings** on the application's Policy/Group/User bindings).
-2. **Create binding** → bind a **Group** (e.g. `myapp-users`) or individual
-   **Users** to the application.
-3. Only bound users can complete login for this app. A user who is not bound
-   gets an Authentik "not authorized to access this application" page — they
-   never reach your service.
+1. Open the app's **Application entitlements** tab (preview; Authentik 2024.8+).
+2. **Create entitlement** → e.g. `myapp-user`, and bind the users/groups who may
+   use the app to it.
+3. The scope mapping in §3 reads these and emits a group; oauth2-proxy gates on
+   that group (`allowedGroups`). A user with no matching entitlement gets no
+   group and is refused (403).
 
-Make one group per app (`myapp-users`, `otherapp-users`, …) and add users to
-the groups that match the apps they should see. Access is now pure group
-membership managed in Authentik.
+The helper creates the entitlement objects for you; you still bind members to
+them in Authentik.
 
-## 3. (Optional) Emit a groups/entitlements claim for `allowedGroups`
+## 3. Emit a groups claim from the app entitlements
 
-If you want a second gate inside oauth2-proxy (or you can't rely on entitlement
-bindings), have Authentik put the user's groups into the token:
+Turn the user's entitlements for this app into a `groups` claim (this is what the
+helper generates — the garnix "garnix groups" mapping is the canonical example):
 
 1. **Customization → Property Mappings → Create → Scope Mapping**
-   - Name: `myapp-groups`, Scope name: `myapp-entitlements`
+   - Name: `myapp groups`, Scope name: `myapp`
    - Expression:
      ```python
-     return { "groups": [g.name for g in request.user.ak_groups.all()] }
+     entitlement_names = {
+         e.name for e in request.user.app_entitlements(provider.application)
+     }
+     groups = []
+     if "myapp-user" in entitlement_names:
+         groups.append("myapp-users")
+     return {"groups": groups}
      ```
-     (or map from entitlements if you use them as the source of truth)
 2. Add that scope mapping to the provider's **Selected Scopes**.
 3. In your deployed config, request the scope and gate on the claim:
    ```nix
@@ -146,19 +157,21 @@ bindings), have Authentik put the user's groups into the token:
 ## 4. Deliver the client secret (no plaintext in the repo)
 
 The guest already holds the repo's age private key at `/var/garnix/keys/repo-key`.
-Encrypt the OIDC client secret to the repo's **public** key and commit the
-ciphertext:
+Encrypt the OIDC client secret to the repo's **public** key into a committed
+`.age` file, and reference it by path (never inline ciphertext):
 
 ```sh
 # fetch the repo public key garnix generated
 curl -s https://<your-garnix>/api/keys/<owner>/<repo>/repo-key.public > repo.pub
 
-# encrypt the client secret to it
-printf '%s' '<oidc client secret>' | age -R repo.pub -a
-# → paste the -----BEGIN AGE ENCRYPTED FILE----- block into clientSecretAge
+# encrypt the client secret into a .age file you commit
+mkdir -p secrets
+printf %s '<oidc client secret>' | age -R repo.pub -a > secrets/myapp-client-secret.age
+# → reference it by path: clientSecretFile = ./secrets/myapp-client-secret.age;
 ```
 
-The guest decrypts it at runtime; the plaintext never enters the nix store.
+The `.age` file is copied into the store (still encrypted) and decrypted at
+runtime; the plaintext never enters the nix store.
 
 ## 5. Wire it in the deployed config
 
@@ -174,9 +187,7 @@ modules = [
       publicUrl = "https://myapp.main.myrepo.myorg.apps.example.com";
       issuerUrl = "https://authentik.example.com/application/o/myapp/";
       clientId = "<client id>";
-      clientSecretAge = ''-----BEGIN AGE ENCRYPTED FILE-----
-        ...
-        -----END AGE ENCRYPTED FILE-----'';
+      clientSecretFile = ./secrets/myapp-client-secret.age;   # committed .age file
       allowedGroups = [ "myapp-users" ];   # omit to let entitlements be the only gate
       upstream = "127.0.0.1:8080";
     };
@@ -197,25 +208,30 @@ single shared Authentik application and distinguish apps by a per-app scope.
 
 1. Create one OAuth2/OpenID provider (**Confidential**) and application, exactly
    as in §1 — call it e.g. `garnix-shared`.
-2. Give its provider a **regex redirect URI** so every garnix app host is
-   covered without editing it again. In **Providers → garnix-shared → Redirect
-   URIs**, add a `regex` entry:
-   ```
-   ^https://[^/]+\.apps\.example\.com/oauth2/callback$
-   ```
-   (the helper adds this for you on the first shared app).
-3. Note the shared **clientId**, **client secret**, and **issuer**
+2. Note the shared **clientId**, **client secret**, and **issuer**
    (`https://<authentik-host>/application/o/garnix-shared/`).
 
+The helper adds each app's redirect URI to the shared provider automatically
+(strict, i.e. the app's exact callback; pass `--redirect-mode regex` for a
+single catch-all like `^https://[^/]+\.apps\.example\.com/oauth2/callback$` so
+you never edit the provider again).
+
 **For each app, add just a scope mapping** (§3 style) named for the app, e.g.
-scope name `reports-entitlements`, emitting the user's groups under a claim:
+scope name `reports`, plus one or more **application entitlements** on the shared
+app (e.g. `reports-user`) that the mapping keys off:
 
 ```python
-return {"groups": [group.name for group in request.user.ak_groups.all()]}
+entitlement_names = {
+    e.name for e in request.user.app_entitlements(provider.application)
+}
+groups = []
+if "reports-user" in entitlement_names:
+    groups.append("reports-users")
+return {"groups": groups}
 ```
 
-Add it to the shared provider's **Selected Scopes**, and gate the deployment on
-the claim:
+Add the mapping to the shared provider's **Selected Scopes**, bind users to the
+`reports-user` entitlement, and gate the deployment on the claim:
 
 ```nix
 garnix.authentik = {
@@ -224,10 +240,8 @@ garnix.authentik = {
   publicUrl = "https://reports.main.myrepo.myorg.apps.example.com";
   issuerUrl = "https://authentik.example.com/application/o/garnix-shared/";  # the SHARED app
   clientId = "<shared client id>";
-  clientSecretAge = ''-----BEGIN AGE ENCRYPTED FILE-----
-    ...
-    -----END AGE ENCRYPTED FILE-----'';   # the SHARED secret, encrypted to THIS repo's key
-  scope = "openid profile email reports-entitlements";  # the app's scope
+  clientSecretFile = ./secrets/reports-client-secret.age;   # the SHARED secret, encrypted to THIS repo's key
+  scope = "openid profile email reports";  # the app's scope
   groupsClaim = "groups";
   allowedGroups = [ "reports-users" ];   # REQUIRED in shared mode — the only per-app gate
   upstream = "127.0.0.1:8080";

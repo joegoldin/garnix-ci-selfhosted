@@ -141,7 +141,8 @@
           checks =
             namespace "backend" backend.checks //
             namespace "frontend" frontend.checks //
-            namespace "frontend" (namespace "ageWasm" frontend-age-wasm.checks);
+            namespace "frontend" (namespace "ageWasm" frontend-age-wasm.checks) //
+            namespace "provisioner" provisioner.checks;
 
           packages =
             namespace "backend" backend.packages //

@@ -61,11 +61,10 @@
             publicUrl = "https://hello-locked.main.<repo>.<owner>.<hostingDomain>";
             issuerUrl = "https://<authentik-host>/application/o/hello-locked/";
             clientId = "<oidc client id>";
-            clientSecretAge = ''
-              -----BEGIN AGE ENCRYPTED FILE-----
-              <age ciphertext of the client secret, encrypted to the repo key>
-              -----END AGE ENCRYPTED FILE-----
-            '';
+            # Committed .age file (encrypted to the repo key); referenced by path,
+            # never inline. Create with `age -R repo.pub -a > ...` or the
+            # authentik-provision helper.
+            clientSecretFile = ./hello-locked-client-secret.age;
             allowedGroups = [ "hello-locked-users" ]; # omit to gate on entitlements only
             upstream = "127.0.0.1:8080";
           };

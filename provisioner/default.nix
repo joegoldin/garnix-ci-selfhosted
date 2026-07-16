@@ -16,4 +16,14 @@
       '';
     };
   };
+  checks = {
+    # Unit tests for the helper: no network (the REST client + age are mocked).
+    authentikProvisionTests = pkgs.runCommand "authentik-provision-tests"
+      { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      cp ${./authentik_provision.py} authentik_provision.py
+      cp ${./test_authentik_provision.py} test_authentik_provision.py
+      python3 -m unittest test_authentik_provision -v
+      touch "$out"
+    '';
+  };
 }
