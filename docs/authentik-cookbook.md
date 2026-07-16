@@ -30,37 +30,44 @@ the `authentik-provision` helper (§0) automates either.
 Instead of clicking through the Authentik UI, drive its REST API:
 
 ```sh
-# dedicated: create a fresh provider + app, gate on a group, encrypt the secret
+# dedicated: token + entitlement both defaulted. Creates a provider + app + the
+# "hello-locked-user" entitlement -> "hello-locked-users" group, writes the
+# encrypted secret file, and prints the config block.
 nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- \
   --authentik-url https://authentik.example.com \
-  --token-file /run/agenix/authentik-api-token \
   --name hello-locked \
   --public-url https://hello-locked.main.myrepo.myorg.apps.example.com \
-  --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public \
-  --group hello-locked-users
+  --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
 
-# shared: add a per-app scope mapping to an existing provider named "garnix-shared"
+# shared: reuse an existing provider "garnix-shared"; extra role shown explicitly
 nix run github:joegoldin/garnix-ci#provisioner_authentikProvision -- --mode shared \
   --provider garnix-shared \
   --authentik-url https://authentik.example.com \
-  --token-file /run/agenix/authentik-api-token \
   --name reports \
+  --entitlement reports-user=reports-users \
+  --entitlement reports-admin=reports-admins \
   --public-url https://reports.main.myrepo.myorg.apps.example.com \
-  --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public \
-  --group reports-users
+  --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
 ```
 
-It creates the provider/application (dedicated) or the scope mapping + regex
-redirect (shared), ensures the group, **writes the client secret to a committed
-`.age` file** (encrypted to the repo's public key, default
-`<name>-client-secret.age`), and prints a ready-to-paste `garnix.authentik = { … };`
-block on stdout that references that file by path — no inline ciphertext.
-Progress notes go to stderr.
+It creates the provider/application (dedicated) or extends the existing provider
+(shared), creates the **application entitlements** and a **scope mapping** that
+reads `request.user.app_entitlements(provider.application)` (see §2/§3),
+**writes the client secret to a committed `.age` file** (encrypted to the repo's
+public key, default `<name>-client-secret.age`), and prints a ready-to-paste
+`garnix.authentik = { … };` block on stdout that references that file by path —
+no inline ciphertext. Progress notes go to stderr.
 
-Get an API token from Authentik (**Directory → Tokens**, or a service account),
-and store it in agenix so it's not on your shell history — see
-[§6](#6-store-the-authentik-api-token-in-agenix). The helper reads it from
-`--token-file`, `--token`, or `$AUTHENTIK_TOKEN`.
+Defaults that keep the command short:
+
+- **API token** — read from `/run/agenix/authentik-api-token` by default (see
+  [§6](#6-store-the-authentik-api-token-in-agenix)); override with `--token-file`,
+  `--token`, or `$AUTHENTIK_TOKEN`.
+- **`--entitlement`** — defaults to `<name>-user=<name>-users`; pass it
+  (repeatable) to add roles, e.g. `--entitlement reports-admin=reports-admins`.
+- **`--repo-pubkey-url`** — the garnix repo-key endpoint is **public** (no login,
+  works for private repos too — it only exposes the *public* key, which can
+  encrypt but not decrypt), so this always resolves.
 
 The sections below describe what the helper does, so you can also do it by hand.
 

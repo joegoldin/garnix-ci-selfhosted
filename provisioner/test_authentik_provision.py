@@ -306,10 +306,34 @@ class MainValidationTest(unittest.TestCase):
 
     def test_missing_token_dies(self):
         with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(ap, "DEFAULT_TOKEN_FILE", "/no/such/authentik-token"), \
              mock.patch("sys.stderr", new_callable=io.StringIO):
             with self.assertRaises(SystemExit):
                 ap.main(["--authentik-url", "https://x", "--name", "reports",
                          "--public-url", "https://reports.example.com"])
+
+
+class TokenResolveTests(unittest.TestCase):
+    def test_explicit_token_wins(self):
+        self.assertEqual(ap.resolve_token("X", "/whatever"), "X")
+
+    def test_reads_token_file(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as tf:
+            tf.write("  TTT\n")
+            path = tf.name
+        try:
+            self.assertEqual(ap.resolve_token(None, path), "TTT")
+        finally:
+            os.unlink(path)
+
+    def test_missing_default_returns_none(self):
+        with mock.patch.object(ap, "DEFAULT_TOKEN_FILE", "/no/such/default-token"):
+            self.assertIsNone(ap.resolve_token(None, "/no/such/default-token"))
+
+    def test_missing_explicit_token_file_dies(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit):
+                ap.resolve_token(None, "/no/such/explicit-token")
 
 
 if __name__ == "__main__":

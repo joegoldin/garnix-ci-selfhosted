@@ -36,21 +36,26 @@ Auth: pass an Authentik API token (Directory → Tokens, or a service account) v
 --token, --token-file, or the AUTHENTIK_TOKEN env var, and the instance URL via
 --authentik-url or AUTHENTIK_URL.
 
+Defaults keep the common case short: the token comes from the agenix path
+/run/agenix/authentik-api-token, and --entitlement defaults to
+<name>-user=<name>-users.
+
 Examples:
 
-  # dedicated: new provider + app, entitlement "hello-user" -> group "hello-users"
+  # dedicated: token + entitlement both defaulted. Creates provider + app +
+  # the "hello-locked-user" entitlement -> "hello-locked-users" group.
   authentik-provision \\
     --authentik-url https://authentik.example.com \\
-    --token-file /run/agenix/authentik-api-token \\
-    --name hello-locked --entitlement hello-user=hello-users \\
+    --name hello-locked \\
     --public-url https://hello-locked.main.myrepo.myorg.apps.example.com \\
     --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
 
-  # shared: add a scope mapping + entitlements to an existing "garnix-shared" provider
+  # shared: reuse "garnix-shared"; extra role + explicit token override shown
   authentik-provision --mode shared --provider garnix-shared \\
     --authentik-url https://authentik.example.com \\
     --token-file /run/agenix/authentik-api-token \\
-    --name reports --entitlement reports-user=reports-users \\
+    --name reports \\
+    --entitlement reports-user=reports-users \\
     --entitlement reports-admin=reports-admins \\
     --public-url https://reports.main.myrepo.myorg.apps.example.com \\
     --repo-pubkey-url https://garnix.example.com/api/keys/myorg/myrepo/repo-key.public
@@ -68,6 +73,28 @@ import urllib.request
 def die(msg):
     print(f"authentik-provision: error: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+# Default agenix path for the Authentik API token on garnix workstations, so the
+# common case needs no --token/--token-file. --token / AUTHENTIK_TOKEN override.
+DEFAULT_TOKEN_FILE = "/run/agenix/authentik-api-token"
+
+
+def resolve_token(token, token_file):
+    """Resolve the API token: an explicit --token / AUTHENTIK_TOKEN wins, else
+    read token_file. A missing *default* token file returns None (the caller
+    then errors); a missing *explicitly-set* --token-file is a hard error."""
+    if token:
+        return token
+    if token_file:
+        try:
+            with open(token_file) as f:
+                return f.read().strip() or None
+        except OSError as e:
+            if token_file != DEFAULT_TOKEN_FILE:
+                die(f"cannot read --token-file {token_file}: {e}")
+            return None
+    return None
 
 
 def parse_entitlement_pairs(specs, slug):
@@ -326,9 +353,10 @@ def build_parser():
                    help="Authentik base URL (or AUTHENTIK_URL)")
     p.add_argument("--token", default=os.environ.get("AUTHENTIK_TOKEN"),
                    help="Authentik API token (or AUTHENTIK_TOKEN)")
-    p.add_argument("--token-file",
-                   help="read the API token from this file instead (e.g. an "
-                        "agenix path like /run/agenix/authentik-api-token)")
+    p.add_argument("--token-file", default=DEFAULT_TOKEN_FILE,
+                   help=f"read the API token from this file (default: "
+                        f"{DEFAULT_TOKEN_FILE}, the agenix path); --token / "
+                        "AUTHENTIK_TOKEN take precedence")
     p.add_argument("--mode", choices=["dedicated", "shared"], default="dedicated")
     p.add_argument("--name", required=True,
                    help="app name / slug base (e.g. hello-locked)")
@@ -367,16 +395,12 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
 
-    if not args.token and args.token_file:
-        try:
-            with open(args.token_file) as f:
-                args.token = f.read().strip()
-        except OSError as e:
-            die(f"cannot read --token-file {args.token_file}: {e}")
+    args.token = resolve_token(args.token, args.token_file)
     if not args.authentik_url:
         die("--authentik-url (or AUTHENTIK_URL) is required")
     if not args.token:
-        die("--token / --token-file (or AUTHENTIK_TOKEN) is required")
+        die(f"no API token: pass --token, set AUTHENTIK_TOKEN, or make the token "
+            f"file readable (--token-file, default {DEFAULT_TOKEN_FILE})")
     if args.mode == "shared" and not args.provider:
         die("--provider is required in shared mode (the existing provider to extend)")
 
