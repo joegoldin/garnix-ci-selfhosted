@@ -215,7 +215,9 @@
                                         },
                                         "port": {
                                             "$comment": "The port the service listens on inside the server.",
-                                            "type": "number"
+                                            "maximum": 9223372036854775807,
+                                            "minimum": -9223372036854775808,
+                                            "type": "integer"
                                         },
                                         "type": {
                                             "$comment": "\"http\" (default) exposes <name>.<server-domain>; \"tcp\" exposes a raw host:port.",
