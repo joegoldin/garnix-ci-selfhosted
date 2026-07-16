@@ -50,15 +50,23 @@
       networkConfig.DHCP = "yes";
     };
     services.openssh.enable = true;
-    services.openssh.settings.PermitRootLogin = "prohibit-password";
+    # Key-only, hardened sshd (no passwords), matching the garnix user-module.
+    services.openssh.settings = {
+      PermitRootLogin = "prohibit-password";
+      PasswordAuthentication = false;
+      KbdInteractiveAuthentication = false;
+    };
     users.users.root.openssh.authorizedKeys.keys = [ config.garnix.guest.sshPublicKey ];
     users.users.garnix = {
       isNormalUser = true;
       extraGroups = [ "wheel" ];
+      # The hosting key (for backend redeploys) is always authorized. The garnix
+      # user is otherwise login-closed: garnix only writes
+      # /var/garnix/keys/authorized_keys when a server opts in via
+      # authorizeDeployerGithubKeys / authorizedSSHKeys (copyAuthorizedKeys).
+      # sshd tolerates the keyFile being absent. Declare your own login users in
+      # the guest config for the user-module pattern.
       openssh.authorizedKeys.keys = [ config.garnix.guest.sshPublicKey ];
-      # User SSH access (the three methods: tailscale/proxyjump/DNAT). The
-      # backend drops the deployer's GitHub keys + garnix.yaml sshKeys here at
-      # deploy time (copyAuthorizedKeys). sshd tolerates the file being absent.
       openssh.authorizedKeys.keyFiles = [ "/var/garnix/keys/authorized_keys" ];
     };
     security.sudo.wheelNeedsPassword = false;

@@ -1550,11 +1550,14 @@ data ServerToSpinUp = ServerToSpinUp
     -- | garnix.yaml servers[].authentik == "default": drop garnix's own OIDC
     -- credentials onto the guest at deploy time (see copyDefaultAuthentikEnv).
     useDefaultAuthentik :: Bool,
-    -- | garnix.yaml servers[].sshKeys: extra authorized keys for the guest's
-    -- garnix user (in addition to the deployer's GitHub keys).
-    sshKeys :: [Text],
-    -- | garnix.yaml servers[].sshExpose: also open a public SSH DNAT port.
-    sshExpose :: Bool,
+    -- | garnix.yaml servers[].exposeSSH: open a public SSH DNAT port.
+    exposeSSH :: Bool,
+    -- | garnix.yaml servers[].authorizeDeployerGithubKeys: authorize the
+    -- deployer's github.com/<user>.keys for login as the guest's garnix user.
+    authorizeDeployerGithubKeys :: Bool,
+    -- | garnix.yaml servers[].authorizedSSHKeys: extra keys authorized for
+    -- login as the guest's garnix user.
+    authorizedSSHKeys :: [Text],
     -- | garnix.yaml servers[].ports of type http: (name, guest port).
     httpPorts :: [(Text, Int)],
     -- | garnix.yaml servers[].ports of type tcp: (name, guest port).

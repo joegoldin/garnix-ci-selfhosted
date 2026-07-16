@@ -76,10 +76,10 @@ getDeployPlan reporter commitInfo deploymentType = do
             $ \s -> case s ^. deploySection of
               OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary, s))
               _ -> Nothing
-          GhPrDeployment _prId ->
-            (cfg ^. serverSection)
-              & filter (\s -> s ^. deploySection == OnPullRequest)
-              & map (\s -> (s ^. configuration, (def, False, s)))
+          GhPrDeployment _prId -> flip mapMaybe (cfg ^. serverSection)
+            $ \s -> case s ^. deploySection of
+              OnPullRequest prTier -> Just (s ^. configuration, (prTier, False, s))
+              _ -> Nothing
     let wantedPackages = Map.keys wantedPackagesMapping
     existing <- DB.getRunningServersOf (commitInfo ^. repoInfo) deploymentType
     wantedBuilds <- withPolling (PollingConfig (fromSeconds @Int 2) (fromHours @Int 2)) $ do
@@ -137,8 +137,9 @@ getDeployPlan reporter commitInfo deploymentType = do
                       build,
                       domainIsPrimary,
                       useDefaultAuthentik,
-                      sshKeys = _serverSectionSshKeys section,
-                      sshExpose = _serverSectionSshExpose section,
+                      exposeSSH = _serverSectionExposeSSH section,
+                      authorizeDeployerGithubKeys = _serverSectionAuthorizeDeployerGithubKeys section,
+                      authorizedSSHKeys = _serverSectionAuthorizedSSHKeys section,
                       httpPorts,
                       tcpPorts
                     }
@@ -262,21 +263,28 @@ startServer = curry4
       when (serverToSpinUp ^. #useDefaultAuthentik)
         $ copyDefaultAuthentikEnv serverInfo publicHost
         <?> "Copying default Authentik credentials"
-      -- Authorize SSH for the garnix user when the user opted in (sshExpose or
-      -- explicit sshKeys); this also grants the deployer's own GitHub keys.
-      when (serverToSpinUp ^. #sshExpose || not (null (serverToSpinUp ^. #sshKeys)))
-        $ copyAuthorizedKeys serverInfo (commitInfo ^. reqUser) (serverToSpinUp ^. #sshKeys)
+      -- Authorize login as the garnix user only when the user opts in, via the
+      -- deployer's GitHub keys and/or explicit authorizedSSHKeys. Otherwise the
+      -- garnix user stays login-closed (deploys still work via the hosting key).
+      let authorizesGarnixUser =
+            serverToSpinUp ^. #authorizeDeployerGithubKeys
+              || not (null (serverToSpinUp ^. #authorizedSSHKeys))
+      when authorizesGarnixUser
+        $ copyAuthorizedKeys
+          serverInfo
+          (if serverToSpinUp ^. #authorizeDeployerGithubKeys then Just (commitInfo ^. reqUser) else Nothing)
+          (serverToSpinUp ^. #authorizedSSHKeys)
         <?> "Authorizing SSH keys"
       -- Public port exposure (DNAT) only makes sense with the local
       -- provisioner; persist whatever it (plus the http routers) exposes, but
       -- only when the server actually declares ssh/ports.
       let wantsExposure =
-            serverToSpinUp ^. #sshExpose
+            serverToSpinUp ^. #exposeSSH
               || not (null (serverToSpinUp ^. #httpPorts))
               || not (null (serverToSpinUp ^. #tcpPorts))
       when wantsExposure $ do
         exposeResult <- exposeServerPorts serverInfo serverToSpinUp
-        DB.setServerExposed (serverInfo ^. id) (exposedBlob serverToSpinUp exposeResult)
+        DB.setServerExposed (serverInfo ^. id) (exposedBlob serverToSpinUp authorizesGarnixUser exposeResult)
       (serverInfo, stderr) <-
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
           let logs = showPretty (err error)
@@ -440,12 +448,13 @@ copyDefaultAuthentikEnv server publicHost = do
     ExitSuccess -> pure ()
     ExitFailure _ -> throw $ OtherError "Exporting default Authentik credentials to the server failed"
 
--- | Authorize the deployer's GitHub keys (best-effort) plus any garnix.yaml
--- sshKeys for the guest's `garnix` user, by dropping an authorized_keys file
--- the guest profile reads via authorizedKeys.keyFiles. No-op with no keys.
-copyAuthorizedKeys :: ServerInfo -> GhLogin -> [Text] -> M ()
-copyAuthorizedKeys server deployer extraKeys = do
-  githubKeys <- fetchGithubKeys deployer
+-- | Authorize login as the guest's `garnix` user by dropping an authorized_keys
+-- file the guest profile reads via authorizedKeys.keyFiles. Keys are the
+-- deployer's GitHub keys (best-effort, only when a deployer is given) plus the
+-- explicit authorizedSSHKeys. No-op with no keys.
+copyAuthorizedKeys :: ServerInfo -> Maybe GhLogin -> [Text] -> M ()
+copyAuthorizedKeys server mDeployer extraKeys = do
+  githubKeys <- maybe (pure []) fetchGithubKeys mDeployer
   let keys = filter (not . T.null . T.strip) (githubKeys <> extraKeys)
   unless (null keys) $ do
     (ip, sshArgs) <- ServerPool.sshArgsFor server
@@ -478,20 +487,23 @@ fetchGithubKeys login =
 exposeServerPorts :: ServerInfo -> ServerToSpinUp -> M (Maybe ExposeResult)
 exposeServerPorts server serverToSpinUp = do
   socket <- view #provisionerSocket
-  let sshExpose' = serverToSpinUp ^. #sshExpose
+  let exposeSSH' = serverToSpinUp ^. #exposeSSH
       tcpGuestPorts = snd <$> serverToSpinUp ^. #tcpPorts
   case socket of
     Just sock
-      | sshExpose' || not (null tcpGuestPorts) ->
-          Just <$> exposeServer sock (_serverInfoProvisionedServerId server) sshExpose' tcpGuestPorts
+      | exposeSSH' || not (null tcpGuestPorts) ->
+          Just <$> exposeServer sock (_serverInfoProvisionedServerId server) exposeSSH' tcpGuestPorts
     _ -> pure Nothing
 
 -- | The per-server exposure blob stored in servers.exposed:
--- @{"ssh_port": Int|null, "tcp": [{name,guest,host}], "http": [{name,port}]}@.
-exposedBlob :: ServerToSpinUp -> Maybe ExposeResult -> Aeson.Value
-exposedBlob serverToSpinUp exposeResult =
+-- @{"ssh_port": Int|null, "ssh_user": Text|null, "tcp": [...], "http": [...]}@.
+-- @ssh_user@ is the login user garnix authorized (currently always @garnix@),
+-- or null when only the user's own declared guest users can log in.
+exposedBlob :: ServerToSpinUp -> Bool -> Maybe ExposeResult -> Aeson.Value
+exposedBlob serverToSpinUp authorizesGarnixUser exposeResult =
   Aeson.object
     [ "ssh_port" Aeson..= (exposeResult >>= _exposeResultSshPort),
+      "ssh_user" Aeson..= (if authorizesGarnixUser then Just ("garnix" :: Text) else Nothing),
       "tcp" Aeson..= tcpEntries,
       "http" Aeson..= httpEntries
     ]

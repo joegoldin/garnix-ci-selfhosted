@@ -105,7 +105,7 @@
                     "type": "string"
                 },
                 "fodChecks": {
-                    "$comment": "Whether FOD checks are enabled for the repo. See https://garnix.io/docs/fod-checks for more information.",
+                    "$comment": "Whether FOD checks are enabled for the repo (on by default in this self-host fork). See https://garnix.io/docs/fod-checks for more information.",
                     "type": "boolean"
                 },
                 "incrementalizeBuilds": {
@@ -151,6 +151,17 @@
                                 "$comment": "Set to \"default\" to have garnix drop its own OIDC (Authentik) credentials onto the deployed server at /var/garnix/keys/default-authentik.env, for use with the garnix-authentik guest module's mode = \"default\". The server is then gated by the exact same Authentik application (and entitlements) as garnix itself.",
                                 "type": "string"
                             },
+                            "authorizeDeployerGithubKeys": {
+                                "$comment": "Authorize the deployer's github.com/<user>.keys to log in as the garnix user on the deployed server.",
+                                "type": "boolean"
+                            },
+                            "authorizedSSHKeys": {
+                                "$comment": "Extra SSH public keys to authorize for login as the garnix user on the deployed server.",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
                             "configuration": {
                                 "$comment": "What attribute to deploy (e.g.: 'myServer' for 'nixosConfigurations.myServer')",
                                 "type": "string"
@@ -159,21 +170,17 @@
                                 "$comment": "When to deploy a new server, or redeploy an existing one\ndeployment",
                                 "oneOf": [
                                     {
-                                        "allOf": [
-                                            {
-                                                "type": "object"
+                                        "properties": {
+                                            "machine": {
+                                                "$comment": "What server tier to deploy (i1x1|i2x2|...).",
+                                                "type": "string"
                                             },
-                                            {
-                                                "properties": {
-                                                    "type": {
-                                                        "const": "on-pull-request"
-                                                    }
-                                                },
-                                                "required": [
-                                                    "type"
-                                                ],
-                                                "type": "object"
+                                            "type": {
+                                                "const": "on-pull-request"
                                             }
+                                        },
+                                        "required": [
+                                            "type"
                                         ],
                                         "type": "object"
                                     },
@@ -203,6 +210,10 @@
                                     }
                                 ],
                                 "type": "object"
+                            },
+                            "exposeSSH": {
+                                "$comment": "Open a public DNAT port on the garnix host forwarding to the guest's SSH (:22). Network reachability only; declare your login users in the guest config, or authorize the garnix user via authorizeDeployerGithubKeys/authorizedSSHKeys.",
+                                "type": "boolean"
                             },
                             "ports": {
                                 "$comment": "Extra ports to expose. http -> <name>.<server-domain>; tcp -> host:port.",
@@ -236,17 +247,6 @@
                                         "port"
                                     ],
                                     "type": "object"
-                                },
-                                "type": "array"
-                            },
-                            "sshExpose": {
-                                "$comment": "Also expose SSH via a public DNAT port on the garnix host (in addition to tailscale/ProxyJump).",
-                                "type": "boolean"
-                            },
-                            "sshKeys": {
-                                "$comment": "Extra SSH public keys to authorize for the garnix user on the deployed server (in addition to the deployer's GitHub keys).",
-                                "items": {
-                                    "type": "string"
                                 },
                                 "type": "array"
                             }

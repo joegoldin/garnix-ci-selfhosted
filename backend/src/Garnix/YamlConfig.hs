@@ -19,8 +19,9 @@ module Garnix.YamlConfig
     ServerSection (..),
     ServerPort (..),
     ServerPortType (..),
-    sshKeys,
-    sshExpose,
+    exposeSSH,
+    authorizeDeployerGithubKeys,
+    authorizedSSHKeys,
     ports,
     _garnixConfigActions,
     actions,
@@ -66,10 +67,10 @@ import Garnix.Monad
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude
 import Garnix.Sandbox
--- Hide ServerToSpinUp's sshKeys/sshExpose field selectors: they collide with
--- this module's makeFields lenses of the same name (ServerSection), which we
--- export instead. YamlConfig doesn't use ServerToSpinUp.
-import Garnix.Types hiding (sshExpose, sshKeys)
+-- Hide ServerToSpinUp's ssh field selectors: they collide with this module's
+-- makeFields lenses of the same name (ServerSection), which we export instead.
+-- YamlConfig doesn't use ServerToSpinUp.
+import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, exposeSSH)
 import System.Directory (doesFileExist)
 
 getConfigFromFlake :: (HasCallStack) => M (Maybe GarnixConfig)
@@ -269,8 +270,9 @@ data ServerSection = ServerSection
   { _serverSectionConfiguration :: PackageName,
     _serverSectionDeploySection :: DeploySection,
     _serverSectionAuthentikSection :: Maybe Text,
-    _serverSectionSshKeys :: [Text],
-    _serverSectionSshExpose :: Bool,
+    _serverSectionExposeSSH :: Bool,
+    _serverSectionAuthorizeDeployerGithubKeys :: Bool,
+    _serverSectionAuthorizedSSHKeys :: [Text],
     _serverSectionPorts :: [ServerPort]
   }
   deriving stock (Eq, Show, Generic)
@@ -292,15 +294,20 @@ instance HasCodec ServerSection where
         "Set to \"default\" to have garnix drop its own OIDC (Authentik) credentials onto the deployed server at /var/garnix/keys/default-authentik.env, for use with the garnix-authentik guest module's mode = \"default\". The server is then gated by the exact same Authentik application (and entitlements) as garnix itself."
       .= _serverSectionAuthentikSection
       <*> optionalFieldWithDefault
-        "sshKeys"
-        []
-        "Extra SSH public keys to authorize for the garnix user on the deployed server (in addition to the deployer's GitHub keys)."
-      .= _serverSectionSshKeys
-      <*> optionalFieldWithDefault
-        "sshExpose"
+        "exposeSSH"
         False
-        "Also expose SSH via a public DNAT port on the garnix host (in addition to tailscale/ProxyJump)."
-      .= _serverSectionSshExpose
+        "Open a public DNAT port on the garnix host forwarding to the guest's SSH (:22). Network reachability only; declare your login users in the guest config, or authorize the garnix user via authorizeDeployerGithubKeys/authorizedSSHKeys."
+      .= _serverSectionExposeSSH
+      <*> optionalFieldWithDefault
+        "authorizeDeployerGithubKeys"
+        False
+        "Authorize the deployer's github.com/<user>.keys to log in as the garnix user on the deployed server."
+      .= _serverSectionAuthorizeDeployerGithubKeys
+      <*> optionalFieldWithDefault
+        "authorizedSSHKeys"
+        []
+        "Extra SSH public keys to authorize for login as the garnix user on the deployed server."
+      .= _serverSectionAuthorizedSSHKeys
       <*> optionalFieldWithDefault
         "ports"
         []
@@ -308,7 +315,7 @@ instance HasCodec ServerSection where
       .= _serverSectionPorts
 
 data DeploySection
-  = OnPullRequest
+  = OnPullRequest {tier :: ServerTier}
   | OnBranch
       { branch :: Branch,
         tier :: ServerTier,
@@ -342,12 +349,14 @@ instance HasCodec DeploySection where
           ( "on-branch",
             mapToEncoder (branch, serverType, isPrimary) branchCodec
           )
-        OnPullRequest -> ("on-pull-request", mapToEncoder () $ pureCodec ())
+        OnPullRequest serverType -> ("on-pull-request", mapToEncoder serverType prCodec)
+      prCodec =
+        optionalFieldWithDefault "machine" (def :: ServerTier) "What server tier to deploy (i1x1|i2x2|...)."
       deserialize :: HashMap Discriminator (Text, ObjectCodec Void DeploySection)
       deserialize =
         HashMap.fromList
           [ ("on-branch", ("", mapToDecoder (uncurry3 OnBranch) branchCodec)),
-            ("on-pull-request", ("", mapToDecoder (const OnPullRequest) $ pureCodec ()))
+            ("on-pull-request", ("", mapToDecoder OnPullRequest prCodec))
           ]
 
 instance HasCodec Branch where
@@ -505,8 +514,8 @@ instance HasCodec GarnixConfig where
               )
           <*> ( optionalFieldWithDefault
                   "fodChecks"
-                  False
-                  "Whether FOD checks are enabled for the repo. See https://garnix.io/docs/fod-checks for more information."
+                  True
+                  "Whether FOD checks are enabled for the repo (on by default in this self-host fork). See https://garnix.io/docs/fod-checks for more information."
                   .= _garnixConfigFodChecks
               )
           <*> ( optionalFieldWithDefault
