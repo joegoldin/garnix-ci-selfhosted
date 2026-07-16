@@ -37,6 +37,12 @@ const runningServerSchema = z.object({
         .number()
         .nullish()
         .transform((v) => v ?? null),
+      // The login user garnix authorized ("garnix"), or null when only your own
+      // declared guest users can log in.
+      ssh_user: z
+        .string()
+        .nullish()
+        .transform((v) => v ?? null),
       tcp: z
         .array(
           z.object({

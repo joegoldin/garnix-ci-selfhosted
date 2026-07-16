@@ -115,6 +115,9 @@ const ConnectCell = ({
   const sshPort = server.exposed?.ssh_port ?? null;
   const httpPorts = server.exposed?.http ?? [];
   const tcpPorts = server.exposed?.tcp ?? [];
+  // The login user garnix authorized; otherwise a placeholder, since the login
+  // user is one you declared in the guest config.
+  const sshUser = server.exposed?.ssh_user ?? "<user>";
   // <name>.<server-domain>: insert the port name as a subdomain of the URL.
   const portUrl = (name: string) =>
     server.url.replace(/^https:\/\//, `https://${name}.`);
@@ -125,17 +128,17 @@ const ConnectCell = ({
     <div className={styles.connect}>
       {ip ? (
         <div className={styles.cmdGroup}>
-          <CopyableCommand label="Tailscale" command={`ssh garnix@${ip}`} />
+          <CopyableCommand label="Tailscale" command={`ssh ${sshUser}@${ip}`} />
           {sshHost ? (
             <CopyableCommand
               label="ProxyJump"
-              command={`ssh -J ${sshHost} garnix@${ip}`}
+              command={`ssh -J ${sshHost} ${sshUser}@${ip}`}
             />
           ) : null}
           {sshPort != null && sshHost ? (
             <CopyableCommand
               label="Port-forward"
-              command={`ssh -p ${sshPort} garnix@${sshHost}`}
+              command={`ssh -p ${sshPort} ${sshUser}@${sshHost}`}
             />
           ) : null}
         </div>
