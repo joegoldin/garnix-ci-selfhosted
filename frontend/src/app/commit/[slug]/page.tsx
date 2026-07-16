@@ -13,6 +13,7 @@ import { useLoading } from "@/hooks/useLoading";
 import { BuildStatus } from "@/services/build";
 import { Err, Ok } from "@/services";
 import { fromSecs } from "@/utils/duration";
+import { Berlin } from "@/utils/fonts";
 import {
   getCommit,
   cancelCommit,
@@ -122,9 +123,12 @@ const CancelAllButton = ({
   const [busy, setBusy] = React.useState(false);
   const cancelAll = async () => {
     setBusy(true);
-    await cancelCommit(slug);
-    setBusy(false);
-    setOpen(false);
+    try {
+      await cancelCommit(slug);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
     reload();
   };
   const count = pendingCount;
@@ -139,7 +143,7 @@ const CancelAllButton = ({
             <Text type="h1">Cancel all in-progress builds?</Text>
           </ModalSection>
           <ModalSection>
-            <p className={styles.modalText}>
+            <p className={`${styles.modalText} ${Berlin.className}`}>
               This will cancel {count} in-progress build
               {count === 1 ? "" : "s"} for this commit. This cannot be undone.
             </p>
@@ -171,9 +175,12 @@ const RestartFailedButton = ({
   const [busy, setBusy] = React.useState(false);
   const restartFailed = async () => {
     setBusy(true);
-    await restartFailedCommit(slug);
-    setBusy(false);
-    setOpen(false);
+    try {
+      await restartFailedCommit(slug);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
     reload();
   };
   return (
@@ -185,7 +192,7 @@ const RestartFailedButton = ({
             <Text type="h1">Restart failed builds?</Text>
           </ModalSection>
           <ModalSection>
-            <p className={styles.modalText}>
+            <p className={`${styles.modalText} ${Berlin.className}`}>
               This will restart {failedCount} failed build
               {failedCount === 1 ? "" : "s"} for this commit.
             </p>

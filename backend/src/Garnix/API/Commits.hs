@@ -83,10 +83,24 @@ getSingleCommit user' commit = do
     CommitEvaluating -> GetCommit summary [] [] runningIds
     CommitEvaluated _ builds runs ->
       GetCommit
-        summary
+        -- The summary aggregates the builds table only; fold the runs
+        -- (actions, FOD checks, module publish, deployments) into the counts
+        -- so an in-flight action shows up in the header and enables
+        -- Cancel-all / Restart-failed.
+        (addRunCounts runs summary)
         (filter (\b -> b ^. packageType /= TypeOverall) builds)
         (map toRunSummary runs)
         runningIds
+  where
+    addRunCounts :: [Run] -> CommitSummary -> CommitSummary
+    addRunCounts runs summary =
+      let count p = fromIntegral $ length $ filter p runs
+       in summary
+            & succeeded %~ (+ count ((== Just Success) . _runStatus))
+            & failed %~ (+ count (\r -> _runStatus r == Just Failure || _runStatus r == Just Timeout))
+            & cancelled %~ (+ count ((== Just Cancelled) . _runStatus))
+            & running %~ (+ count (\r -> isNothing (_runStatus r) && isJust (_runRunStartedAt r)))
+            & pending %~ (+ count (\r -> isNothing (_runStatus r) && isNothing (_runRunStartedAt r)))
 
 -- | Cancel every still-pending build for a commit, including the "overall"
 -- eval/starting build the web UI never lists. Lets the user cancel a commit
@@ -107,6 +121,12 @@ cancelCommit user commit = do
   forM_ builds $ \b ->
     when (isNothing (b ^. status))
       $ DB.reportBuildResultDB (b & status ?~ Cancelled & endTime ?~ buildEnd)
+  -- Also cancel in-flight runs (actions etc.); the action executor polls its
+  -- run row and aborts when it sees Cancelled.
+  runs <- DB.getRuns (summary ^. repoOwner) (summary ^. repoName) commit
+  forM_ runs $ \r ->
+    when (isNothing (_runStatus r))
+      $ DB.setRunStatus (_runId r) (Just Cancelled)
   pure NoContent
 
 -- | Restart every failed (failed/timed-out) build of a commit. Package builds
@@ -125,11 +145,20 @@ restartFailedCommit user commit = do
       (summary ^. repoName)
   when (not hasAccess) $ throw (NoSuchCommit commit)
   builds <- DB.getBuildsByCommit (summary ^. repoOwner) (summary ^. repoName) commit
+  runs <- DB.getRuns (summary ^. repoOwner) (summary ^. repoName) commit
   let isFailed b = b ^. status == Just Failure || b ^. status == Just Timeout
       failedPackageBuilds = filter (\b -> isFailed b && b ^. packageType /= TypeOverall) builds
       failedOverall = filter (\b -> isFailed b && b ^. packageType == TypeOverall) builds
+      failedRuns = filter (\r -> _runStatus r == Just Failure || _runStatus r == Just Timeout) runs
       restarter = user ^. githubLogin
-  case (failedPackageBuilds, failedOverall) of
-    ([], overallBuild : _) -> forkM $ Orchestrator.restartCommit restarter overallBuild
-    _ -> forM_ failedPackageBuilds $ \b -> forkM $ Orchestrator.restartBuild restarter b
+  if not (null failedRuns)
+    -- A failed run (action/deploy/FOD/module publish) can only be re-executed
+    -- by re-running the whole commit: runs are driven by the full pipeline,
+    -- not by a per-package build.
+    then case builds of
+      anyBuild : _ -> forkM $ Orchestrator.restartCommit restarter anyBuild
+      [] -> pure ()
+    else case (failedPackageBuilds, failedOverall) of
+      ([], overallBuild : _) -> forkM $ Orchestrator.restartCommit restarter overallBuild
+      _ -> forM_ failedPackageBuilds $ \b -> forkM $ Orchestrator.restartBuild restarter b
   pure NoContent

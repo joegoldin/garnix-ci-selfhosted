@@ -6,6 +6,7 @@ module Garnix.Build.Action
   )
 where
 
+import Control.Concurrent.Async.Lifted (waitEither, withAsync)
 import Control.Lens
 import Cradle (ProcessConfiguration)
 import Cradle qualified
@@ -89,7 +90,9 @@ run flakeDir repoConfig reporter commitInfo attr actionConfig build =
         Nothing -> do
           Just . snd <$> Keys.getActionKeys (build ^. repoUser) (build ^. repoName) (build ^. package)
         Just _fork -> pure Nothing
-      withTimeout $ runAction runReporter actionConfig command privKey environmentVars <?> "Action: execute"
+      abortOnRunCancellation (_runId run)
+        $ withTimeout
+        $ runAction runReporter actionConfig command privKey environmentVars <?> "Action: execute"
   where
     withTimeout :: M a -> M a
     withTimeout inner = do
@@ -100,6 +103,22 @@ run flakeDir repoConfig reporter commitInfo attr actionConfig build =
         >>= \case
           Nothing -> throw ActionExecutionTimeout
           Just r -> pure r
+
+    -- Race the action against its run row being marked Cancelled (via the
+    -- commit page's Cancel-all); mirrors the build path's
+    -- abortOnCancellation. The run's status is already Cancelled in the DB,
+    -- so just drop the process and return.
+    abortOnRunCancellation :: RunId -> M () -> M ()
+    abortOnRunCancellation runId inner = do
+      let go = do
+            DB.getRun runId >>= \case
+              Just r | _runStatus r == Just Cancelled -> pure ()
+              _ -> threadDelay (fromSeconds @Int 10) >> go
+      withAsync inner $ \innerAsync ->
+        withAsync go $ \isCancelled ->
+          waitEither innerAsync isCancelled >>= \case
+            Left () -> pure ()
+            Right () -> log Notice "Action run was cancelled; aborting."
 
     ensureBuildIsApp :: Build -> M ()
     ensureBuildIsApp build =
@@ -296,6 +315,10 @@ sshArgsFor server key = do
       [ "-q",
         "-o",
         "BatchMode=yes",
+        -- Fail fast on an unreachable action runner instead of hanging the
+        -- run for the whole action timeout with no output.
+        "-o",
+        "ConnectTimeout=15",
         "-p",
         port,
         "-i",
