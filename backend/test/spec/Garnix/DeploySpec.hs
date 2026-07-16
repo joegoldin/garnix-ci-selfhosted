@@ -614,7 +614,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -644,7 +644,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -664,7 +664,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -688,7 +688,7 @@ spec = do
           commit <-
             Deprecated.writeMockRemote "test-branch"
               $ def
-              & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+              & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
           let prEvent =
                 mkPullRequestEvent commit "test-branch" "other-owner/repo-fork" "owner/repo" testInstallationId
                   & number .~ 42
@@ -706,7 +706,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "foo/bar" OnPullRequest]
+            & serverSection .~ [ServerSection "foo/bar" OnPullRequest Nothing [] False []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -720,7 +720,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "sh/some-feature"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         let prEvent =
               mkPullRequestEvent commit "sh/some-feature" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -738,7 +738,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "pkg-a" OnPullRequest, ServerSection "pkg-b" OnPullRequest]
+            & serverSection .~ [ServerSection "pkg-a" OnPullRequest Nothing [] False [], ServerSection "pkg-b" OnPullRequest Nothing [] False []]
         let prEvent =
               mkPullRequestEvent commit "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -761,7 +761,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -777,7 +777,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -793,7 +793,7 @@ spec = do
         commitA <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         let prEvent =
               mkPullRequestEvent commitA "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -829,7 +829,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -853,7 +853,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -876,7 +876,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
 
         now <- liftIO getCurrentTime
         result <-
@@ -898,7 +898,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
 
         now <- liftIO getCurrentTime
         let firstOfMonth = flip UTCTime 0 . (\(y, m, _d) -> Time.fromGregorian y m 1) . Time.toGregorian $ utctDay now
@@ -914,7 +914,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
         now <- liftIO getCurrentTime
         let firstOfMonth = flip UTCTime 0 . (\(y, m, _d) -> Time.fromGregorian y m 1) . Time.toGregorian $ utctDay now
         result <-
@@ -940,7 +940,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest]
+            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
 
         now <- liftIO getCurrentTime
         let firstOfMonth = flip UTCTime 0 . (\(y, m, _d) -> Time.fromGregorian y m 1) . Time.toGregorian $ utctDay now

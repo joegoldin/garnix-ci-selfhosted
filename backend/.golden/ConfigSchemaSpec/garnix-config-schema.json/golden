@@ -203,6 +203,50 @@
                                     }
                                 ],
                                 "type": "object"
+                            },
+                            "ports": {
+                                "$comment": "Extra ports to expose. http -> <name>.<server-domain>; tcp -> host:port.",
+                                "items": {
+                                    "$comment": "serverPort",
+                                    "properties": {
+                                        "name": {
+                                            "$comment": "A short name; used as the subdomain (http) or label (tcp).",
+                                            "type": "string"
+                                        },
+                                        "port": {
+                                            "$comment": "The port the service listens on inside the server.",
+                                            "type": "number"
+                                        },
+                                        "type": {
+                                            "$comment": "\"http\" (default) exposes <name>.<server-domain>; \"tcp\" exposes a raw host:port.",
+                                            "oneOf": [
+                                                {
+                                                    "const": "http"
+                                                },
+                                                {
+                                                    "const": "tcp"
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "required": [
+                                        "name",
+                                        "port"
+                                    ],
+                                    "type": "object"
+                                },
+                                "type": "array"
+                            },
+                            "sshExpose": {
+                                "$comment": "Also expose SSH via a public DNAT port on the garnix host (in addition to tailscale/ProxyJump).",
+                                "type": "boolean"
+                            },
+                            "sshKeys": {
+                                "$comment": "Extra SSH public keys to authorize for the garnix user on the deployed server (in addition to the deployer's GitHub keys).",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
                             }
                         },
                         "required": [

@@ -197,7 +197,7 @@ spec = do
                           branch: master
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I2x4 False) Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I2x4 False) Nothing [] False []]
         roundtripTest actual
 
       it "parses and serializes 'on-pull-request' deployment type of the 'servers'" $ do
@@ -212,7 +212,7 @@ spec = do
                           type: on-pull-request
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" OnPullRequest Nothing]
+        actual `shouldBe` Right [ServerSection "foo" OnPullRequest Nothing [] False []]
         roundtripTest actual
 
       it "parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -229,7 +229,7 @@ spec = do
                           machine: i4x8
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing [] False []]
         roundtripTest actual
 
       it "return a nice error message when failing to parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -262,7 +262,7 @@ spec = do
                           isPrimary: true
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I2x4 True) Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I2x4 True) Nothing [] False []]
         roundtripTest actual
 
     context "actions section" $ do
@@ -335,7 +335,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I2x4 False) Nothing]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I2x4 False) Nothing [] False []]
 
       it "ignores the garnix.yaml file if there is a flake.nix garnix.config" $ GH.withFakeGithubInterface $ \ghState -> do
         let flake =
@@ -367,7 +367,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake $ Just yaml) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I2x4 False) Nothing]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I2x4 False) Nothing [] False []]
 
     context "modules section" $ do
       it "sets the publish field for the default section to false" $ do

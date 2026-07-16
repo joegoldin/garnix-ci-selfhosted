@@ -17,6 +17,11 @@ module Garnix.YamlConfig
     IncrementalizeBuildsSection (..),
     ModuleSection (..),
     ServerSection (..),
+    ServerPort (..),
+    ServerPortType (..),
+    sshKeys,
+    sshExpose,
+    ports,
     _garnixConfigActions,
     actions,
     asAttributeMatcher,
@@ -228,10 +233,42 @@ instance HasCodec IncrementalizeBuildsSection where
 instance Default IncrementalizeBuildsSection where
   def = IncrementalizeBuilds False
 
+-- | An extra port to expose from a deployed server. @http@ ports become a
+-- Traefik subdomain (@<name>.<server-domain>@); @tcp@ ports get a raw host-port
+-- DNAT on the garnix host.
+data ServerPort = ServerPort
+  { _serverPortPort :: Int,
+    _serverPortName :: Text,
+    _serverPortType :: ServerPortType
+  }
+  deriving stock (Eq, Show, Generic)
+
+data ServerPortType = HttpPort | TcpPort
+  deriving stock (Eq, Show, Generic)
+
+instance HasCodec ServerPortType where
+  codec =
+    stringConstCodec
+      $ fromList [(HttpPort, "http"), (TcpPort, "tcp")]
+
+instance HasCodec ServerPort where
+  codec =
+    object "serverPort"
+      $ ServerPort
+      <$> requiredField "port" "The port the service listens on inside the server."
+      .= _serverPortPort
+      <*> requiredField "name" "A short name; used as the subdomain (http) or label (tcp)."
+      .= _serverPortName
+      <*> optionalFieldWithDefault "type" HttpPort "\"http\" (default) exposes <name>.<server-domain>; \"tcp\" exposes a raw host:port."
+      .= _serverPortType
+
 data ServerSection = ServerSection
   { _serverSectionConfiguration :: PackageName,
     _serverSectionDeploySection :: DeploySection,
-    _serverSectionAuthentikSection :: Maybe Text
+    _serverSectionAuthentikSection :: Maybe Text,
+    _serverSectionSshKeys :: [Text],
+    _serverSectionSshExpose :: Bool,
+    _serverSectionPorts :: [ServerPort]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -251,6 +288,21 @@ instance HasCodec ServerSection where
         "authentik"
         "Set to \"default\" to have garnix drop its own OIDC (Authentik) credentials onto the deployed server at /var/garnix/keys/default-authentik.env, for use with the garnix-authentik guest module's mode = \"default\". The server is then gated by the exact same Authentik application (and entitlements) as garnix itself."
       .= _serverSectionAuthentikSection
+      <*> optionalFieldWithDefault
+        "sshKeys"
+        []
+        "Extra SSH public keys to authorize for the garnix user on the deployed server (in addition to the deployer's GitHub keys)."
+      .= _serverSectionSshKeys
+      <*> optionalFieldWithDefault
+        "sshExpose"
+        False
+        "Also expose SSH via a public DNAT port on the garnix host (in addition to tailscale/ProxyJump)."
+      .= _serverSectionSshExpose
+      <*> optionalFieldWithDefault
+        "ports"
+        []
+        "Extra ports to expose. http -> <name>.<server-domain>; tcp -> host:port."
+      .= _serverSectionPorts
 
 data DeploySection
   = OnPullRequest
