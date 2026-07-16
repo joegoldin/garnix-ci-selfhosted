@@ -91,7 +91,7 @@ statusToText = \case
 scrape :: Text -> M (Map Text Double)
 scrape url =
   ( do
-      resp <- withWreqOptions $ \opts -> liftIO (Wreq.getWith opts (cs url))
+      resp <- withWreqOptions $ \opts -> Wreq.getWith opts (cs url)
       pure $ parseProm (cs (resp ^. Wreq.responseBody))
   )
     `catchAny` const (pure Map.empty)

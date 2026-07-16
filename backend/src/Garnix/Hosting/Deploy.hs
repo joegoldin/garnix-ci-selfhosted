@@ -571,7 +571,7 @@ fetchGithubKeys login =
   ( do
       resp <-
         withWreqOptions $ \opts ->
-          liftIO (Wreq.getWith opts (cs ("https://github.com/" <> getGhLogin login <> ".keys")))
+          Wreq.getWith opts (cs ("https://github.com/" <> getGhLogin login <> ".keys"))
       pure $ filter (not . T.null . T.strip) $ T.lines $ cs (resp ^. Wreq.responseBody)
   )
     `catchAny` const (pure [])
