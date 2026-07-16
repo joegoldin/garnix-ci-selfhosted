@@ -1593,7 +1593,7 @@ setServerExposed serverId val = do
     $ pgExec
       [pgSQL|
         UPDATE servers
-        SET exposed = ${encoded}::jsonb
+        SET exposed = ${encoded}::text::jsonb
         WHERE id = ${serverId}
       |]
 
