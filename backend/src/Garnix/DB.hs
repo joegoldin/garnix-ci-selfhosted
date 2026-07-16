@@ -507,9 +507,10 @@ getRecentBuildDurations :: Int64 -> M [(Text, Maybe Status, Double)]
 getRecentBuildDurations limit =
   map (\(pkg, status, secs) -> (getPackageName pkg, status, secs))
     <$> pgQuery
-      -- COALESCE(...,0) so the EXTRACT expression is non-null (Double, not
-      -- Maybe Double) for postgresql-typed.
-      [pgSQL|
+      -- `!` takes nullability from the Haskell types: postgresql-typed infers
+      -- the EXTRACT expression as nullable, but COALESCE(...,0) makes it
+      -- genuinely non-null, so we decode it as Double.
+      [pgSQL|!
         SELECT package, status, COALESCE(EXTRACT(EPOCH FROM (end_time - start_time))::float8, 0)
         FROM builds
         WHERE end_time IS NOT NULL AND package_type <> 'overall'
