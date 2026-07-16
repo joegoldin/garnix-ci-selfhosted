@@ -436,7 +436,7 @@ runWith opts = do
     (Garnix.buildLogsDir opts)
     (Garnix.buildLogsReportingPort opts)
     $ \env -> do
-      serveMetrics (Garnix.metricsPort opts) (env ^. #metrics)
+      serveMetrics (env ^. #selfHostMode) (Garnix.metricsPort opts) (env ^. #metrics)
       -- The heartbeat reaper needs the Traefik heartbeat middleware to be
       -- reporting; in self-host mode servers are torn down by deploy plans
       -- instead, so skip it rather than reap every server.
@@ -449,6 +449,11 @@ runWith opts = do
       let settings =
             Warp.defaultSettings
               & Warp.setPort (port opts)
+              -- Self-host fronts every service with a loopback proxy (Caddy),
+              -- so bind the API to loopback rather than 0.0.0.0 — otherwise a
+              -- guest on the hosting bridge (or anything that can reach the
+              -- host) could hit the API directly. Upstream keeps 0.0.0.0.
+              & (if env ^. #selfHostMode then Warp.setHost "127.0.0.1" else \s -> s)
               & Warp.setBeforeMainLoop
                 ( do
                     hPutStrLn stderr $ "Listening on port " <> show (port opts)

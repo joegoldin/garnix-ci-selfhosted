@@ -2,7 +2,7 @@ module Garnix.Monad.Metrics where
 
 import Data.Generics.Product (HasField')
 import Garnix.Prelude
-import Network.Wai.Handler.Warp (Port, run)
+import Network.Wai.Handler.Warp (Port, defaultSettings, runSettings, setHost, setPort)
 import System.Metrics.Prometheus.Concurrent.Registry
 import System.Metrics.Prometheus.Http.Scrape qualified as Prom
 import System.Metrics.Prometheus.Metric.Counter (Counter, inc)
@@ -193,10 +193,15 @@ registerMetrics = do
       registry
   pure $ Metrics {..}
 
-serveMetrics :: Port -> Metrics -> IO ()
-serveMetrics port m = do
+-- | Serve the Prometheus metrics endpoint. @loopbackOnly@ (self-host) binds it
+-- to 127.0.0.1 instead of all interfaces, so it isn't reachable from the
+-- hosting bridge / the network.
+serveMetrics :: Bool -> Port -> Metrics -> IO ()
+serveMetrics loopbackOnly port m = do
+  let base = setPort port defaultSettings
+      settings = if loopbackOnly then setHost "127.0.0.1" base else base
   void
     $ fork
-    $ run port
+    $ runSettings settings
     $ Prom.prometheusApp []
     $ sample (registry m)

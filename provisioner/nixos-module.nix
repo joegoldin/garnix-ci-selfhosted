@@ -108,12 +108,30 @@ in
     # everything else guest→host is dropped by the default policy. Guest egress
     # to the internet goes through NAT (above), not the host firewall's INPUT.
     networking.firewall.interfaces.${cfg.bridge}.allowedUDPPorts = [ 67 ];
-    # Deliberately NOT disabling the bridge-nf-call-* sysctls (the usual
-    # microVM-host trick): they only affect bridged guest<->guest L2 traffic,
-    # which garnix guests never use (host<->guest is routed via the bridge
-    # address; ingress goes through Traefik), and forcing them to 0 host-wide
-    # changes behavior for other bridge users on the box (e.g. docker keeps
-    # bridge-nf-call-iptables=1 for its own networks).
+
+    # Isolate guests from one another: drop forwarding between two ports of the
+    # guest bridge, so a compromised guest can't reach its neighbours (the pool
+    # VM, another tenant's app). Host<->guest is INPUT/OUTPUT (unaffected) and
+    # guest->internet is `-i bridge -o uplink` (unaffected). Inserted at the head
+    # of FORWARD so it wins over the ACCEPT policy and the NAT accept rules. This
+    # relies on bridge-nf-call-*tables being on (the kernel/docker default, left
+    # untouched below) so that same-subnet bridged guest<->guest traffic is seen
+    # by the FORWARD chain.
+    networking.firewall.extraCommands = ''
+      # delete-then-insert so a reload can't accumulate duplicates
+      iptables  -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+      iptables  -I FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP
+      ip6tables -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+      ip6tables -I FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+    '';
+    networking.firewall.extraStopCommands = ''
+      iptables  -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+      ip6tables -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+    '';
+    # Deliberately NOT disabling the bridge-nf-call-* sysctls: they are what
+    # routes bridged guest<->guest traffic through the FORWARD rule above, and
+    # forcing them to 0 host-wide would change behavior for other bridge users
+    # on the box (e.g. docker relies on bridge-nf-call-iptables=1).
 
     # ── dnsmasq: DHCP-only, per-MAC reservations from the daemon ─────────────
     services.dnsmasq = {
