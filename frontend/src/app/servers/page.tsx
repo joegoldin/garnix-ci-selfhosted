@@ -66,24 +66,45 @@ const Page = () => {
   );
 };
 
-// A copyable one-line shell command (ssh invocation).
-const CopyableCommand = ({ command }: { command: string }) => (
-  <div className={styles.cmdRow}>
-    <code className={styles.cmd}>{command}</code>
-    <button
-      type="button"
-      className={styles.copyBtn}
-      title="Copy to clipboard"
-      onClick={() => void navigator.clipboard?.writeText(command)}
-    >
-      Copy
-    </button>
-  </div>
-);
+// A copyable one-line shell command (ssh invocation), with a method label.
+const CopyableCommand = ({
+  label,
+  command,
+}: {
+  label: string;
+  command: string;
+}) => {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <div className={styles.cmdRow}>
+      <span className={styles.cmdLabel}>{label}</span>
+      <code className={styles.cmd}>{command}</code>
+      <button
+        type="button"
+        className={styles.copyBtn}
+        title="Copy to clipboard"
+        onClick={() => {
+          void navigator.clipboard?.writeText(command);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1200);
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
+  );
+};
 
-// The Networking cell: internal IP + the three SSH methods, plus exposed
-// http/tcp ports (self-host hosting).
-const NetworkingCell = ({
+// The internal (tailscale/bridge) IP, its own column.
+const InternalIpCell = ({ server }: { server: RunningServer }) =>
+  server.ipv4 ? (
+    <code className={styles.ip}>{server.ipv4}</code>
+  ) : (
+    <span className={styles.muted}>—</span>
+  );
+
+// The Connect cell: the SSH methods and any exposed http/tcp ports.
+const ConnectCell = ({
   server,
   sshHost,
 }: {
@@ -97,36 +118,38 @@ const NetworkingCell = ({
   // <name>.<server-domain>: insert the port name as a subdomain of the URL.
   const portUrl = (name: string) =>
     server.url.replace(/^https:\/\//, `https://${name}.`);
+  const hasAny =
+    !!ip || (sshPort != null && !!sshHost) || httpPorts.length > 0 || tcpPorts.length > 0;
+  if (!hasAny) return <span className={styles.muted}>—</span>;
   return (
-    <div className={styles.networking}>
+    <div className={styles.connect}>
       {ip ? (
-        <>
-          <div className={styles.netLabel}>Internal: {ip}</div>
-          <CopyableCommand command={`ssh garnix@${ip}`} />
+        <div className={styles.cmdGroup}>
+          <CopyableCommand label="Tailscale" command={`ssh garnix@${ip}`} />
           {sshHost ? (
-            <CopyableCommand command={`ssh -J ${sshHost} garnix@${ip}`} />
+            <CopyableCommand
+              label="ProxyJump"
+              command={`ssh -J ${sshHost} garnix@${ip}`}
+            />
           ) : null}
-        </>
-      ) : (
-        <span className={styles.muted}>—</span>
-      )}
-      {sshPort != null && sshHost ? (
-        <CopyableCommand command={`ssh -p ${sshPort} garnix@${sshHost}`} />
+          {sshPort != null && sshHost ? (
+            <CopyableCommand
+              label="Port-forward"
+              command={`ssh -p ${sshPort} garnix@${sshHost}`}
+            />
+          ) : null}
+        </div>
       ) : null}
-      {httpPorts.length > 0 ? (
+      {httpPorts.length > 0 || tcpPorts.length > 0 ? (
         <div className={styles.portList}>
           {httpPorts.map((p) => (
-            <Link key={p.name} href={portUrl(p.name)}>
+            <Link key={`h-${p.name}`} href={portUrl(p.name)} className={styles.portChip}>
               {p.name} ↗
             </Link>
           ))}
-        </div>
-      ) : null}
-      {tcpPorts.length > 0 ? (
-        <div className={styles.portList}>
           {tcpPorts.map((p) => (
-            <span key={p.name} className={styles.tcpPort}>
-              {p.name}: {sshHost || ip}:{p.host}
+            <span key={`t-${p.name}`} className={styles.portChip}>
+              {p.name} · {sshHost || ip}:{p.host}
             </span>
           ))}
         </div>
@@ -175,7 +198,8 @@ const ServersTable = (props: {
             <th>Deploy Type</th>
             <th>Build</th>
             <th>Status</th>
-            <th>Networking</th>
+            <th>Internal IP</th>
+            <th>Connect</th>
             <th>Created</th>
             <th></th>
           </tr>
@@ -220,7 +244,10 @@ const ServersTable = (props: {
                   {server.status}
                 </td>
                 <td>
-                  <NetworkingCell server={server} sshHost={props.sshHost} />
+                  <InternalIpCell server={server} />
+                </td>
+                <td>
+                  <ConnectCell server={server} sshHost={props.sshHost} />
                 </td>
                 <td>
                   {server.created_at
