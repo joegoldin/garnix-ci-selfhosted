@@ -153,9 +153,9 @@ in
           default = null;
           example = "/run/garnix-provisioner/provisioner.sock";
           description = ''
-            Unix socket of a local garnix-provisionerd daemon. When set, server
-            deployments provision local microVMs through it instead of Hetzner
-            Cloud VMs (see provisioner/nixos-module.nix).
+            Unix socket of a local garnix-provisionerd daemon. Server
+            deployments provision local microVMs through it
+            (see provisioner/nixos-module.nix).
           '';
         };
         defaultAuthentik = lib.mkOption {
@@ -211,7 +211,7 @@ in
           example = "https://<opensearch-ip>/_msearch";
         };
         testFeatures = lib.mkOption {
-          type = lib.types.listOf (lib.types.enum [ "DevApi" "OpenSearchMocks" "StripeMocks" "CacheUploadMocks" ]);
+          type = lib.types.listOf (lib.types.enum [ "DevApi" "OpenSearchMocks" "CacheUploadMocks" ]);
           default = [ ];
         };
         provisionServerPool = lib.mkOption {
@@ -595,10 +595,6 @@ in
         owner = config.users.users.garnix.name;
         key = "garnix_server_remote_builder_ssh";
       };
-      hetzner-token = {
-        mode = "0440";
-        group = config.users.users.garnix.name;
-      };
       opensearch-garnix = {
         mode = "0400";
         owner = config.users.users.garnix.name;
@@ -608,18 +604,6 @@ in
         owner = config.users.users.garnix.name;
       };
       repo-secrets-key-pub = {
-        mode = "0400";
-        owner = config.users.users.garnix.name;
-      };
-      stripe-publishable-key = {
-        mode = "0400";
-        owner = config.users.users.garnix.name;
-      };
-      stripe-secret-key = {
-        mode = "0400";
-        owner = config.users.users.garnix.name;
-      };
-      stripe-webhook-secret = {
         mode = "0400";
         owner = config.users.users.garnix.name;
       };
