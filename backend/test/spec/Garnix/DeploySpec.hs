@@ -961,7 +961,7 @@ spec = do
         mkPlanWithTier tier build =
           DeployPlan
             { toSpinDown = [],
-              toSpinUp = [ServerToSpinUp {serverTier = tier, build, domainIsPrimary = False}],
+              toSpinUp = [ServerToSpinUp {serverTier = tier, build, domainIsPrimary = False, useDefaultAuthentik = False}],
               toRedeploy = []
             }
         mkRepoInfo = do

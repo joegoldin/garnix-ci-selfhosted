@@ -1570,7 +1570,10 @@ data PreprovisionedServer = PreprovisionedServer
 data ServerToSpinUp = ServerToSpinUp
   { serverTier :: ServerTier,
     build :: Build,
-    domainIsPrimary :: Bool
+    domainIsPrimary :: Bool,
+    -- | garnix.yaml servers[].authentik == "default": drop garnix's own OIDC
+    -- credentials onto the guest at deploy time (see copyDefaultAuthentikEnv).
+    useDefaultAuthentik :: Bool
   }
   deriving stock (Show, Eq, Generic)
 
@@ -1741,6 +1744,23 @@ data GiteaConfig = GiteaConfig
 
 instance Show GiteaConfig where
   show (GiteaConfig url _ _) = "GiteaConfig " <> Prelude.show url <> " <token> <secret>"
+
+-- | garnix's own OIDC client (the Authentik application fronting garnix
+-- itself). When configured, a deployment with @authentik: default@ in its
+-- garnix.yaml servers entry gets these credentials dropped onto the guest at
+-- /var/garnix/keys/default-authentik.env, so the guest's garnix-authentik
+-- module (mode = "default") gates the service behind the exact same login
+-- as garnix.
+data DefaultAuthentikConfig = DefaultAuthentikConfig
+  { _defaultAuthentikIssuerUrl :: Text,
+    _defaultAuthentikClientId :: Text,
+    -- | File containing the OIDC client secret (read at deploy time).
+    _defaultAuthentikClientSecretFile :: FilePath
+  }
+
+instance Show DefaultAuthentikConfig where
+  show (DefaultAuthentikConfig issuer clientId _) =
+    "DefaultAuthentikConfig " <> Prelude.show issuer <> " " <> Prelude.show clientId <> " <secret file>"
 
 -- * combined data types
 

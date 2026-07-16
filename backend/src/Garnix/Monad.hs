@@ -93,6 +93,9 @@ data Env = Env
     -- deployments) garnix behaves exactly as before; when set, the Gitea
     -- webhook + reporter + API paths become active.
     giteaConfig :: Maybe GiteaConfig,
+    -- | garnix's own OIDC client, dropped onto deployments that opt in via
+    -- garnix.yaml (servers[].authentik = "default").
+    defaultAuthentik :: Maybe DefaultAuthentikConfig,
     sshUserHostingKeys :: [FilePath],
     s3CacheEnv :: S3CacheEnv,
     action :: ActionEnv,

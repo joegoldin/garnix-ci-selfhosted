@@ -136,6 +136,38 @@ in
             Cloud VMs (see provisioner/nixos-module.nix).
           '';
         };
+        defaultAuthentik = lib.mkOption {
+          type = lib.types.nullOr (
+            lib.types.submodule {
+              options = {
+                issuerUrl = lib.mkOption {
+                  type = lib.types.str;
+                  example = "https://authentik.example.com/application/o/garnix/";
+                  description = "OIDC issuer URL of garnix's own Authentik application.";
+                };
+                clientId = lib.mkOption {
+                  type = lib.types.str;
+                  description = "OIDC client id of garnix's own Authentik application.";
+                };
+                clientSecretFile = lib.mkOption {
+                  type = lib.types.str;
+                  description = "File containing the OIDC client secret (read at deploy time; must be readable by the garnix server user).";
+                };
+              };
+            }
+          );
+          default = null;
+          description = ''
+            garnix's own OIDC client (the Authentik application fronting garnix
+            itself). When set, a deployment whose garnix.yaml servers entry has
+            `authentik: default` gets these credentials dropped onto the guest
+            at /var/garnix/keys/default-authentik.env, so the guest's
+            garnix-authentik module (mode = "default") gates the service behind
+            the exact same login as garnix. The Authentik provider must allow
+            the deployed servers' redirect URIs (e.g. a regex redirect URI
+            covering https://*.<hostingDomain>/oauth2/callback).
+          '';
+        };
         githubAppName = lib.mkOption {
           type = lib.types.str;
           default = "garnix-ci";
@@ -404,6 +436,11 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.provisionerSocket != null) [
           "GARNIX_PROVISIONER_SOCKET=${config.services.garnixServer.provisionerSocket}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.defaultAuthentik != null) [
+          "GARNIX_DEFAULT_AUTHENTIK_ISSUER=${config.services.garnixServer.defaultAuthentik.issuerUrl}"
+          "GARNIX_DEFAULT_AUTHENTIK_CLIENT_ID=${config.services.garnixServer.defaultAuthentik.clientId}"
+          "GARNIX_DEFAULT_AUTHENTIK_CLIENT_SECRET_FILE=${config.services.garnixServer.defaultAuthentik.clientSecretFile}"
         ];
         SupplementaryGroups = [ config.users.groups.keys.name ];
         ExecStartPre = [

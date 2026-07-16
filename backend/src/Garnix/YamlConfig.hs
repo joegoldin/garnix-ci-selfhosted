@@ -20,6 +20,7 @@ module Garnix.YamlConfig
     _garnixConfigActions,
     actions,
     asAttributeMatcher,
+    authentikSection,
     branchSection,
     buildSections,
     cancelSupersededBuilds,
@@ -229,7 +230,8 @@ instance Default IncrementalizeBuildsSection where
 
 data ServerSection = ServerSection
   { _serverSectionConfiguration :: PackageName,
-    _serverSectionDeploySection :: DeploySection
+    _serverSectionDeploySection :: DeploySection,
+    _serverSectionAuthentikSection :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
 
@@ -245,6 +247,10 @@ instance HasCodec ServerSection where
         "deployment"
         "When to deploy a new server, or redeploy an existing one"
       .= _serverSectionDeploySection
+      <*> optionalField
+        "authentik"
+        "Set to \"default\" to have garnix drop its own OIDC (Authentik) credentials onto the deployed server at /var/garnix/keys/default-authentik.env, for use with the garnix-authentik guest module's mode = \"default\". The server is then gated by the exact same Authentik application (and entitlements) as garnix itself."
+      .= _serverSectionAuthentikSection
 
 data DeploySection
   = OnPullRequest

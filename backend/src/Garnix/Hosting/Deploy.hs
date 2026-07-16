@@ -18,6 +18,7 @@ import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Garnix.API.Keys (getRepoKeys)
 import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
@@ -36,6 +37,7 @@ import Garnix.Reporters.Utils (withRunReporter)
 import Garnix.Request
 import Garnix.Types
 import Garnix.YamlConfig
+import System.Process qualified as Proc
 
 -- | Deploys new server versions, deletes old ones.
 rolloutNewServerVersion ::
@@ -71,15 +73,15 @@ getDeployPlan ::
 getDeployPlan reporter commitInfo deploymentType = do
   withErrorReporter reporter commitInfo $ do
     cfg <- getConfig
-    let wantedPackagesMapping :: Map PackageName (ServerTier, Bool) = Map.fromList $ case deploymentType of
+    let wantedPackagesMapping :: Map PackageName (ServerTier, Bool, Maybe Text) = Map.fromList $ case deploymentType of
           BranchDeployment thisBranch -> flip mapMaybe (cfg ^. serverSection)
             $ \s -> case s ^. deploySection of
-              OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary))
+              OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary, s ^. authentikSection))
               _ -> Nothing
           GhPrDeployment _prId ->
             (cfg ^. serverSection)
               & filter (\s -> s ^. deploySection == OnPullRequest)
-              & map (\s -> (s ^. configuration, (def, False)))
+              & map (\s -> (s ^. configuration, (def, False, s ^. authentikSection)))
     let wantedPackages = Map.keys wantedPackagesMapping
     existing <- DB.getRunningServersOf (commitInfo ^. repoInfo) deploymentType
     wantedBuilds <- withPolling (PollingConfig (fromSeconds @Int 2) (fromHours @Int 2)) $ do
@@ -121,7 +123,12 @@ getDeployPlan reporter commitInfo deploymentType = do
         & filter (`notElem` (snd <$> toRedeploy))
         & mapM
           ( \build -> case Map.lookup (build ^. package) wantedPackagesMapping of
-              Just (serverTier, domainIsPrimary) -> pure $ ServerToSpinUp {serverTier, build, domainIsPrimary}
+              Just (serverTier, domainIsPrimary, authentikYaml) -> do
+                useDefaultAuthentik <- case authentikYaml of
+                  Nothing -> pure False
+                  Just "default" -> pure True
+                  Just other -> throw $ OtherError $ "Unsupported servers[].authentik value " <> show other <> "; only \"default\" is supported"
+                pure $ ServerToSpinUp {serverTier, build, domainIsPrimary, useDefaultAuthentik}
               Nothing -> throw $ OtherError "impossible: wantedPackagesMap should contain all deployable packages"
           )
     let plan = DeployPlan toSpinDown toSpinUp toRedeploy
@@ -326,24 +333,29 @@ startServer = curry4
   $ \(reporter, commitInfo, deploymentType, serverToSpinUp) -> do
     run <- DB.newRun ("deployment " <> getPackageName (serverToSpinUp ^. #build . package)) commitInfo
     withRunReporter reporter (ReportRun run) $ \runReporter -> do
+      domain <- view #hostingDomain
+      let publicHost =
+            getPackageName (serverToSpinUp ^. #build . package)
+              <> "."
+              <> fromDeploymentType getBranch (("pull-" <>) . show . getGhPullRequestId) deploymentType
+              <> "."
+              <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
+              <> "."
+              <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
+              <> "."
+              <> domain
       serverInfo <- ServerPool.createServer (commitInfo ^. repoInfo) deploymentType serverToSpinUp
+      when (serverToSpinUp ^. #useDefaultAuthentik)
+        $ copyDefaultAuthentikEnv serverInfo publicHost
+        <?> "Copying default Authentik credentials"
       (serverInfo, stderr) <-
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
           let logs = showPretty (err error)
           DB.appendToServerDeployLog (serverInfo ^. id) logs
-      domain <- view #hostingDomain
       let logs =
             T.unlines
               [ "Server has been successfully deployed to: https://"
-                  <> getPackageName (serverToSpinUp ^. #build . package)
-                  <> "."
-                  <> fromDeploymentType getBranch (("pull-" <>) . show . getGhPullRequestId) deploymentType
-                  <> "."
-                  <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
-                  <> "."
-                  <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
-                  <> "."
-                  <> domain,
+                  <> publicHost,
                 "ipv4: " <> serverInfo ^. ipv4Addr,
                 "ipv6: " <> serverInfo ^. ipv6Addr,
                 "",
@@ -462,6 +474,42 @@ copyKeys repoInfo server = do
       <?> "Export private keys to server"
   whenIs _Left exportResult $ throw . ProvisioningError
   doRemotely $ "chmod 400 " <> cs keyLocation
+
+-- | Drop garnix's own OIDC client credentials onto a guest that opted in via
+-- garnix.yaml (servers[].authentik = "default"). Written as oauth2-proxy env
+-- vars to /var/garnix/keys/default-authentik.env (root-only), consumed by the
+-- garnix-authentik guest module's mode = "default". Delivered over ssh stdin
+-- so the secret never lands in process args or the store.
+copyDefaultAuthentikEnv :: ServerInfo -> Text -> M ()
+copyDefaultAuthentikEnv server publicHost = do
+  cfg <-
+    view #defaultAuthentik >>= \case
+      Just cfg -> pure cfg
+      Nothing ->
+        throw
+          $ OtherError
+            "servers[].authentik = \"default\" requires the backend to be configured with garnix's own OIDC client (GARNIX_DEFAULT_AUTHENTIK_ISSUER / GARNIX_DEFAULT_AUTHENTIK_CLIENT_ID / GARNIX_DEFAULT_AUTHENTIK_CLIENT_SECRET_FILE; services.garnixServer.defaultAuthentik)"
+  secret <- T.strip <$> liftIO (TIO.readFile (_defaultAuthentikClientSecretFile cfg))
+  (ip, sshArgs) <- ServerPool.sshArgsFor server
+  let envLocation = "/var/garnix/keys/default-authentik.env" :: Text
+      contents =
+        T.unlines
+          [ "OAUTH2_PROXY_OIDC_ISSUER_URL=" <> _defaultAuthentikIssuerUrl cfg,
+            "OAUTH2_PROXY_CLIENT_ID=" <> _defaultAuthentikClientId cfg,
+            "OAUTH2_PROXY_CLIENT_SECRET=" <> secret,
+            "OAUTH2_PROXY_REDIRECT_URL=https://" <> publicHost <> "/oauth2/callback",
+            "OAUTH2_PROXY_WHITELIST_DOMAINS=" <> publicHost,
+            "GARNIX_PUBLIC_URL=https://" <> publicHost
+          ]
+  (exitCode, _, _) <-
+    liftIO
+      $ Proc.readProcessWithExitCode
+        "ssh"
+        ((cs <$> sshArgs) <> ["root@" <> cs ip, "umask 077 && mkdir -p /var/garnix/keys && cat > " <> cs envLocation <> " && chmod 400 " <> cs envLocation])
+        (cs contents)
+  case exitCode of
+    ExitSuccess -> pure ()
+    ExitFailure _ -> throw $ OtherError "Exporting default Authentik credentials to the server failed"
 
 switchToConfiguration :: SshUser -> ServerInfo -> StorePath -> M Text
 switchToConfiguration (SshUser user) server storePath = do

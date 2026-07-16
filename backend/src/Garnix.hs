@@ -253,6 +253,12 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
   hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
+  -- garnix's own OIDC client, for deployments opting into `authentik: default`.
+  defaultAuthentik' <- do
+    issuer <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_ISSUER"
+    clientId <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_CLIENT_ID"
+    secretFile <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_CLIENT_SECRET_FILE"
+    pure $ DefaultAuthentikConfig <$> (cs <$> issuer) <*> (cs <$> clientId) <*> secretFile
   -- Warm-pool sizing. Upstream keeps a large Hetzner pool; self-host keeps a
   -- single small local VM warm unless GARNIX_SERVER_POOL overrides it
   -- (format: "i2x4:1,i4x8:0").
@@ -391,6 +397,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               adminGroupName = adminGroupName',
               modulesOrg = modulesOrg',
               giteaConfig = giteaConfig',
+              defaultAuthentik = defaultAuthentik',
               logger = defaultLogger,
               buildLogsDir = buildLogsDir',
               hetznerToken = hetznerTok,

@@ -147,6 +147,10 @@
                     "items": {
                         "$comment": "servers",
                         "properties": {
+                            "authentik": {
+                                "$comment": "Set to \"default\" to have garnix drop its own OIDC (Authentik) credentials onto the deployed server at /var/garnix/keys/default-authentik.env, for use with the garnix-authentik guest module's mode = \"default\". The server is then gated by the exact same Authentik application (and entitlements) as garnix itself.",
+                                "type": "string"
+                            },
                             "configuration": {
                                 "$comment": "What attribute to deploy (e.g.: 'myServer' for 'nixosConfigurations.myServer')",
                                 "type": "string"

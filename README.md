@@ -507,7 +507,39 @@ and pool autostart across host reboots (the pool refills itself).
 OIDC login with one import: it runs `oauth2-proxy` plus an nginx forward-auth
 gate on port 80 (the port Traefik proxies to), so every request needs a valid
 session before it reaches your service. Point your own service at a different
-port and set `garnix.authentik.upstream` to it:
+port and set `garnix.authentik.upstream` to it.
+
+**Fastest path — reuse garnix's own login (`mode = "default"`):** put
+`authentik: default` on the server's `garnix.yaml` entry and garnix drops its
+*own* OIDC client credentials (plus this deployment's redirect URL) onto the
+guest at deploy time — no provider setup, no client id, no secret in the repo.
+Whoever can log into garnix can reach the app. Ideal for dev deployments.
+
+```yaml
+servers:
+  - configuration: hello
+    deployment:
+      type: on-branch
+      branch: main
+    authentik: default
+```
+
+```nix
+garnix.authentik = {
+  enable = true;
+  mode = "default";
+  upstream = "127.0.0.1:8080";   # your service (NOT on :80)
+};
+```
+
+Requirements (one-time, on the garnix host): set
+`services.garnixServer.defaultAuthentik = { issuerUrl, clientId,
+clientSecretFile }` to garnix's own OIDC client, and allow the deployed
+servers' callback URLs on that Authentik provider (Authentik supports regex
+redirect URIs — e.g. `^https://[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+\.apps\.garnix\.example\.com/oauth2/callback$`).
+
+**Dedicated / shared providers** (own app per deployment, or one shared app
+gated by claims — see `docs/authentik-cookbook.md`):
 
 ```nix
 modules = [

@@ -37,13 +37,16 @@ let
   # The repo age key garnix delivers to every provisioned guest; it can decrypt
   # anything encrypted to that repo's public key.
   repoKey = "/var/garnix/keys/repo-key";
+  # Credentials garnix drops at deploy time for mode = "default"
+  # (servers[].authentik = "default" in garnix.yaml).
+  defaultCredsFile = "/var/garnix/keys/default-authentik.env";
 in
 {
   options.garnix.authentik = {
     enable = lib.mkEnableOption "Authentik/OIDC protection in front of the deployed service";
 
     mode = lib.mkOption {
-      type = lib.types.enum [ "dedicated" "shared" ];
+      type = lib.types.enum [ "dedicated" "shared" "default" ];
       default = "dedicated";
       description = ''
         How this deployment maps onto Authentik. The runtime gate is the same
@@ -64,11 +67,21 @@ in
           non-empty `allowedGroups` checked against `groupsClaim`, or anyone who
           can log into the shared app would reach this service. Assertions below
           enforce that.
+
+        - "default": reuse garnix's *own* Authentik application. Requires
+          `authentik: default` on this server's garnix.yaml entry (and
+          services.garnixServer.defaultAuthentik on the garnix host): garnix
+          drops its own OIDC credentials + this deployment's redirect URL at
+          /var/garnix/keys/default-authentik.env during deploy, and this module
+          consumes them — no issuerUrl/clientId/publicUrl/clientSecretFile
+          needed here. Access is whoever may log into garnix itself. Perfect
+          for quickly gating a dev deployment behind your existing login.
       '';
     };
 
     publicUrl = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       example = "https://app.main.myrepo.myorg.apps.example.com";
       description = ''
         The full external https URL this server is reached at. Used for the OIDC
@@ -78,18 +91,21 @@ in
     };
 
     issuerUrl = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       example = "https://authentik.example.com/application/o/myapp/";
       description = "OIDC issuer URL (Authentik application's OIDC issuer).";
     };
 
     clientId = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       description = "OIDC client ID for this application in Authentik.";
     };
 
     clientSecretFile = lib.mkOption {
-      type = lib.types.path;
+      type = lib.types.nullOr lib.types.path;
+      default = null;
       example = lib.literalExpression "./secrets/myapp-client-secret.age";
       description = ''
         Path to the OIDC client secret as an age ciphertext *file*, encrypted to
@@ -157,7 +173,17 @@ in
     # is the only per-app control. Require it, or the gate is wide open.
     assertions = [
       {
-        assertion = cfg.mode == "dedicated" || cfg.allowedGroups != [ ];
+        assertion =
+          cfg.mode == "default"
+          || (cfg.publicUrl != null && cfg.issuerUrl != null && cfg.clientId != null && cfg.clientSecretFile != null);
+        message = ''
+          garnix.authentik: publicUrl, issuerUrl, clientId and clientSecretFile
+          are required unless mode = "default" (where garnix supplies them at
+          deploy time via garnix.yaml's `authentik: default`).
+        '';
+      }
+      {
+        assertion = cfg.mode != "shared" || cfg.allowedGroups != [ ];
         message = ''
           garnix.authentik.mode = "shared" requires a non-empty `allowedGroups`:
           it is the only per-app access control in shared mode (the shared
@@ -166,7 +192,7 @@ in
         '';
       }
       {
-        assertion = cfg.mode == "dedicated" || cfg.scope != "openid profile email";
+        assertion = cfg.mode != "shared" || cfg.scope != "openid profile email";
         message = ''
           garnix.authentik.mode = "shared" requires a custom `scope` that pulls
           this app's gating claim (e.g. "openid profile email <app>-entitlements").
@@ -192,39 +218,64 @@ in
         StateDirectory = "garnix-authentik";
       };
       path = [ pkgs.age pkgs.coreutils ];
-      script = ''
-        set -euo pipefail
-        # The repo key is copied in by garnix shortly after boot; wait for it.
-        for _ in $(seq 1 120); do
-          [ -f ${repoKey} ] && break
-          sleep 2
-        done
-        if [ ! -f ${repoKey} ]; then
-          echo "garnix-authentik: ${repoKey} never appeared; cannot decrypt client secret" >&2
-          exit 1
-        fi
-        client_secret="$(age --decrypt -i ${repoKey} < ${cfg.clientSecretFile})"
-        # Cookie secret: generate once, persist across restarts within this guest.
-        if [ ! -s ${stateDir}/cookie-secret ]; then
-          head -c 32 /dev/urandom | base64 -w0 > ${stateDir}/cookie-secret
-        fi
-        umask 077
-        {
-          printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$client_secret"
-          printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(cat ${stateDir}/cookie-secret)"
-        } > ${envFile}
-        # oauth2-proxy's keyFile is read by systemd as an EnvironmentFile (as
-        # root, before dropping privileges), so root-only 0600 is enough.
-        chmod 600 ${envFile}
-      '';
+      script =
+        if cfg.mode == "default" then ''
+          set -euo pipefail
+          # garnix drops its own OIDC credentials (+ this deployment's redirect
+          # URL) shortly after boot; wait for them.
+          for _ in $(seq 1 120); do
+            [ -f ${defaultCredsFile} ] && break
+            sleep 2
+          done
+          if [ ! -f ${defaultCredsFile} ]; then
+            echo "garnix-authentik: ${defaultCredsFile} never appeared; was this server deployed with authentik: default in garnix.yaml (and defaultAuthentik configured on the garnix host)?" >&2
+            exit 1
+          fi
+          # Cookie secret: generate once, persist across restarts within this guest.
+          if [ ! -s ${stateDir}/cookie-secret ]; then
+            head -c 32 /dev/urandom | base64 -w0 > ${stateDir}/cookie-secret
+          fi
+          umask 077
+          {
+            cat ${defaultCredsFile}
+            printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(cat ${stateDir}/cookie-secret)"
+          } > ${envFile}
+          chmod 600 ${envFile}
+        '' else ''
+          set -euo pipefail
+          # The repo key is copied in by garnix shortly after boot; wait for it.
+          for _ in $(seq 1 120); do
+            [ -f ${repoKey} ] && break
+            sleep 2
+          done
+          if [ ! -f ${repoKey} ]; then
+            echo "garnix-authentik: ${repoKey} never appeared; cannot decrypt client secret" >&2
+            exit 1
+          fi
+          client_secret="$(age --decrypt -i ${repoKey} < ${cfg.clientSecretFile})"
+          # Cookie secret: generate once, persist across restarts within this guest.
+          if [ ! -s ${stateDir}/cookie-secret ]; then
+            head -c 32 /dev/urandom | base64 -w0 > ${stateDir}/cookie-secret
+          fi
+          umask 077
+          {
+            printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$client_secret"
+            printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(cat ${stateDir}/cookie-secret)"
+          } > ${envFile}
+          # oauth2-proxy's keyFile is read by systemd as an EnvironmentFile (as
+          # root, before dropping privileges), so root-only 0600 is enough.
+          chmod 600 ${envFile}
+        '';
     };
 
     services.oauth2-proxy = {
       enable = true;
       provider = "oidc";
-      clientID = cfg.clientId;
-      oidcIssuerUrl = cfg.issuerUrl;
-      redirectURL = "${cfg.publicUrl}/oauth2/callback";
+      # In default mode these come from the env file garnix drops at deploy
+      # time (flags would override the env vars, so omit them).
+      clientID = if cfg.mode == "default" then null else cfg.clientId;
+      oidcIssuerUrl = if cfg.mode == "default" then null else cfg.issuerUrl;
+      redirectURL = if cfg.mode == "default" then null else "${cfg.publicUrl}/oauth2/callback";
       scope = cfg.scope;
       reverseProxy = true; # honour X-Forwarded-* from the fronting proxy (the local nginx gate)
       # Only the loopback nginx gate talks to oauth2-proxy, so only trust
@@ -241,7 +292,10 @@ in
         skip-provider-button = true;
         # Authentik commonly issues id_tokens with email_verified=false.
         insecure-oidc-allow-unverified-email = true;
-        # Allow the post-login rd= redirect back to this host.
+      }
+      # Allow the post-login rd= redirect back to this host. In default mode
+      # the env file supplies OAUTH2_PROXY_WHITELIST_DOMAINS instead.
+      // lib.optionalAttrs (cfg.mode != "default") {
         whitelist-domain = [ (lib.removePrefix "https://" (lib.removePrefix "http://" cfg.publicUrl)) ];
       }
       // lib.optionalAttrs (cfg.allowedGroups != [ ]) {
