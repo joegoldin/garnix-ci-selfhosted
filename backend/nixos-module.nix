@@ -138,6 +138,16 @@ in
           example = "http://127.0.0.1:9100/metrics";
           description = "Where the self-host monitoring page scrapes host (node-exporter) metrics.";
         };
+        sshHost = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "erdtree";
+          description = ''
+            External SSH host the Servers page uses to build the ssh command for
+            a deployed server's DNAT'd SSH port (e.g. erdtree's tailscale name or
+            public hostname). Surfaced via /api/config as ssh_host.
+          '';
+        };
         provisionerSocket = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -454,6 +464,9 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.nodeExporterUrl != null) [
           "GARNIX_NODE_EXPORTER_URL=${config.services.garnixServer.nodeExporterUrl}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.sshHost != null) [
+          "GARNIX_SSH_HOST=${config.services.garnixServer.sshHost}"
         ]
         ++ lib.optionals (config.services.garnixServer.defaultAuthentik != null) [
           "GARNIX_DEFAULT_AUTHENTIK_ISSUER=${config.services.garnixServer.defaultAuthentik.issuerUrl}"

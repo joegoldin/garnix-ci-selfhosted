@@ -14,6 +14,7 @@ type ConfigContextType = {
   cacheUrl: string;
   giteaUrl: string;
   selfHostMode: boolean;
+  sshHost: string;
 };
 
 const defaultValue = {
@@ -21,6 +22,7 @@ const defaultValue = {
   cacheUrl: "",
   giteaUrl: "",
   selfHostMode: false,
+  sshHost: "",
 };
 
 const ConfigContext = createContext<ConfigContextType>(defaultValue);
@@ -30,6 +32,7 @@ export const ConfigProvider = ({ children }: PropsWithChildren) => {
   const [cacheUrl, setCacheUrl] = useState("");
   const [giteaUrl, setGiteaUrl] = useState("");
   const [selfHostMode, setSelfHostMode] = useState(false);
+  const [sshHost, setSshHost] = useState("");
   useEffect(() => {
     void (async () => {
       const config = await getConfig();
@@ -38,11 +41,12 @@ export const ConfigProvider = ({ children }: PropsWithChildren) => {
       setCacheUrl(config.data.cacheUrl);
       setGiteaUrl(config.data.giteaUrl);
       setSelfHostMode(config.data.selfHostMode);
+      setSshHost(config.data.sshHost);
     })();
-  }, [setGithubAppName, setCacheUrl, setGiteaUrl, setSelfHostMode]);
+  }, [setGithubAppName, setCacheUrl, setGiteaUrl, setSelfHostMode, setSshHost]);
   return (
     <ConfigContext.Provider
-      value={{ githubAppName, cacheUrl, giteaUrl, selfHostMode }}
+      value={{ githubAppName, cacheUrl, giteaUrl, selfHostMode, sshHost }}
     >
       {children}
     </ConfigContext.Provider>

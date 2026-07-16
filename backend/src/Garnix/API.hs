@@ -120,7 +120,8 @@ getConfig = do
   cacheUrl <- view #cacheUrl
   giteaUrl <- maybe "" _giteaConfigBaseUrl <$> view #giteaConfig
   selfHost <- view #selfHostMode
-  pure $ FrontendConfig {_frontendConfigGithubAppName = ghAppName, _frontendConfigCacheUrl = cacheUrl, _frontendConfigGiteaUrl = giteaUrl, _frontendConfigSelfHostMode = selfHost}
+  sshHost <- view #sshHost
+  pure $ FrontendConfig {_frontendConfigGithubAppName = ghAppName, _frontendConfigCacheUrl = cacheUrl, _frontendConfigGiteaUrl = giteaUrl, _frontendConfigSelfHostMode = selfHost, _frontendConfigSshHost = sshHost}
 
 waitlistAPI :: Email -> M ()
 waitlistAPI email = do

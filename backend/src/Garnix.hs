@@ -255,6 +255,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
   metricsScrapeUrl' <- maybe "http://127.0.0.1:8323/metrics" cs <$> lookupEnv "GARNIX_METRICS_SCRAPE_URL"
   nodeExporterUrl' <- maybe "http://127.0.0.1:9100/metrics" cs <$> lookupEnv "GARNIX_NODE_EXPORTER_URL"
+  sshHost' <- maybe "" cs <$> lookupEnv "GARNIX_SSH_HOST"
   -- garnix's own OIDC client, for deployments opting into `authentik: default`.
   defaultAuthentik' <- do
     issuer <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_ISSUER"
@@ -396,6 +397,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               hostingDomain = hostingDomain',
               metricsScrapeUrl = metricsScrapeUrl',
               nodeExporterUrl = nodeExporterUrl',
+              sshHost = sshHost',
               cacheUrl = cacheUrl',
               cachePublicKey = cachePublicKey',
               selfHostMode = selfHostMode',

@@ -30,6 +30,30 @@ const runningServerSchema = z.object({
   created_at: z.coerce.date().optional(),
   deploy_logs: z.string(),
   url: z.string(),
+  // Per-server SSH/port exposure (servers.exposed); null when nothing exposed.
+  exposed: z
+    .object({
+      ssh_port: z
+        .number()
+        .nullish()
+        .transform((v) => v ?? null),
+      tcp: z
+        .array(
+          z.object({
+            name: z.string(),
+            guest: z.number(),
+            host: z.number(),
+          }),
+        )
+        .nullish()
+        .transform((v) => v ?? []),
+      http: z
+        .array(z.object({ name: z.string(), port: z.number() }))
+        .nullish()
+        .transform((v) => v ?? []),
+    })
+    .nullish()
+    .transform((v) => v ?? null),
 });
 export type RunningServer = z.infer<typeof runningServerSchema>;
 

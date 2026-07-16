@@ -16,6 +16,7 @@ import { Text } from "@/components/text";
 import { FloatingModal, ModalSection } from "@/components/modal";
 import { useForm } from "@/hooks/useForm";
 import { AppPage } from "@/utils/appPage";
+import { useConfig } from "@/store/configContext";
 import styles from "./styles.module.css";
 import { ServerFilters, useFilters } from "./filters";
 
@@ -27,8 +28,13 @@ const statusToColor: Record<RunningServer["status"], string> = {
 };
 
 const Page = () => {
+  const { sshHost, selfHostMode } = useConfig();
   const serversResult = useLoading(getRunningServers, { poll: fromSecs(5) });
   if (serversResult.loading) return null;
+  // A self-hosted instance has no /docs site; point docs at upstream.
+  const hostingDocs = selfHostMode
+    ? "https://garnix.io/docs/hosting/introduction"
+    : "/docs/hosting/introduction";
   return (
     <div className={styles.container}>
       <Text type="h1" className={styles.h1}>
@@ -42,14 +48,15 @@ const Page = () => {
               <Text type="h2">No running servers</Text>
               <Text type="p">You don&apos;t have any running servers.</Text>
               <Text type="p">
-                <Link href="/docs/hosting/introduction">Click here</Link>{" "}
-                for documentation on how to configure deployment on your repo.
+                <Link href={hostingDocs}>Click here</Link> for documentation on
+                how to configure deployment on your repo.
               </Text>
             </div>
           ))
           .with(Ok(P.select()), (servers) => (
             <ServersTable
               servers={servers}
+              sshHost={sshHost}
               onRequestReload={serversResult.reload}
             />
           ))
@@ -59,8 +66,78 @@ const Page = () => {
   );
 };
 
+// A copyable one-line shell command (ssh invocation).
+const CopyableCommand = ({ command }: { command: string }) => (
+  <div className={styles.cmdRow}>
+    <code className={styles.cmd}>{command}</code>
+    <button
+      type="button"
+      className={styles.copyBtn}
+      title="Copy to clipboard"
+      onClick={() => void navigator.clipboard?.writeText(command)}
+    >
+      Copy
+    </button>
+  </div>
+);
+
+// The Networking cell: internal IP + the three SSH methods, plus exposed
+// http/tcp ports (self-host hosting).
+const NetworkingCell = ({
+  server,
+  sshHost,
+}: {
+  server: RunningServer;
+  sshHost: string;
+}) => {
+  const ip = server.ipv4;
+  const sshPort = server.exposed?.ssh_port ?? null;
+  const httpPorts = server.exposed?.http ?? [];
+  const tcpPorts = server.exposed?.tcp ?? [];
+  // <name>.<server-domain>: insert the port name as a subdomain of the URL.
+  const portUrl = (name: string) =>
+    server.url.replace(/^https:\/\//, `https://${name}.`);
+  return (
+    <div className={styles.networking}>
+      {ip ? (
+        <>
+          <div className={styles.netLabel}>Internal: {ip}</div>
+          <CopyableCommand command={`ssh garnix@${ip}`} />
+          {sshHost ? (
+            <CopyableCommand command={`ssh -J ${sshHost} garnix@${ip}`} />
+          ) : null}
+        </>
+      ) : (
+        <span className={styles.muted}>—</span>
+      )}
+      {sshPort != null && sshHost ? (
+        <CopyableCommand command={`ssh -p ${sshPort} garnix@${sshHost}`} />
+      ) : null}
+      {httpPorts.length > 0 ? (
+        <div className={styles.portList}>
+          {httpPorts.map((p) => (
+            <Link key={p.name} href={portUrl(p.name)}>
+              {p.name} ↗
+            </Link>
+          ))}
+        </div>
+      ) : null}
+      {tcpPorts.length > 0 ? (
+        <div className={styles.portList}>
+          {tcpPorts.map((p) => (
+            <span key={p.name} className={styles.tcpPort}>
+              {p.name}: {sshHost || ip}:{p.host}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const ServersTable = (props: {
   servers: Array<RunningServer>;
+  sshHost: string;
   onRequestReload: () => void;
 }) => {
   const filters = useFilters();
@@ -98,7 +175,7 @@ const ServersTable = (props: {
             <th>Deploy Type</th>
             <th>Build</th>
             <th>Status</th>
-            <th>IP Address</th>
+            <th>Networking</th>
             <th>Created</th>
             <th></th>
           </tr>
@@ -142,7 +219,9 @@ const ServersTable = (props: {
                 >
                   {server.status}
                 </td>
-                <td>{server.ipv4}</td>
+                <td>
+                  <NetworkingCell server={server} sshHost={props.sshHost} />
+                </td>
                 <td>
                   {server.created_at
                     ? formatDurationLong(

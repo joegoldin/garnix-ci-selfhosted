@@ -91,6 +91,9 @@ data Env = Env
     metricsScrapeUrl :: Text,
     -- | URL of the host node-exporter metrics (self-host monitoring page).
     nodeExporterUrl :: Text,
+    -- | External SSH host for reaching deployed servers' DNAT'd ports
+    -- (GARNIX_SSH_HOST). "" when unset; surfaced via /api/config.
+    sshHost :: Text,
     cacheUrl :: Text,
     cachePublicKey :: Text,
     selfHostMode :: Bool,

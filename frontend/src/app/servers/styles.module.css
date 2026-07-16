@@ -64,3 +64,63 @@
   color: var(--color-error);
   margin-bottom: 10px;
 }
+
+/* Networking cell: internal IP, ssh command rows, exposed ports. */
+.networking {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+}
+
+.netLabel {
+  font-size: 12px;
+  color: var(--color-stone-600);
+}
+
+.muted {
+  color: var(--color-stone-500);
+}
+
+.cmdRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmd {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+  white-space: nowrap;
+  overflow-x: auto;
+  max-width: 320px;
+}
+
+.copyBtn {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-stone-300);
+  background: var(--color-white);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.copyBtn:hover {
+  background: var(--color-stone-100);
+}
+
+.portList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.tcpPort {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--color-stone-700);
+}

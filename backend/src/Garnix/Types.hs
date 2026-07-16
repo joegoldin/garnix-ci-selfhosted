@@ -1609,7 +1609,10 @@ data FrontendConfig = FrontendConfig
   { _frontendConfigGithubAppName :: Text,
     _frontendConfigCacheUrl :: Text,
     _frontendConfigGiteaUrl :: Text,
-    _frontendConfigSelfHostMode :: Bool
+    _frontendConfigSelfHostMode :: Bool,
+    -- | External SSH host for reaching deployed servers' DNAT'd ports
+    -- (GARNIX_SSH_HOST, e.g. erdtree's tailscale name). "" when unset.
+    _frontendConfigSshHost :: Text
   }
   deriving stock (Eq, Show, Generic)
 

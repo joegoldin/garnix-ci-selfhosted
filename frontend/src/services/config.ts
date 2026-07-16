@@ -7,6 +7,7 @@ export const getConfig = async (): Promise<
     cacheUrl: string;
     giteaUrl: string;
     selfHostMode: boolean;
+    sshHost: string;
   }>
 > => {
   const response = await fetchFromAPI(
@@ -19,6 +20,11 @@ export const getConfig = async (): Promise<
         .boolean()
         .optional()
         .transform((v) => v ?? false),
+      // External ssh host for deployed-server DNAT ports; "" / absent when unset.
+      ssh_host: z
+        .string()
+        .optional()
+        .transform((v) => v ?? ""),
     }),
     "GET",
     "config",
@@ -29,5 +35,6 @@ export const getConfig = async (): Promise<
     cacheUrl: response.data.cache_url,
     giteaUrl: response.data.gitea_url,
     selfHostMode: response.data.self_host_mode,
+    sshHost: response.data.ssh_host,
   });
 };
