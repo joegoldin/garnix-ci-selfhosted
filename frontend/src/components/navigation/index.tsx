@@ -73,7 +73,8 @@ const mainLinkGroup = (selfHostMode: boolean): Array<LinkProps> =>
     {
       icon: <DocumentationIcon className={styles.icon} />,
       label: "Documentation",
-      href: "/docs",
+      // A self-hosted instance has no `/docs` site; send docs to upstream.
+      href: selfHostMode ? "https://garnix.io/docs" : "/docs",
       openNewPage: true,
     },
   ]);
