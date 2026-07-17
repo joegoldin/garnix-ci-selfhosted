@@ -1068,6 +1068,9 @@ describe("modules config page", () => {
       const secretField = within(form).getByRole("textbox");
       await user.type(secretField, "hunter2");
       await user.click(within(form).getByText("Save"));
+      // Saving encrypts asynchronously (repo-key fetch + wasm); wait for the
+      // encrypted state to render before submitting, or the form saves early.
+      await screen.findByText(/Encrypted for/);
       await simulateUserSave();
       expect(getSavedConfigTestModuleValue().password.value).toEqual({
         encryptedFor: {

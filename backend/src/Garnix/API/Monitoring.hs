@@ -44,9 +44,13 @@ monitoringAPI auth =
           MonitoringDto
             { _monitoringDtoInstance =
                 InstanceStats
-                  { _instanceStatsEvalQueueLen = look "garnix_server_eval_queue_len" garnixMetrics,
-                    _instanceStatsS3QueueLen = look "garnix_server_s3_queue_len" garnixMetrics,
-                    _instanceStatsFodQueueLen = look "garnix_server_fod_check_queue_len" garnixMetrics,
+                  { -- The pool gauges encode FREE SLOTS as a negative value and
+                    -- queued waiters as a positive one (Garnix.Monad.Pool
+                    -- updateGauge). For display, only the waiting jobs are the
+                    -- "queue": clamp idle/free capacity to 0.
+                    _instanceStatsEvalQueueLen = max 0 <$> look "garnix_server_eval_queue_len" garnixMetrics,
+                    _instanceStatsS3QueueLen = max 0 <$> look "garnix_server_s3_queue_len" garnixMetrics,
+                    _instanceStatsFodQueueLen = max 0 <$> look "garnix_server_fod_check_queue_len" garnixMetrics,
                     _instanceStatsPackageBuildsAttempted = look "garnix_server_package_builds_attempted" garnixMetrics,
                     _instanceStatsCachePushSuccess = look "garnix_server_cache_push_success" garnixMetrics,
                     _instanceStatsCachePushFailure = look "garnix_server_cache_push_failure" garnixMetrics,
