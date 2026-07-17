@@ -319,6 +319,13 @@ sshArgsFor server key = do
         -- run for the whole action timeout with no output.
         "-o",
         "ConnectTimeout=15",
+        -- The self-host action runner is a local user (often 127.0.0.1) whose
+        -- host key isn't in the garnix user's known_hosts; don't let a
+        -- host-key prompt fail the (BatchMode) connection.
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
         "-p",
         port,
         "-i",

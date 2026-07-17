@@ -1,45 +1,37 @@
+# Self-host garnix action runner.
+#
+# garnix runs a repo's `actions` by building the action closure locally and
+# then executing it on a separate "action runner": the backend does
+# `nix copy --to ssh-ng://action-runner@<GARNIX_ACTION_HOST>` and SSHes in to
+# run `action-runner '<command>' '<timeout_secs>'`. Upstream's runner used a
+# podman + libkrun/crun microVM stack (and inputs this fork doesn't carry);
+# this self-host module instead isolates each action in a bubblewrap +
+# slirp4netns sandbox (fresh /home, private NAT'd network, read-only store),
+# using only nixpkgs. Point `services.garnixServer.actionHost` at a host
+# running this module (typically the garnix box itself, "127.0.0.1").
 { config
 , pkgs
-, flakeInputs
 , lib
 , ...
 }:
 let
   cfg = config.garnix.actionRunner;
-  devModeSshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIsTYAj7lBPpDHSXA4kz07+PbvqElJhPG5bLbxYj255Z";
-  pkgsUnstable = import flakeInputs.nixpkgsUnstable { system = pkgs.system; };
-  libkrun = pkgsUnstable.libkrun.overrideAttrs (old: {
-    src = flakeInputs.libkrun;
-    cargoDeps = pkgsUnstable.rustPlatform.fetchCargoVendor {
-      src = flakeInputs.libkrun;
-      hash = "sha256-WZDLz560Un+2P+I6y9V3RB4jiHW0NLN0X8y2TAvwFp8=";
-    };
-  });
-  crunWithLibkrun = pkgsUnstable.crun.overrideAttrs (old: {
-    pname = "crun-libkrun";
-    buildInputs = (old.buildInputs or [ ]) ++ [ libkrun pkgsUnstable.libkrunfw pkgsUnstable.pkg-config pkgsUnstable.makeWrapper ];
-    configureFlags = (old.configureFlags or [ ]) ++ [ "--with-libkrun" ];
-    postInstall = (old.postInstall or "") + ''
-      # Ensure crun can dlopen libkrun*.so at runtime
-      wrapProgram $out/bin/crun \
-        --prefix LD_LIBRARY_PATH : ${pkgsUnstable.lib.makeLibraryPath [ pkgsUnstable.libkrun ]} \
-        --set-default KRUNFW_PATH ${pkgsUnstable.libkrunfw}/share/libkrun
-      wrapProgram $out/bin/krun \
-        --prefix LD_LIBRARY_PATH : "$RUNTIME_LD_PATH" \
-        --set-default KRUNFW_PATH ${pkgsUnstable.libkrunfw}/share/libkrun
-    '';
-  });
 
-  bwrapRunner = pkgs.writeShellApplication {
-    name = "bwrap-action-runner";
+  # `action-runner <command> <timeout_secs>`: run <command> (a /nix/store
+  # executable already copied here) in a bubblewrap sandbox with a private
+  # slirp4netns network. The action's private key is read from stdin and
+  # exposed as GARNIX_ACTION_PRIVATE_KEY_FILE (the backend pipes it in). The
+  # repo (when `withRepoContents`) is bind-mounted at /tmp/base via
+  # ACTION_REPO_DIR.
+  actionRunner = pkgs.writeShellApplication {
+    name = "action-runner";
+    runtimeInputs = [ pkgs.bubblewrap pkgs.slirp4netns pkgs.coreutils pkgs.getent ];
     text = ''
       TMP=$(mktemp -d)
-
-      trap 'rm -rf $TMP' EXIT
+      trap 'rm -rf "$TMP"' EXIT
 
       TEMP_SECRET="$TMP"/secret
       PIDFILE="$TMP"/pidfile
-      touch "$PIDFILE"
       RESOLVCONF="$TMP"/resolv.conf
       SIGNAL="$TMP"/signalfile
       PASSWDFILE="$TMP"/passwd
@@ -49,15 +41,23 @@ let
       COMMAND=$1
       TIMEOUT_SECS=$2
 
+      touch "$PIDFILE"
       getent passwd "$UID" 65534 > "$PASSWDFILE"
       getent group "$(id -g)" 65534 > "$GROUPFILE"
 
+      # The action's private key arrives on stdin.
       cat > "$TEMP_SECRET"
       mkfifo "$SIGNAL"
-      # This is slirp4netns' DNS resolver
+      # slirp4netns' built-in DNS resolver.
       echo "nameserver 10.0.2.3" > "$RESOLVCONF"
-
       echo "garnix-action-runner" > "$HOSTNAMEFILE"
+
+      # If the repo was rsynced in (withRepoContents), bind it read-write at
+      # /tmp/base and run there; otherwise run from a scratch home.
+      REPO_BIND=()
+      if [[ -n "''${ACTION_REPO_DIR:-}" && -d "''${ACTION_REPO_DIR:-}" ]]; then
+        REPO_BIND=(--bind "$ACTION_REPO_DIR" /tmp/base)
+      fi
 
       timeout "$TIMEOUT_SECS"s \
         bwrap \
@@ -67,38 +67,24 @@ let
            --hostname "garnix-action-runner" \
            --ro-bind /nix /nix \
            --bind /run /run \
-           --bind /usr/bin/env /usr/bin/env \
            --tmpfs /etc \
-           --ro-bind /etc/hosts /etc/hosts \
+           --ro-bind-try /etc/hosts /etc/hosts \
            --ro-bind "$HOSTNAMEFILE" /etc/hostname \
-           --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf \
-           --symlink "$(readlink -f /etc/localtime)" /etc/localtime `# Some tools require this to be a symlink` \
-           --ro-bind /etc/zoneinfo /etc/zoneinfo \
-           --ro-bind /etc/ssl /etc/ssl \
-           --ro-bind /etc/static /etc/static \
-           --ro-bind /etc/locale.conf /etc/locale.conf \
-           --ro-bind /etc/nscd.conf /etc/nscd.conf \
-           --ro-bind /etc/man_db.conf /etc/man_db.conf \
-           --ro-bind /etc/host.conf /etc/host.conf \
-           --ro-bind /etc/protocols /etc/protocols \
-           --ro-bind /etc/services /etc/services \
+           --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
+           --symlink "$(readlink -f /etc/localtime)" /etc/localtime \
+           --ro-bind-try /etc/zoneinfo /etc/zoneinfo \
+           --ro-bind-try /etc/ssl /etc/ssl \
+           --ro-bind-try /etc/static /etc/static \
+           --ro-bind-try /etc/pki /etc/pki \
+           --ro-bind-try /etc/protocols /etc/protocols \
+           --ro-bind-try /etc/services /etc/services \
            --ro-bind "$RESOLVCONF" /etc/resolv.conf \
            --bind "$PASSWDFILE" /etc/passwd \
            --bind "$GROUPFILE" /etc/group \
-           --dev-bind /dev/console /dev/console \
-           --dev-bind /dev/core /dev/core \
-           --dev-bind /dev/full /dev/full \
-           --dev-bind /dev/null /dev/null \
-           --dev-bind /dev/ptmx /dev/ptmx \
-           --dev-bind /dev/pts /dev/pts \
-           --dev-bind /dev/random /dev/random \
-           --dev-bind /dev/shm /dev/shm \
-           --dev-bind /dev/tty /dev/tty \
-           --dev-bind /dev/urandom /dev/urandom \
-           --dev-bind /dev/zero /dev/zero \
-           --dev-bind /dev/net/tun /dev/net/tun \
-           --dev-bind /dev/kvm /dev/kvm \
-           --ro-bind /bin/sh /bin/sh \
+           --dev-bind-try /dev/null /dev/null \
+           --dev-bind-try /dev/random /dev/random \
+           --dev-bind-try /dev/urandom /dev/urandom \
+           --dev-bind-try /dev/net/tun /dev/net/tun \
            --proc /proc \
            --symlink /proc/self/fd /dev/fd \
            --tmpfs /tmp \
@@ -110,152 +96,108 @@ let
            --bind "$SIGNAL" /syncfile \
            --bind "$PIDFILE" /pidfile \
            --setenv GARNIX_ACTION_PRIVATE_KEY_FILE "$TEMP_SECRET" \
+           "''${REPO_BIND[@]}" \
            /bin/sh -c "echo \$\$ > /pidfile; read -n 1 -t 30 _ <> /syncfile; $COMMAND" &
 
       TIMEOUT_PID=$!
 
-      exec {SIGNAL_FD_SLIRP}> "$SIGNAL"
+      exec {SIGNAL_FD}> "$SIGNAL"
 
-      ${pkgs.slirp4netns}/bin/slirp4netns --configure --mtu=65520 \
+      slirp4netns --configure --mtu=65520 \
           --disable-host-loopback \
-          --ready-fd="$SIGNAL_FD_SLIRP" \
+          --ready-fd="$SIGNAL_FD" \
           "$(cat "$PIDFILE")" tap0 2>/dev/null 1>/dev/null &
 
       SLIRP_PID=$!
       wait "$TIMEOUT_PID"
-      kill "$SLIRP_PID"
+      kill "$SLIRP_PID" 2>/dev/null || true
     '';
   };
 
-  runner = pkgs.writeShellApplication {
-    name = "action-runner";
-    excludeShellChecks = [ "SC2102" "SC2016" ];
-    runtimeInputs = [ pkgs.coreutils pkgs.podman ];
-    text = ''
-      COMMAND=$1
-      TIMEOUT_SECS=$2
-      SECRET_NAME=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20; echo)
-
-      trap 'EXIT=$?; podman secret rm $SECRET_NAME; exit $EXIT' EXIT
-      podman secret create "$SECRET_NAME" - > /dev/null
-
-      mapfile -t CLOSURE_CMD  < <(nix-store --query --requisites "$COMMAND")
-
-      # De-duplicate and resolve symlinks
-      declare -A SEEN=()
-      ALL_PATHS=()
-
-      for p in "''${CLOSURE_CMD[@]}"; do
-        if [[ -z "''${SEEN[$p]:-}" ]]; then
-          SEEN[$p]=1
-          ALL_PATHS+=("$p")
-        fi
-      done
-
-      # Build podman --mount flags: bind each store path to the same path in the container, read-only
-      MOUNTS=""
-      for p in "''${ALL_PATHS[@]}"; do
-        MOUNTS+="\"type=bind,src=$p,destination=$p,ro\", "
-      done
-
-      if [[ -s "''${ACTION_REPO_DIR:-}" ]]; then
-        MOUNTS+="\"type=bind,src=$ACTION_REPO_DIR,destination=/tmp/base,rw\", "
-      fi
-
-      TEMP=$(mktemp -d)
-
-      CONTAINERS_CONF="$TEMP"/containers.conf
-      printf "[containers]\nmounts=[ %s ]\n" "$MOUNTS" > "$CONTAINERS_CONF"
-
-      export CONTAINERS_CONF
-
-      nix path-info --json --json-format 1 --recursive "$COMMAND" | jq -r 'to_entries | map([.key, .value.narHash, .value.narSize, "", (.value.references | length)] + .value.references) | add | map("\(.)\n") | add' | head -n -1 > "$TEMP"/registrations
-
-      # TODO stop fetching the image directly, and instead have the fetch
-      # happen in a separate derivation, so that our tests
-      # are faster (but dockerTools.pullImage doesn't seem
-      # to work for this)
-      exec podman run \
-        --quiet \
-        --rm \
-        --memory 4G \
-        --timeout "$TIMEOUT_SECS" \
-        --runtime "${crunWithLibkrun}/bin/krun" \
-        --mount type=bind,src="$TEMP"/registrations,target=/tmp/registrations \
-        --env [PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin] \
-        --env GARNIX_ACTION_PRIVATE_KEY_FILE=/run/secrets/"$SECRET_NAME"  \
-        --env GARNIX_CI \
-        --env GARNIX_BRANCH \
-        --env GARNIX_COMMIT_SHA \
-        --secret "$SECRET_NAME" \
-        docker.io/nixos/nix \
-        bash -c "set -e; cat /tmp/registrations | nix-store --load-db; mkdir -p /tmp/base && cd /tmp/base && exec $COMMAND" \
-        2> >(grep -v "Couldn't get terminal dimensions: ENOTTY")
-    '';
-  };
+  # SharedResources actions call `bwrap-action-runner`; self-host treats it the
+  # same as the default runner (the operator owns all repos).
+  bwrapActionRunner = pkgs.runCommand "bwrap-action-runner" { } ''
+    mkdir -p "$out/bin"
+    ln -s ${actionRunner}/bin/action-runner "$out/bin/bwrap-action-runner"
+  '';
 in
 {
   options.garnix.actionRunner = {
-    enable = lib.mkEnableOption "Enable Action Runner";
-  };
+    enable = lib.mkEnableOption "the self-host garnix action runner (bubblewrap-sandboxed)";
 
-  config = lib.mkIf cfg.enable {
-    environment.systemPackages = [
-      pkgs.bubblewrap
-      runner
-      bwrapRunner
-    ];
-
-    environment.etc."containers/policy.json" = {
-      mode = "444";
-      text = ''
-        {
-            "default": [
-                {
-                    "type": "insecureAcceptAnything"
-                }
-            ]
-        }
+    authorizedKeys = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        SSH public keys authorized to log in as the `action-runner` user. This
+        must include the public key matching the private key the backend uses
+        to reach the runner (`GARNIX_ACTION_RUNNER_SSH_KEY`, default
+        /run/secrets/garnix_action_runner_ssh). If you'd rather not paste the
+        pubkey, set `sshPrivateKeyPath` instead and it's derived at boot.
       '';
     };
 
-    users = {
-      users.action-runner = {
-        isSystemUser = true;
-        shell = pkgs.bash;
-        group = "action-runner";
-        # subuid and subgids are needed for rootless podman
-        autoSubUidGidRange = true;
-        openssh.authorizedKeys.keys =
-          if config.garnix.devMode.enable
-          then [ devModeSshKey ]
-          else [ (import ../data/keys.nix).actionRunnerKey ];
-        # Needed for programs that look at `/etc/passwd` for the home directory
-        # instead of `$HOME`. (E.g. `ssh` through `getpwuid`.) When running
-        # actions, we mount in a fresh home directory here using `bubblewrap`.
-        home = "/home/action-runner";
-        createHome = true;
+    sshPrivateKeyPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/secrets/garnix_action_runner_ssh";
+      description = ''
+        Path to the action-runner SSH *private* key the backend connects with.
+        When set, a boot-time service derives its public key and authorizes it
+        for the `action-runner` user — so no separate pubkey secret is needed
+        (mirrors the provisioner's hosting-key handling). Combined with
+        `authorizedKeys`.
+      '';
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ actionRunner bwrapActionRunner ];
+
+    users.users.action-runner = {
+      isSystemUser = true;
+      shell = pkgs.bash;
+      group = "action-runner";
+      home = "/home/action-runner";
+      createHome = true;
+      openssh.authorizedKeys.keys = cfg.authorizedKeys;
+    };
+    users.groups.action-runner = { };
+
+    # The backend `nix copy --to ssh-ng://action-runner@...` runs the remote
+    # nix-daemon as this user; it must be trusted to import the closure.
+    nix.settings.trusted-users = [ config.users.users.action-runner.name ];
+
+    # Derive the authorized pubkey from the backend's action-runner private key
+    # at boot (after the secret is installed), so the runner trusts exactly the
+    # key the backend connects with — no separate pubkey to manage.
+    systemd.services.garnix-action-runner-authorized-key =
+      lib.mkIf (cfg.sshPrivateKeyPath != null) {
+        description = "Authorize the garnix action-runner SSH key";
+        wantedBy = [ "multi-user.target" ];
+        before = [ "sshd.service" ];
+        # The consumer should order this `after` its secret mechanism (e.g.
+        # agenix.service); retry anyway in case the key lands late.
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = 3;
+        };
+        script = ''
+          set -eu
+          install -d -m 0700 -o action-runner -g action-runner /home/action-runner/.ssh
+          umask 077
+          ${pkgs.openssh}/bin/ssh-keygen -y -f ${cfg.sshPrivateKeyPath} \
+            > /home/action-runner/.ssh/authorized_keys.garnix
+          # Merge the derived key with any statically-declared ones (NixOS puts
+          # those under /etc/ssh/authorized_keys.d/action-runner, which sshd
+          # also reads, so we only own the derived file here).
+          install -m 0600 -o action-runner -g action-runner \
+            /home/action-runner/.ssh/authorized_keys.garnix \
+            /home/action-runner/.ssh/authorized_keys
+          rm -f /home/action-runner/.ssh/authorized_keys.garnix
+        '';
       };
-      groups.action-runner = { };
-    };
-
-    nix.settings.trusted-users = [
-      config.users.users.action-runner.name
-    ];
-
-    garnix.custom-gc = {
-      enable = true;
-      enableTimer = true;
-    };
-
-    services.logind.settings.Login = {
-      KillUserProcesses = true;
-      KillOnlyUsers = "nix-ssh";
-    };
-
-    virtualisation.vmVariant.virtualisation = {
-      useNixStoreImage = true;
-      writableStore = true;
-    };
   };
 }

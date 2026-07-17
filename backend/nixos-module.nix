@@ -148,6 +148,19 @@ in
             public hostname). Surfaced via /api/config as ssh_host.
           '';
         };
+        actionHost = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "127.0.0.1";
+          description = ''
+            SSH host garnix runs `action` app executions on: it `nix copy`s the
+            action closure to `action-runner@<actionHost>` and executes it there.
+            Upstream defaults to garnix's own runner fleet; for self-host point
+            this at a host running the action-runner module (typically
+            "127.0.0.1" with `garnix.actionRunner.enable = true`). Sets
+            GARNIX_ACTION_HOST. When null, actions won't run on a self-host box.
+          '';
+        };
         provisionerSocket = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -458,6 +471,9 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.provisionerSocket != null) [
           "GARNIX_PROVISIONER_SOCKET=${config.services.garnixServer.provisionerSocket}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.actionHost != null) [
+          "GARNIX_ACTION_HOST=${config.services.garnixServer.actionHost}"
         ]
         ++ lib.optionals (config.services.garnixServer.metricsScrapeUrl != null) [
           "GARNIX_METRICS_SCRAPE_URL=${config.services.garnixServer.metricsScrapeUrl}"
