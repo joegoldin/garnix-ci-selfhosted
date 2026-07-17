@@ -59,7 +59,7 @@ import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig)
 import Garnix.Prelude
 import Garnix.TestHelpers.GithubInterface.Deprecated qualified as Deprecated
-import Garnix.TestHelpers.HetznerMock (testProvisioner)
+import Garnix.TestHelpers.ProvisionerMock (testProvisioner)
 import Garnix.Types hiding (pending)
 import GitHub.App.Auth (AppAuth (..))
 import GitHub.Data.Id (Id (..))
@@ -288,7 +288,6 @@ withTestEnvironment tempDir action = do
                   modulesOrg = "garnix-io",
                   logger = defaultLogger,
                   buildLogsDir = buildLogsDir,
-                  hetznerToken = "hetzner-token",
                   opensearchQueryUrl = "http://example.com/_msearch",
                   opensearchPassword = "opensearch-api",
                   sshUserHostingKeys = [sshKey],
@@ -302,12 +301,6 @@ withTestEnvironment tempDir action = do
                   nixEvalPool = nixEvalPool,
                   s3UploadPool = s3UploadPool,
                   mocks,
-                  stripe =
-                    StripeEnv
-                      { publishableKey = "stripe-publishable-key",
-                        secretKey = "stripe-secret-key",
-                        webhookSecret = "stripe-webhook-secret"
-                      },
                   spanCtx = [],
                   metrics = metrics,
                   emptyDir = emptyDir',
@@ -376,13 +369,11 @@ addDevSecrets baseEnv = do
       { githubAppAuth = AppAuth (Id $ read appId) appPkPem',
         githubWebhookSecret = githubWebhookSecret
       }
-    & #stripe . #secretKey .~ stripeSecretKey
 
 data DevSecrets = DevSecrets
   { appId :: String,
     appPkPem :: SBS,
-    githubWebhookSecret :: SBS,
-    stripeSecretKey :: Text
+    githubWebhookSecret :: SBS
   }
   deriving (Show)
 
@@ -400,8 +391,7 @@ getDevSecrets = do
   appPkPem <- cs <$> getSecret "github_app_pk" "GITHUB_APP_PK"
   githubWebhookSecret <- cs <$> getSecret "github_webhook_secret" "GITHUB_WEBHOOK_SECRET"
 
-  stripeSecretKey <- getSecret "stripe-secret-key" "STRIPE_SECRET_KEY"
-  pure $ DevSecrets {appId, appPkPem, githubWebhookSecret, stripeSecretKey}
+  pure $ DevSecrets {appId, appPkPem, githubWebhookSecret}
 
 getDevSecretsFromFile :: IO Value
 getDevSecretsFromFile = __memoize $ do

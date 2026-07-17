@@ -12,8 +12,8 @@ import Garnix.Monad
 import Garnix.Prelude
 import Garnix.TestHelpers.Common
 import Garnix.TestHelpers.GithubInterface.Deprecated qualified as Deprecated
-import Garnix.TestHelpers.HetznerMock
 import Garnix.TestHelpers.Monad (cleanDbConn, githubAppPk)
+import Garnix.TestHelpers.ProvisionerMock (testProvisioner)
 import Garnix.TestInstances ()
 import Garnix.Types hiding (head)
 import Garnix.YamlConfig (GarnixConfig)
@@ -53,9 +53,7 @@ addTestSecrets test =
   withSystemTempDirectory "garnix-test" $ \tempDir -> do
     backendDir <- getCurrentDirectory >>= makeAbsolute
     let jwtKey = backendDir <> "/dev-key.jwt"
-        hetznerToken = tempDir <> "/hetznerToken"
         s3CacheKeyFile = tempDir </> "cache-priv-key-file"
-    writeFile hetznerToken "foo"
     writeFile s3CacheKeyFile "key-name:key"
     sshKey <- makeAbsolute "ssh-key-for-tests"
     repoSecretsPath <- makeAbsolute "test/spec/data/repo-secrets.key"
@@ -68,13 +66,12 @@ addTestSecrets test =
         ("GITHUB_APP_NAME", "foo"),
         ("GARNIX_SERVER_SSH_KEYS", sshKey),
         ("JWT_KEY", jwtKey),
-        ("HETZNER_TOKEN", hetznerToken),
+        -- withEnv requires this even though tests override #provisioner with the
+        -- in-memory testProvisioner; the socket itself is never dialed.
+        ("GARNIX_PROVISIONER_SOCKET", tempDir </> "provisioner.sock"),
         ("OPENSEARCH_API", "foo"),
         ("REPO_SECRETS_KEY_PATH", repoSecretsPath),
         ("REPO_SECRETS_PUB_KEY", "age107r0e6nxchkrqdxg42tzdxeauez2ce7cpsajcggjwmpjgrlrnqfqy6tnlf"),
-        ("STRIPE_PUBLISHABLE_KEY", "stripe-publishable-key"),
-        ("STRIPE_SECRET_KEY", "stripe-secret-key"),
-        ("STRIPE_WEBHOOK_SECRET", "stripe-webhook-secret"),
         ("S3_CACHE_ACCESS_KEY_ID", "foo"),
         ("S3_CACHE_SECRET_ACCESS_KEY", "foo"),
         ("S3_CACHE_REGION", "foo"),

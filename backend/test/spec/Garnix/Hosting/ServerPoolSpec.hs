@@ -1,8 +1,6 @@
 module Garnix.Hosting.ServerPoolSpec (spec) where
 
-import Control.Concurrent.MVar.Lifted
 import Control.Lens
-import Data.List.Extra (enumerate)
 import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.DB qualified as DB
 import Garnix.Duration
@@ -25,60 +23,6 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
           servers :: [ServerTier] <- DB.pgQuery [pgSQL| SELECT server_tier FROM server_pool |]
           sort servers `shouldBeM` sort (concatMap (\(tier, n) -> replicate n tier) testPoolConfig)
 
-    it "tries other locations if provisioning fails" $ do
-      mvar <- newMVar (0, False)
-      let f = provisionerModifyProvisionServer $ \provision -> do
-            join $ modifyMVar mvar $ \(servers, hasFailed) ->
-              pure
-                $ if not hasFailed
-                  then ((servers, True), throw $ OtherError "retry")
-                  else ((succ servers, hasFailed), provision)
-      local f $ do
-        withServerPoolM $ do
-          waitFor (fromSeconds @Int 1) $ do
-            poolSize <- getPoolSize
-            (servers, _) <- readMVar mvar
-            servers `shouldBeM` poolSize
-
-    it "provisions servers of all types in all configured locations" $ do
-      let expectedRetries :: [(HetznerLocation, HetznerServerType)] =
-            flip concatMap testPoolConfig $ \(tier, poolSize) ->
-              flip concatMap (serverTierToHetznerServerType tier) $ \hetznerServerType ->
-                flip concatMap (enumerate @HetznerLocation) $ \location ->
-                  replicate poolSize (location, hetznerServerType)
-      mvar <- newMVar []
-      let f = provisionerModifyProvisionServerWithParams $ \id loc typ provision -> do
-            size <- modifyMVar mvar (\xs -> pure (xs <> [(loc, typ)], length xs + 1))
-            if size == length expectedRetries
-              then do
-                provision id loc typ
-              else throw $ OtherError "retry"
-      local f $ do
-        withServerPoolM $ do
-          waitFor (fromSeconds @Int 1) $ do
-            result <- readMVar mvar
-            sort result `shouldBeM` sort expectedRetries
-
-    it "tries cheaper servers first" $ do
-      let expectedRetries :: [(HetznerLocation, HetznerServerType)] =
-            flip concatMap [(I2x4, 1)] $ \(tier, poolSize) ->
-              flip concatMap (serverTierToHetznerServerType tier) $ \hetznerServerType ->
-                flip concatMap (enumerate @HetznerLocation) $ \location ->
-                  replicate poolSize (location, hetznerServerType)
-      local (#serverPoolConfig .~ [(I2x4, 1)]) $ do
-        mvar <- newMVar []
-        let f = provisionerModifyProvisionServerWithParams $ \id loc typ provision -> do
-              size <- modifyMVar mvar (\xs -> pure (xs <> [(loc, typ)], length xs + 1))
-              if size == length expectedRetries
-                then do
-                  provision id loc typ
-                else throw $ OtherError "retry"
-        local f $ do
-          withServerPoolM $ do
-            waitFor (fromSeconds @Int 1) $ do
-              result <- readMVar mvar
-              result `shouldBeM` expectedRetries
-
     it "recreates servers if some are used up @slow" $ do
       withServerPoolM $ do
         build <-
@@ -86,7 +30,7 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
             $ (branch ?~ "main")
             . (repoUser .~ "owner")
             . (repoName .~ "repo")
-        server <- createServer defaultRepoInfo (BranchDeployment "main") (ServerToSpinUp I16x32 build False False [] False [] [])
+        server <- createServer defaultRepoInfo (BranchDeployment "main") (ServerToSpinUp I16x32 build False False False False [] [] [])
         server ^. tier `shouldBeM` I16x32
         running <- DB.getRunningServersOf defaultRepoInfo (BranchDeployment "main")
         fromSingleton running ^. tier `shouldBeM` I16x32
@@ -130,23 +74,3 @@ getPoolSize :: M Int
 getPoolSize = do
   view #serverPoolConfig
     <&> sum . map snd
-
-provisionerModifyProvisionServer :: (M PreprovisionedServer -> M PreprovisionedServer) -> Env -> Env
-provisionerModifyProvisionServer f env =
-  env
-    & #provisioner %~ \i ->
-      i
-        { _provisionerProvisionServer = \x loc typ -> do
-            f $ _provisionerProvisionServer i x loc typ
-        }
-
-type ProvisionServerType = (PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> M PreprovisionedServer)
-
-provisionerModifyProvisionServerWithParams :: (PreprovisionedServerId -> HetznerLocation -> HetznerServerType -> ProvisionServerType -> M PreprovisionedServer) -> Env -> Env
-provisionerModifyProvisionServerWithParams f env =
-  env
-    & #provisioner %~ \i ->
-      i
-        { _provisionerProvisionServer = \x loc typ -> do
-            f x loc typ (_provisionerProvisionServer i)
-        }

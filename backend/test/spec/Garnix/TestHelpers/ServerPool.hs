@@ -10,7 +10,7 @@ import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Monad (M, runM)
 import Garnix.Prelude
-import Garnix.TestHelpers.HetznerMock (deleteContainer, hetznerState, _getHetznerState)
+import Garnix.TestHelpers.ProvisionerMock (deleteContainer, provisionerMockState, _getProvisionerState)
 import Garnix.TestHelpers.Monad (cleanDbConn, withTestEnvironment)
 import System.Directory (canonicalizePath)
 import System.Environment (setEnv)
@@ -44,7 +44,7 @@ withServerPool action =
     tearDown env tid = do
       mapM_ killThread tid
       MVar.modifyMVar_
-        (_getHetznerState hetznerState)
+        (_getProvisionerState provisionerMockState)
         ( Map.traverseMaybeWithKey
             (\_ (threadId, _, _) -> deleteContainer threadId $> Nothing)
         )
@@ -67,7 +67,7 @@ withServerPoolM action =
     tearDown tid = liftIO $ do
       killThread tid
       MVar.modifyMVar_
-        (_getHetznerState hetznerState)
+        (_getProvisionerState provisionerMockState)
         ( Map.traverseMaybeWithKey
             (\_ (threadId, _, _) -> deleteContainer threadId $> Nothing)
         )
@@ -76,7 +76,7 @@ stopActiveServers :: IO ()
 stopActiveServers =
   liftIO
     $ MVar.modifyMVar_
-      (_getHetznerState hetznerState)
+      (_getProvisionerState provisionerMockState)
       ( Map.traverseMaybeWithKey
           ( \_ val@(threadId, serverStatus, _) ->
               case serverStatus of

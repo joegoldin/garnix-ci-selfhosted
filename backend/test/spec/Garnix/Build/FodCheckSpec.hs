@@ -50,36 +50,12 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
 
     it "enables the FOD check in the yaml config" $ do
       GH.withFakeGithubInterface $ \ghState -> do
-        withTestEntitlement "with-price-id" identity "owner" $ do
-          let garnixConfig = "fodChecks: true"
-          GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig "" (Just garnixConfig)) $ \commitInfo -> do
-            withCheckout commitInfo $ do
-              plan <- Entitlements.getPlan "owner"
-              withFodChecker mempty commitInfo plan $ \fodChecker -> do
-                void fodChecker `shouldSatisfyM` isJust
-
-    it "disables the FOD check when the user does not have a paid plan" $ do
-      GH.withFakeGithubInterface $ \ghState -> do
         let garnixConfig = "fodChecks: true"
         GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig "" (Just garnixConfig)) $ \commitInfo -> do
           withCheckout commitInfo $ do
             plan <- Entitlements.getPlan "owner"
-            reports <- withTestReporter_ $ \reporter -> do
-              withFodChecker reporter commitInfo plan $ \fodChecker -> do
-                void fodChecker `shouldSatisfyM` isNothing
-            (reports ! "FOD checks")
-              `shouldBeM` TestReport
-                "`fodChecks` are enabled in your garnix.yaml, but that feature requires a paid plan."
-                (Just False)
-
-    it "disables the FOD check by default with paid plan" $ do
-      GH.withFakeGithubInterface $ \ghState -> do
-        withTestEntitlement "with-price-id" identity "owner" $ do
-          GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup "") $ \commitInfo -> do
-            withCheckout commitInfo $ do
-              plan <- Entitlements.getPlan "owner"
-              withFodChecker mempty commitInfo plan $ \fodChecker -> do
-                void fodChecker `shouldSatisfyM` isNothing
+            withFodChecker mempty commitInfo plan $ \fodChecker -> do
+              void fodChecker `shouldSatisfyM` isJust
 
   describe "__pickRemoteBuilderUrlFromMachinesFile" $ do
     let realMachinesFile =
@@ -226,16 +202,15 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
   describe "fodCheck" $ aroundM_ (withMock #rebuildFodMock rebuildFodTestImpl) $ do
     let test :: Nix.DrvPath -> M TestReport
         test drvPath = do
-          withTestEntitlement "with-price-id" identity "owner" $ do
-            let garnixConfig = "fodChecks: true"
-            dir <- view #workingDir
-            liftIO $ T.writeFile (dir </> "garnix.yaml") garnixConfig
-            result <- withTestReporter_ $ \reporter -> do
-              plan <- Entitlements.getPlan "owner"
-              withFodChecker reporter defaultCommitInfo plan $ \fodChecker -> do
-                void fodChecker `shouldSatisfyM` isJust
-                fodCheck fodChecker drvPath
-            pure $ result ! "FOD checks"
+          let garnixConfig = "fodChecks: true"
+          dir <- view #workingDir
+          liftIO $ T.writeFile (dir </> "garnix.yaml") garnixConfig
+          result <- withTestReporter_ $ \reporter -> do
+            plan <- Entitlements.getPlan "owner"
+            withFodChecker reporter defaultCommitInfo plan $ \fodChecker -> do
+              void fodChecker `shouldSatisfyM` isJust
+              fodCheck fodChecker drvPath
+          pure $ result ! "FOD checks"
 
     it "does not fail for benign fods" $ do
       flake <- mkFodFlake Nothing =<< mkRandomOutput
@@ -358,16 +333,15 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
         successFlake <- mkFodFlake (Just "sleep 5") output
         buildDrvPath . fst =<< testDerivation successFlake "default"
         fst <$> testDerivation successFlake "fod"
-      reports <-
-        withTestEntitlement "with-price-id" identity "owner" $ do
-          let garnixConfig = "fodChecks: true"
-          dir <- view #workingDir
-          liftIO $ T.writeFile (dir </> "garnix.yaml") garnixConfig
-          withTestReporter_ $ \reporter -> do
-            plan <- Entitlements.getPlan "owner"
-            withFodChecker reporter defaultCommitInfo plan $ \fodChecker -> do
-              fodCheck fodChecker lyingDrvPath
-              fodCheck fodChecker successDrvPath
+      reports <- do
+        let garnixConfig = "fodChecks: true"
+        dir <- view #workingDir
+        liftIO $ T.writeFile (dir </> "garnix.yaml") garnixConfig
+        withTestReporter_ $ \reporter -> do
+          plan <- Entitlements.getPlan "owner"
+          withFodChecker reporter defaultCommitInfo plan $ \fodChecker -> do
+            fodCheck fodChecker lyingDrvPath
+            fodCheck fodChecker successDrvPath
       (reports ! "FOD checks") ^. #success `shouldBeM` Just False
       let logs = cs $ (reports ! "FOD checks") ^. #logs
       logs `shouldContainM` "1 FOD was verified."
@@ -380,16 +354,15 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
         flake <- mkFodFlake Nothing output
         buildDrvPath . fst =<< testDerivation flake "default"
         fst <$> testDerivation flake "fod"
-      reports <-
-        withTestEntitlement "with-price-id" identity "owner" $ do
-          let garnixConfig = "fodChecks: true"
-          dir <- view #workingDir
-          liftIO $ T.writeFile (dir </> "garnix.yaml") garnixConfig
-          withTestReporter_ $ \reporter -> do
-            plan <- Entitlements.getPlan "owner"
-            withFodChecker reporter defaultCommitInfo plan $ \fodChecker -> do
-              fodCheck fodChecker drvPath
-              fodCheck fodChecker drvPath
+      reports <- do
+        let garnixConfig = "fodChecks: true"
+        dir <- view #workingDir
+        liftIO $ T.writeFile (dir </> "garnix.yaml") garnixConfig
+        withTestReporter_ $ \reporter -> do
+          plan <- Entitlements.getPlan "owner"
+          withFodChecker reporter defaultCommitInfo plan $ \fodChecker -> do
+            fodCheck fodChecker drvPath
+            fodCheck fodChecker drvPath
       (reports ! "FOD checks") ^. #success `shouldBeM` Just True
       let logs = (reports ! "FOD checks") ^. #logs
       logs `shouldBeM` "Checking fixed output derivations...\n1 FOD was verified."
@@ -436,12 +409,11 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
         (drvPath, _) <- testDerivation flake "default"
         buildDrvPath drvPath
         let garnixConfig = "fodChecks: true"
-        withTestEntitlement "with-price-id" identity "owner" $ do
-          GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake (Just garnixConfig)) $ \commitInfo -> do
-            let reporter = mkGithubReporter (commitInfo ^. repoInfo) (commitInfo ^. commit)
-            resolve =<< Orchestrator.handleCommit reporter True commitInfo
-            (fodDrv, _) <- testDerivation flake "fod"
-            verifiedFodsShouldBe [fodDrv]
+        GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake (Just garnixConfig)) $ \commitInfo -> do
+          let reporter = mkGithubReporter (commitInfo ^. repoInfo) (commitInfo ^. commit)
+          resolve =<< Orchestrator.handleCommit reporter True commitInfo
+          (fodDrv, _) <- testDerivation flake "fod"
+          verifiedFodsShouldBe [fodDrv]
 
 setUpXdgCacheDir :: M a -> M a
 setUpXdgCacheDir action = withSystemTempDirectory "garnix-xdg-cache-dir" $ \dir ->

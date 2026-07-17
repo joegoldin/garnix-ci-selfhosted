@@ -498,7 +498,7 @@ createServer repoOwner repoName branch pr packageName drvPath' user updateServer
         CommitInfo
           (user ^. githubLogin)
           (RepoIsPublic True)
-          (RepoInfo undefined undefined repoOwner repoName)
+          (RepoInfo ForgeGithub Nothing undefined repoOwner repoName)
           (Just branch)
           Nothing
           (CommitHash "baz")

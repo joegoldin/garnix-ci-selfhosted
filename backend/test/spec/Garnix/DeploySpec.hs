@@ -10,8 +10,6 @@ import Data.Set qualified as Set
 import Data.String.Interpolate
 import Data.String.Interpolate.Util
 import Data.Text.IO qualified as T
-import Data.Time.Calendar as Time
-import Data.Time.Clock (UTCTime (..))
 import Data.Tuple.Extra ((&&&))
 import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.API.GhWebhooks (ghWebhookPullRequest)
@@ -19,23 +17,18 @@ import Garnix.Build (buildFlake)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withPrivateNixXdgCache)
 import Garnix.DB qualified as DB
-import Garnix.Duration
-import Garnix.Entitlements (setExtraUsageLimits)
-import Garnix.Entitlements qualified as Entitlements
 import Garnix.Hosting.Deploy
 import Garnix.Hosting.ServerPool (sshArgsFor)
-import Garnix.Hosting.ServerPool.Types (ServerTier (..))
 import Garnix.Monad
 import Garnix.Monad.Async (emptyPromise, resolve)
-import Garnix.MonetaryCost
 import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude hiding (head)
 import Garnix.TestHelpers hiding (shouldReturn)
 import Garnix.TestHelpers.Common
 import Garnix.TestHelpers.Deprecated qualified as Deprecated
-import Garnix.TestHelpers.HetznerMock
 import Garnix.TestHelpers.Monad
-import Garnix.TestHelpers.Reporter (TestReport (..), withTestReporter_)
+import Garnix.TestHelpers.ProvisionerMock (Thread (..), provisionerMockState, _getProvisionerState)
+import Garnix.TestHelpers.Reporter (withTestReporter_)
 import Garnix.TestHelpers.ServerPool
 import Garnix.Types hiding (context)
 import Garnix.YamlConfig (DeploySection (OnPullRequest), GarnixConfig, ServerSection (ServerSection), serverSection)
@@ -101,7 +94,7 @@ spec = do
           forM_ firstGenServers assertNotExists
 
       context "persistence" $ do
-        let commitInfo c = CommitInfo "owner" (RepoIsPublic True) (RepoInfo undefined undefined "owner" "repo") (Just "branch") Nothing c
+        let commitInfo c = CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub Nothing undefined "owner" "repo") (Just "branch") Nothing c
             flake = flakeWithPersistence True "db" "db" "local"
             yaml = Just $ getMultiConfig "branch" [PackageName "db"]
             branch = "branch"
@@ -263,7 +256,7 @@ spec = do
           liftIO $ cs result `shouldStartWith` "AGE-SECRET-KEY"
 
       context "stopUnusedServers" $ do
-        let commitInfo c = CommitInfo "owner" (RepoIsPublic True) (RepoInfo undefined undefined "owner" "repo") (Just "branch") Nothing c
+        let commitInfo c = CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub Nothing undefined "owner" "repo") (Just "branch") Nothing c
             flake = flakeWithPersistence True "db" "db" "local"
             yaml = Just $ onPullRequestConfig (PackageName "db")
             branch = "branch"
@@ -482,77 +475,6 @@ spec = do
         (_, _, plan, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
         liftIO $ length (plan ^. #toSpinUp) `shouldBe` 1
 
-    it "blocks deploying when going over the limit"
-      $ withMockReturning #executeDeployPlanMock []
-      $ do
-        let machineNames = (\p -> (PackageName p, Nothing)) <$> ["first", "second", "third"]
-        entitlementError <- try $ deployNewServerFor user name branchName commit machineNames
-        liftIO
-          $ first err entitlementError
-          `shouldBe` Left
-            ( EntitlementError
-                $ "Deploying this would result in $15.00 extra monthly server cost above your plan. "
-                <> "You have not configured any additional spending budget on deployed hosts. "
-                <> "You can configure this spending limit on your account page at garnix.io.\n\n"
-                <> "Here is a breakdown of what would be deployed by this commit and the associated costs:\n"
-                <> "  i2x4 (x3) = $15.00 (2 included in plan)\n"
-            )
-
-    it "allows deploying one extra server given a custom limit"
-      $ withMockReturning #executeDeployPlanMock []
-      $ do
-        let machineNames = (\p -> (PackageName p, Nothing)) <$> ["first", "second", "third"]
-        Entitlements.setExtraUsageLimits user (emptyUsageLimits & #hostingSpend .~ usd 16)
-        void $ deployNewServerFor user name branchName commit machineNames
-        (_, _, plan, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
-        liftIO $ length (plan ^. #toSpinUp) `shouldBe` 3
-
-    it "does not allow deploying extra servers if the limit is not set high enough"
-      $ withMockReturning #executeDeployPlanMock []
-      $ do
-        let machineNames = (\p -> (PackageName p, Nothing)) <$> ["first", "second", "third"]
-        Entitlements.setExtraUsageLimits user (emptyUsageLimits & #hostingSpend .~ usd 14)
-        entitlementError <- try $ deployNewServerFor user name branchName commit machineNames
-        liftIO
-          $ first err entitlementError
-          `shouldBe` Left
-            ( EntitlementError
-                $ "Deploying this would result in $15.00 extra monthly server cost above your plan. "
-                <> "However, you have configured a max spend of $14.00 per month on deployed hosts. "
-                <> "You can configure this spending limit on your account page at garnix.io.\n\n"
-                <> "Here is a breakdown of what would be deployed by this commit and the associated costs:\n"
-                <> "  i2x4 (x3) = $15.00 (2 included in plan)\n"
-            )
-
-    it "does apply the hosting limit over all branches"
-      $ withMockReturning #executeDeployPlanMock []
-      $ do
-        let anotherCommit = "bbbb"
-            anotherBranch = "another-branch"
-            machineNames = (\p -> (PackageName p, Nothing)) <$> ["first", "second"]
-        now <- liftIO getCurrentTime
-        existingBuild <-
-          fromSingleton
-            <$> createBuildsFor user name anotherBranch anotherCommit [("existing-test-machine", Nothing)]
-        void $ addTestServer $ \server ->
-          server
-            & configurationBuildId .~ (existingBuild ^. id)
-            & readyAt ?~ now
-            & endedAt .~ Nothing
-
-        entitlementError <- try $ deployNewServerFor user name branchName commit machineNames
-
-        liftIO
-          $ first err entitlementError
-          `shouldBe` Left
-            ( EntitlementError
-                $ "Deploying this would result in $15.00 extra monthly server cost above your plan. "
-                <> "You have not configured any additional spending budget on deployed hosts. "
-                <> "You can configure this spending limit on your account page at garnix.io.\n\n"
-                <> "Here is a breakdown of what would be deployed by this commit and the associated costs:\n"
-                <> "  i2x4 (x3) = $15.00 (2 included in plan)\n"
-            )
-
     it "allows specifying a primary domain deployment" $ do
       withMockReturning #executeDeployPlanMock [] $ do
         let garnixYaml =
@@ -573,7 +495,7 @@ spec = do
         liftIO $ T.writeFile (dir </> "garnix.yaml") $ cs garnixYaml
         void $ createBuildsFor user name branchName commit [("foo", Nothing), ("bar", Nothing)]
         iAuth <- getInstallation $ Github.Data.Id 42
-        let repoInfo = RepoInfo iAuth (GhToken "test-token") user name
+        let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") user name
         let commitInfo = CommitInfo (getGhRepoOwner user) (RepoIsPublic True) repoInfo (Just branchName) Nothing commit
         void
           $ withPrivateNixXdgCache
@@ -590,7 +512,7 @@ spec = do
   let wrap =
         inM
           . beforeM_ truncateDBM
-          . aroundM_ (withTestEntitlement "test" (maximumPrDeploymentTime .~ fromMinutes @Int 2) "test-owner" . suppressLogsWhenPassing)
+          . aroundM_ suppressLogsWhenPassing
   describe "pull-request-deployments" $ wrap $ do
     let shouldHavePlan ::
           (HasCallStack) =>
@@ -614,7 +536,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -644,7 +566,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -664,7 +586,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -688,7 +610,7 @@ spec = do
           commit <-
             Deprecated.writeMockRemote "test-branch"
               $ def
-              & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+              & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
           let prEvent =
                 mkPullRequestEvent commit "test-branch" "other-owner/repo-fork" "owner/repo" testInstallationId
                   & number .~ 42
@@ -706,7 +628,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "foo/bar" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "foo/bar" (OnPullRequest def) Nothing False False [] []]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -720,7 +642,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "sh/some-feature"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         let prEvent =
               mkPullRequestEvent commit "sh/some-feature" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -738,7 +660,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "pkg-a" OnPullRequest Nothing [] False [], ServerSection "pkg-b" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "pkg-a" (OnPullRequest def) Nothing False False [] [], ServerSection "pkg-b" (OnPullRequest def) Nothing False False [] []]
         let prEvent =
               mkPullRequestEvent commit "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -761,7 +683,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -777,7 +699,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -793,7 +715,7 @@ spec = do
         commitA <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         let prEvent =
               mkPullRequestEvent commitA "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -829,7 +751,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] []]
         build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -846,185 +768,6 @@ spec = do
         Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
         [plan] <- getMockCalls #executeDeployPlanMock
         plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
-
-    it "aborts when the repoOwner doesn't have the pr hosting entitlement" $ do
-      withMockReturning #executeDeployPlanMock [] $ do
-        void $ DB.pgExec [pgSQL| TRUNCATE repo_owner_has_product |]
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        iAuth <- getInstallation $ Github.Data.Id 42
-        let repoInfo = RepoInfo iAuth (GhToken "test-token") "test-owner" "test-repo"
-        let commitInfo = CommitInfo "test-owner" (RepoIsPublic True) repoInfo Nothing Nothing commit
-        reports <- withTestReporter_ $ \testReporter -> do
-          void $ try $ withPrivateNixXdgCache $ rolloutNewServerVersion testReporter commitInfo (GhPrDeployment 42)
-        reports
-          `shouldBeM` ( "deployment plan"
-                          ~> TestReport
-                            "Sorry, hosting is not allowed for test-owner."
-                            (Just False)
-                      )
-
-    it "does not deploy if all PR deploy minutes are used up" $ do
-      withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
-
-        now <- liftIO getCurrentTime
-        result <-
-          try
-            $ deployBranchPRServers
-              commit
-              [ \server ->
-                  server
-                    & readyAt ?~ subTime (fromDays @Int 1) now
-                    & endedAt .~ Nothing
-              ]
-        liftIO $ first err result `shouldBe` Left (EntitlementError "Sorry, you have exhausted all your PR deployment minutes.")
-        calls <- getMockCalls #executeDeployPlanMock
-        liftIO $ length calls `shouldBe` 0
-
-    it "allows going over PR deploy minutes if extra usage minutes are configured" $ do
-      setExtraUsageLimits "test-owner" (emptyUsageLimits & #prDeployTime .~ fromMinutes @Int 5)
-      withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
-
-        now <- liftIO getCurrentTime
-        let firstOfMonth = flip UTCTime 0 . (\(y, m, _d) -> Time.fromGregorian y m 1) . Time.toGregorian $ utctDay now
-        deployBranchPRServers
-          commit
-          [ (readyAt ?~ firstOfMonth) . (endedAt ?~ addTime (fromMinutes @Int 5) firstOfMonth)
-          ]
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
-
-    it "correctly counts minutes from multiple servers" $ do
-      withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
-        now <- liftIO getCurrentTime
-        let firstOfMonth = flip UTCTime 0 . (\(y, m, _d) -> Time.fromGregorian y m 1) . Time.toGregorian $ utctDay now
-        result <-
-          try
-            $ deployBranchPRServers
-              commit
-              [ \server1 ->
-                  server1
-                    & readyAt ?~ firstOfMonth
-                    & endedAt ?~ addTime (fromSeconds @Int 90) firstOfMonth,
-                \server2 ->
-                  server2
-                    & readyAt ?~ firstOfMonth
-                    & endedAt ?~ addTime (fromSeconds @Int 90) firstOfMonth
-              ]
-
-        liftIO $ first err result `shouldBe` Left (EntitlementError "Sorry, you have exhausted all your PR deployment minutes.")
-        calls <- getMockCalls #executeDeployPlanMock
-        liftIO $ length calls `shouldBe` 0
-
-    it "does not count minutes from previous months" $ do
-      withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" OnPullRequest Nothing [] False []]
-
-        now <- liftIO getCurrentTime
-        let firstOfMonth = flip UTCTime 0 . (\(y, m, _d) -> Time.fromGregorian y m 1) . Time.toGregorian $ utctDay now
-        deployBranchPRServers
-          commit
-          [ \server ->
-              server
-                & readyAt ?~ subTime (fromDays @Int 1) firstOfMonth
-                & endedAt ?~ addTime (fromMinutes @Int 1) firstOfMonth
-          ]
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
-
-  describe "checkDeployPlan" $ inM $ beforeM_ truncateDBM $ do
-    let user = "test-owner"
-        name = "test-repo"
-        branchName = "main"
-        mkPlanWithTier tier build =
-          DeployPlan
-            { toSpinDown = [],
-              toSpinUp = [ServerToSpinUp {serverTier = tier, build, domainIsPrimary = False, useDefaultAuthentik = False, sshKeys = [], sshExpose = False, httpPorts = [], tcpPorts = []}],
-              toRedeploy = []
-            }
-        mkRepoInfo = do
-          iAuth <- getInstallation $ Github.Data.Id 42
-          pure $ RepoInfo iAuth (GhToken "test-token") user name
-
-    it "allows larger servers with individual-v1 plan" $ do
-      void
-        $ DB.pgExec
-          [pgSQL|
-            INSERT INTO products
-              (name, hosting, ci_minutes, larger_servers)
-              VALUES ('test-individual', 10, 200000, true)
-              ON CONFLICT DO NOTHING
-          |]
-      void
-        $ DB.pgExec
-          [pgSQL|
-            INSERT INTO repo_owner_has_product
-              (repo_owner, product)
-              VALUES (${user}, 'test-individual')
-          |]
-      setExtraUsageLimits user (emptyUsageLimits & #hostingSpend .~ usd 100)
-      build <- testBuild $ \b ->
-        b
-          & repoUser .~ user
-          & repoName .~ name
-          & branch ?~ branchName
-          & status ?~ Success
-          & packageType .~ TypeNixosConfiguration
-          & uploadedToCache ?~ True
-      repoInfo <- mkRepoInfo
-      result <- try $ checkDeployPlan repoInfo (BranchDeployment branchName) (mkPlanWithTier I4x8 build)
-      liftIO $ result `shouldBe` Right ()
-
-    it "rejects larger servers with free-v1 plan" $ do
-      void
-        $ DB.pgExec
-          [pgSQL|
-            INSERT INTO products
-              (name, hosting, ci_minutes, larger_servers)
-              VALUES ('test-free', 10, 200000, false)
-              ON CONFLICT DO NOTHING
-          |]
-      void
-        $ DB.pgExec
-          [pgSQL|
-            INSERT INTO repo_owner_has_product
-              (repo_owner, product)
-              VALUES (${user}, 'test-free')
-          |]
-      setExtraUsageLimits user (emptyUsageLimits & #hostingSpend .~ usd 100)
-      build <- testBuild $ \b ->
-        b
-          & repoUser .~ user
-          & repoName .~ name
-          & branch ?~ branchName
-          & status ?~ Success
-          & packageType .~ TypeNixosConfiguration
-          & uploadedToCache ?~ True
-      repoInfo <- mkRepoInfo
-      result <- try $ checkDeployPlan repoInfo (BranchDeployment branchName) (mkPlanWithTier I4x8 build)
-      liftIO $ first err result `shouldBe` Left (EntitlementError "Only server tier `i2x4` supported.")
 
 -- * Helpers
 
@@ -1047,7 +790,7 @@ withContext event action = do
           ON CONFLICT DO NOTHING
       |]
   iAuth <- getInstallation $ Github.Data.Id 42
-  let repoInfo = RepoInfo iAuth (GhToken "test-token") owner name
+  let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") owner name
   withPrivateNixXdgCache $ action repoInfo branch
 
 doABuild :: Text -> CheckSuiteEvent -> RepoInfo -> M CommitInfo
@@ -1102,7 +845,7 @@ getAllDbServers = do
 
 assertNotExists :: (HasCallStack) => ServerInfo -> M ()
 assertNotExists serverInfo = liftIO $ do
-  let HetznerState st = hetznerState
+  let st = _getProvisionerState provisionerMockState
   let provisionerId = serverInfo ^. provisionedServerId
   readMVar st >>= \m -> case Map.lookup provisionerId m of
     Nothing -> pure ()
@@ -1112,7 +855,7 @@ assertNotExists serverInfo = liftIO $ do
 
 shouldHaveState :: (HasCallStack) => ServerInfo -> Text -> M ()
 shouldHaveState serverInfo expectedState = liftIO $ do
-  let HetznerState st = hetznerState
+  let st = _getProvisionerState provisionerMockState
   let provisionerId = serverInfo ^. provisionedServerId
   readMVar st >>= \m -> case Map.lookup provisionerId m of
     Nothing ->
@@ -1532,7 +1275,7 @@ deployNewServerFor user name branchName commit machineNames = do
   writeMultiConfig branchName $ fmap fst machineNames
   void $ createBuildsFor user name branchName commit machineNames
   iAuth <- getInstallation $ Github.Data.Id 42
-  let repoInfo = RepoInfo iAuth (GhToken "test-token") user name
+  let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") user name
   let commitInfo = CommitInfo (getGhRepoOwner user) (RepoIsPublic True) repoInfo (Just branchName) Nothing commit
   withPrivateNixXdgCache
     $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branchName)
@@ -1563,21 +1306,3 @@ mkCommitInfo commitHash =
     & reqUser .~ "test-owner"
     & repoInfo . ghRepoOwner .~ "test-owner"
     & repoInfo . ghRepoName .~ "test-repo"
-
-deployBranchPRServers :: CommitHash -> [ServerInfo -> ServerInfo] -> M ()
-deployBranchPRServers commit servers = do
-  build <- testBuild $ \build ->
-    build
-      & repoUser .~ "test-owner"
-      & fromPrEvent (mkPrEvent commit)
-      & package .~ "test-nix-config"
-      & uploadedToCache ?~ True
-
-  forM_ servers $ \f -> do
-    addTestServer $ \server ->
-      server
-        & configurationBuildId .~ (build ^. id)
-        & pullRequest ?~ 1
-        & f
-
-  Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve

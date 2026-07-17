@@ -35,7 +35,8 @@ spec = do
                   (user ^. githubLogin)
                   (RepoIsPublic True)
                   ( RepoInfo
-                      undefined
+                      ForgeGithub
+                      Nothing
                       undefined
                       (GhRepoOwner $ GhLogin "foo")
                       (GhRepoName "bar")
@@ -73,8 +74,15 @@ spec = do
           (hostname, last_heartbeat)
           VALUES ('test', NOW())
           |]
-        void $ DB.setStripeCustomerId "conflict" (CustomerId "conflict")
-        void $ DB.setStripeCustomerId "conflict" (CustomerId "conflict")
+        -- Second insert violates the heartbeat primary key (hostname), which
+        -- raises a PGError and must roll back the whole transaction.
+        void
+          $ DB.pgQuery
+            [pgSQL|
+        INSERT INTO heartbeat
+          (hostname, last_heartbeat)
+          VALUES ('test', NOW())
+          |]
       hb <- DB.getRecentHeartbeats
       liftIO $ hb `shouldBe` []
 

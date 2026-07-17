@@ -779,6 +779,7 @@ test-suite spec
       Garnix.TestHelpers.GithubInterface.Internal
       Garnix.TestHelpers.Monad
       Garnix.TestHelpers.NixosVmScripts
+      Garnix.TestHelpers.ProvisionerMock
       Garnix.TestHelpers.Reporter
       Garnix.TestHelpers.ServerPool
       Garnix.TestHelpers.WithServer
