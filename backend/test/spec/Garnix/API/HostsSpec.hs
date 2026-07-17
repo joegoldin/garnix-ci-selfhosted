@@ -56,7 +56,8 @@ spec = do
                 commit: "baz",
                 configuration_build_id: #{serverInfo ^. configurationBuildId},
                 created_at: #{serverInfo ^. createdAt},
-                deploy_logs: ""
+                deploy_logs: "",
+                url: "https://package.branch.repo.dev-user.garnix.me"
               }
             ]
           |]
@@ -81,7 +82,8 @@ spec = do
                 commit: "baz",
                 configuration_build_id: #{serverInfo ^. configurationBuildId},
                 created_at: #{serverInfo ^. createdAt},
-                deploy_logs: ""
+                deploy_logs: "",
+                url: "https://package.branch.repo.dev-user.garnix.me"
               }
             ]
           |]
@@ -107,7 +109,8 @@ spec = do
                 commit: "baz",
                 configuration_build_id: #{serverInfo ^. configurationBuildId},
                 created_at: #{serverInfo ^. createdAt},
-                deploy_logs: ""
+                deploy_logs: "",
+                url: "https://package.branch.repo.dev-user.garnix.me"
               }
             ]
           |]
@@ -154,7 +157,8 @@ spec = do
                 commit: "baz",
                 configuration_build_id: #{serverInfo ^. configurationBuildId},
                 created_at: #{serverInfo ^. createdAt},
-                deploy_logs: ""
+                deploy_logs: "",
+                url: "https://package.branch.repo.user-isnt-admin-in-this-org.garnix.me"
               }
             ]
           |]
@@ -188,7 +192,8 @@ spec = do
                 commit: "baz",
                 configuration_build_id: #{serverInfo ^. configurationBuildId},
                 created_at: #{serverInfo ^. createdAt},
-                deploy_logs: ""
+                deploy_logs: "",
+                url: "https://package.pull-42.repo.dev-user.garnix.me"
               }
             ]
           |]
