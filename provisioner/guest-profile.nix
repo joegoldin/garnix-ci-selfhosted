@@ -77,6 +77,9 @@
       openssh.authorizedKeys.keys = [ config.garnix.guest.sshPublicKey ];
     };
     security.sudo.wheelNeedsPassword = false;
+    # Enable flakes + the new nix CLI so `nix build`/`nix run`/`nix shell` and
+    # flake-based tooling work when you SSH into a deployed guest.
+    nix.settings.experimental-features = [ "nix-command" "flakes" ];
     # Guests live on a host-only bridge; Traefik fronts them.
     networking.firewall.enable = false;
     system.stateVersion = "25.11";
