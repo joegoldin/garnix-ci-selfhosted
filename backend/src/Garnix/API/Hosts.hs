@@ -132,7 +132,7 @@ getHostsForTraefik :: M HostList
 getHostsForTraefik = do
   baseUrl <- view #baseUrl
   domain <- view #hostingDomain
-  extraHttpPorts <- map (\(sid, blob) -> (sid, parseHttpPorts blob)) <$> DB.getServerExposures
+  extraHttpPorts <- map (second parseHttpPorts) <$> DB.getServerExposures
   hosts <-
     DB.getAllRunningHosts
       <&> filter
@@ -212,7 +212,7 @@ data OnDemandResolverDomainNames = OnDemandResolverDomainNames
 getDomainsForOnDemandResolver :: M OnDemandResolverDomainNames
 getDomainsForOnDemandResolver = do
   domain <- view #hostingDomain
-  extraHttpPorts <- map (\(sid, blob) -> (sid, parseHttpPorts blob)) <$> DB.getServerExposures
+  extraHttpPorts <- map (second parseHttpPorts) <$> DB.getServerExposures
   runningHosts <- DB.getAllRunningHosts
   let portsFor h = fromMaybe [] (lookup (_hostServerId h) extraHttpPorts)
   pure

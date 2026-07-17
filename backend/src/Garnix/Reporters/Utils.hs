@@ -33,7 +33,7 @@ withRunReporter report reportType action = do
       pure
         runReporter'
           { reportLogs = \logLine -> do
-              isFirst <- liftIO $ atomicModifyIORef' pendingRef (\p -> (False, p))
+              isFirst <- liftIO $ atomicModifyIORef' pendingRef (False,)
               when isFirst $ DB.markRunRunning (_runId run)
               reportLogs runReporter' logLine
           }

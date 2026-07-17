@@ -57,6 +57,9 @@ import System.Environment (getEnv)
 import System.Systemd.Daemon (notifyReady)
 import Text.Read (readMaybe)
 import WithCli (HasArguments, withCli)
+-- 'id' from the (lens-heavy) Garnix.Prelude is the Category identity, not the
+-- function identity; qualify to get the plain @Settings -> Settings@ one below.
+import Prelude qualified
 
 run :: IO ()
 run = withCli runWith
@@ -443,7 +446,7 @@ runWith opts = do
               -- so bind the API to loopback rather than 0.0.0.0 — otherwise a
               -- guest on the hosting bridge (or anything that can reach the
               -- host) could hit the API directly. Upstream keeps 0.0.0.0.
-              & (if env ^. #selfHostMode then Warp.setHost "127.0.0.1" else \s -> s)
+              & (if env ^. #selfHostMode then Warp.setHost "127.0.0.1" else Prelude.id)
               & Warp.setBeforeMainLoop
                 ( do
                     hPutStrLn stderr $ "Listening on port " <> show (port opts)
