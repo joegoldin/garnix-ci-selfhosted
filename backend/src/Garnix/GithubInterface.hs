@@ -4,6 +4,7 @@ module Garnix.GithubInterface
     -- exported for testing
     _retryWhen,
     _retryGithubRequest,
+    scopedActionTokenRequestBody,
   )
 where
 
@@ -46,20 +47,7 @@ realGithubInterface =
       _githubInterfaceGetInstallations = getInstallations,
       _githubInterfaceGetGarnixInstallationId = \(GhRepoOwner (GhLogin owner)) (GhRepoName repoName) -> do
         appAuth <- view #githubAppAuth
-        currentTime <- utcTimeToPOSIXSeconds <$> liftIO getCurrentTime
-        let expireTime = currentTime + (550 :: NominalDiffTime)
-        let claims =
-              JWT.JWTClaimsSet
-                { JWT.iat = JWT.numericDate currentTime,
-                  JWT.exp = JWT.numericDate expireTime,
-                  JWT.iss = JWT.stringOrURI . show . GH.untagId . GHA.aaAppId $ appAuth,
-                  JWT.sub = Nothing,
-                  JWT.nbf = Nothing,
-                  JWT.aud = Nothing,
-                  JWT.jti = Nothing,
-                  JWT.unregisteredClaims = mempty
-                }
-        let jwt = JWT.encodeSigned (JWT.EncodeRSAPrivateKey $ GHA.aaPrivateKey appAuth) mempty claims
+        jwt <- mkAppJwt appAuth
         let url =
               "https://api.github.com/repos"
                 </> cs owner
@@ -84,6 +72,42 @@ realGithubInterface =
           >>= \case
             (GH.OAuth v) -> pure $ GhToken $ cs v
             _ -> throw $ OtherError "getAccessToken: unexpected auth token type",
+      -- Mint a *scoped* installation access token by signing an App JWT and
+      -- POSTing a scoping body to the installation's access_tokens endpoint.
+      -- (github-app's 'GHA.obtainAccessToken' only produces a full-access,
+      -- 1-hour installation token — it exposes no way to scope permissions or
+      -- repositories — so we make the request ourselves.)
+      _githubInterfaceMintScopedActionToken = \owner repo scope -> do
+        appAuth <- view #githubAppAuth
+        jwt <- mkAppJwt appAuth
+        installationId <-
+          getGarnixInstallationId owner repo >>= \case
+            Nothing -> throw $ GarnixAppUnauthorized owner repo
+            Just i -> pure i
+        let url =
+              "https://api.github.com/app/installations"
+                </> cs (show installationId :: Text)
+                </> "access_tokens"
+            body = scopedActionTokenRequestBody repo scope
+        response <-
+          retryWreq $ withWreqOptions $ \options ->
+            Wreq.postWith
+              ( options
+                  & Wreq.auth
+                  ?~ Wreq.oauth2Bearer (cs jwt)
+                  & Wreq.header "Accept"
+                  .~ ["application/vnd.github+json"]
+                  & Wreq.checkResponse
+                  ?~ \_ _ -> pure ()
+              )
+              url
+              body
+        handleGithubWreqErrors "_githubInterfaceMintScopedActionToken" response >>= \case
+          Nothing -> throw $ OtherError "mintScopedActionToken: GitHub declined to mint a scoped token"
+          Just respBody ->
+            case respBody ^? key "token" . _String of
+              Just tok -> pure $ GhToken tok
+              Nothing -> throw $ OtherError "mintScopedActionToken: no token in GitHub response",
       _githubInterfaceGetDefaultBranch = \miAuth owner repo ->
         case miAuth of
           Nothing -> do
@@ -329,6 +353,56 @@ getInstalledOrgs (GhToken tok) = do
   when (length memberships > 99) $ do
     throw . OtherError $ "too many installations - pagination not implemented yet"
   pure memberships
+
+-- | Sign a short-lived (≤10 min) GitHub App JWT from the App's credentials.
+-- Used to authenticate App-level endpoints (looking up an installation id,
+-- minting installation access tokens).
+mkAppJwt :: GHA.AppAuth -> M Text
+mkAppJwt appAuth = do
+  currentTime <- utcTimeToPOSIXSeconds <$> liftIO getCurrentTime
+  let expireTime = currentTime + (550 :: NominalDiffTime)
+  let claims =
+        JWT.JWTClaimsSet
+          { JWT.iat = JWT.numericDate currentTime,
+            JWT.exp = JWT.numericDate expireTime,
+            JWT.iss = JWT.stringOrURI . show . GH.untagId . GHA.aaAppId $ appAuth,
+            JWT.sub = Nothing,
+            JWT.nbf = Nothing,
+            JWT.aud = Nothing,
+            JWT.jti = Nothing,
+            JWT.unregisteredClaims = mempty
+          }
+  pure $ JWT.encodeSigned (JWT.EncodeRSAPrivateKey $ GHA.aaPrivateKey appAuth) mempty claims
+
+-- | The JSON body for @POST /app/installations/{id}/access_tokens@ that scopes
+-- the minted installation access token per 'GithubTokenScope':
+--
+--   * 'GithubTokenScopeDescoped' → @{ "permissions": {} }@ (no access; only
+--     lifts the anonymous rate limit).
+--   * 'GithubTokenScopeContents' → @{ "repositories": [...], "permissions":
+--     { "contents": "read"|"write" } }@ scoped to the given repositories (the
+--     current repo, or an explicit list). @GithubTokenThisRepo@ + read mirrors
+--     GitHub Actions' GITHUB_TOKEN.
+--
+-- Exported for testing.
+scopedActionTokenRequestBody :: GhRepoName -> GithubTokenScope -> Aeson.Value
+scopedActionTokenRequestBody (GhRepoName thisRepo) = \case
+  GithubTokenScopeDescoped ->
+    Aeson.object ["permissions" Aeson..= Aeson.object []]
+  GithubTokenScopeContents repos permission ->
+    Aeson.object
+      [ "repositories" Aeson..= repoList repos,
+        "permissions" Aeson..= Aeson.object ["contents" Aeson..= permissionText permission]
+      ]
+  where
+    repoList :: GithubTokenRepositories -> [Text]
+    repoList = \case
+      GithubTokenThisRepo -> [thisRepo]
+      GithubTokenNamedRepos repos -> repos
+    permissionText :: GithubTokenPermission -> Text
+    permissionText = \case
+      GithubTokenRead -> "read"
+      GithubTokenWrite -> "write"
 
 -- * Making Github requests
 

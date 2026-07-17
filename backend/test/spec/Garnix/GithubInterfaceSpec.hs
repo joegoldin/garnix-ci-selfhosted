@@ -1,7 +1,9 @@
 module Garnix.GithubInterfaceSpec where
 
+import Data.Aeson qualified as Aeson
+import Data.ByteString (ByteString)
 import Data.IORef.Lifted (modifyIORef, newIORef, readIORef)
-import Garnix.GithubInterface (_retryGithubRequest, _retryWhen)
+import Garnix.GithubInterface (_retryGithubRequest, _retryWhen, scopedActionTokenRequestBody)
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.TestHelpers.Monad
@@ -11,7 +13,28 @@ import Network.HTTP.Client (HttpException (..), HttpExceptionContent (..), parse
 import Test.Hspec
 
 spec :: Spec
-spec = inM $ aroundM_ suppressLogsWhenPassing $ do
+spec = do
+  describe "scopedActionTokenRequestBody" $ do
+    it "descoped mode asks for a token with no permissions" $
+      scopedActionTokenRequestBody "my-repo" GithubTokenScopeDescoped
+        `shouldBe` decodeJson "{ \"permissions\": {} }"
+
+    it "this-repo read scopes the token to this repo with contents:read" $
+      scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents GithubTokenThisRepo GithubTokenRead)
+        `shouldBe` decodeJson "{ \"repositories\": [\"my-repo\"], \"permissions\": { \"contents\": \"read\" } }"
+
+    it "this-repo write scopes the token to this repo with contents:write" $
+      scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents GithubTokenThisRepo GithubTokenWrite)
+        `shouldBe` decodeJson "{ \"repositories\": [\"my-repo\"], \"permissions\": { \"contents\": \"write\" } }"
+
+    it "named repos scope the token to exactly those repos" $
+      scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenRead)
+        `shouldBe` decodeJson "{ \"repositories\": [\"a\", \"b\"], \"permissions\": { \"contents\": \"read\" } }"
+
+  retrySpec
+
+retrySpec :: Spec
+retrySpec = inM $ aroundM_ suppressLogsWhenPassing $ do
   describe "_retryWhen" $ do
     it "runs the given action" $ do
       counter <- newIORef (0 :: Int)
@@ -52,3 +75,8 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ do
           else pure $ Right ()
       result `shouldBeM` ()
       readIORef counter `shouldReturnM` 2
+
+decodeJson :: ByteString -> Aeson.Value
+decodeJson =
+  fromMaybe (error "scopedActionTokenRequestBody test: invalid JSON literal")
+    . Aeson.decodeStrict

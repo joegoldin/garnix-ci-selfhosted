@@ -433,6 +433,51 @@ slirp4netns (NAT, no host loopback), with a read-only `/nix` and a fresh
 action key (`GARNIX_ACTION_PRIVATE_KEY_FILE`) are available to the command; add
 `withRepoContents: true` to bind the checked-out repo at `/tmp/base`.
 
+### Ephemeral GitHub token for actions (`githubToken`)
+
+Fetch-heavy actions that resolve `github:` flake inputs (e.g.
+`github:NixOS/nixpkgs`) can hit GitHub's **60 requests/hour anonymous** rate
+limit. Opt an action into a short-lived, scoped **GitHub App installation
+access token** — minted per run and expiring in ~1 hour — with the per-action
+`githubToken` flag (default off). garnix hands the token to the action as **both
+a `GITHUB_TOKEN` environment variable and nix `access-tokens = github.com=…`**
+(via `NIX_CONFIG`), so both `gh`/`curl`-style calls and nix's own `github:`
+fetches authenticate — just like GitHub Actions' own `GITHUB_TOKEN`.
+
+```yaml
+actions:
+  - run: my-action
+    on: push
+    githubToken: descoped   # none (default) | descoped | repo | repo-write
+```
+
+`githubToken` accepts a **string**, a **list of repo names**, or an **object**:
+
+| Value | What garnix mints | Use it for |
+| --- | --- | --- |
+| `none` | Nothing (default). No token is set. | Actions that don't touch GitHub. |
+| `descoped` | A token with **no permissions** (`permissions: {}`). It grants no repo access — it only authenticates the requester, lifting the rate limit to **5000/hr** for public data. | Fetching **public** `github:` inputs (nixpkgs, etc.). |
+| `repo` | A token **scoped to this repo** with `contents: read`, like GitHub Actions' `GITHUB_TOKEN`. | Actions that read the current repo's contents via the GitHub API. |
+| `repo-write` | This repo with `contents: write` (shorthand). | Actions that push to the current repo. |
+| `[repo-a, repo-b]` | `contents: read` **scoped to exactly those repos** (short-names). | Actions that fetch/read several repos in the same org. |
+| `{ repositories: [...], permission: read\|write }` | Full control. Both fields optional — `repositories` defaults to this repo, `permission` to `read`. | Anything the shorthands don't cover (e.g. write access to a list of repos). |
+
+Listed repositories must all belong to the **same GitHub App installation**
+(the org/user garnix is installed on); GitHub rejects the mint otherwise.
+
+```yaml
+# Examples
+githubToken: [nixpkgs, my-lib]              # read those two repos
+githubToken:
+  repositories: [deploy-target]
+  permission: write                          # write access to deploy-target
+```
+
+**GitHub-only.** On other forges (e.g. Gitea, which has no GitHub App
+installation) `githubToken` is a no-op: nothing is minted and no token is set.
+The token value is redacted from logs (`ghs_…` tokens are stripped, the same way
+the checkout token is).
+
 ## Artifacts
 
 `garnix.yaml` `artifacts:` publishes the build outputs of declared flake

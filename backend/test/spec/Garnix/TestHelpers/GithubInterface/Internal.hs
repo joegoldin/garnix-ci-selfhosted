@@ -143,6 +143,7 @@ mkFakeGithubInterface = do
         },
       GithubInterface
         { _githubInterfaceGetAccessToken = \_ -> pure $ notImplemented "_githubInterfaceGetAccessToken",
+          _githubInterfaceMintScopedActionToken = \_ _ _ -> pure $ GhToken "ghs_fake-scoped-action-token",
           _githubInterfaceGetDefaultBranch = \_ repoOwner repoName -> do
             repo <- lookupRepoImpl repoCollection repoOwner repoName
             pure $ repo >>= \r -> r ^. #defaultBranch,

@@ -59,6 +59,19 @@ let
         REPO_BIND=(--bind "$ACTION_REPO_DIR" /tmp/base)
       fi
 
+      # For actions that opt into a GitHub token (garnix.yaml `githubToken`), the
+      # backend passes an ephemeral, scoped GitHub App token via the GITHUB_TOKEN
+      # / NIX_CONFIG env-var prefix. bwrap inherits the environment (we don't
+      # --clearenv), but set them explicitly — guarded on non-empty — so the
+      # action still sees them if the sandbox ever starts clearing the env.
+      TOKEN_ENV=()
+      if [[ -n "''${GITHUB_TOKEN:-}" ]]; then
+        TOKEN_ENV+=(--setenv GITHUB_TOKEN "$GITHUB_TOKEN")
+      fi
+      if [[ -n "''${NIX_CONFIG:-}" ]]; then
+        TOKEN_ENV+=(--setenv NIX_CONFIG "$NIX_CONFIG")
+      fi
+
       timeout "$TIMEOUT_SECS"s \
         bwrap \
            --unshare-net \
@@ -113,6 +126,7 @@ let
            --bind "$SIGNAL" /syncfile \
            --bind "$PIDFILE" /pidfile \
            --setenv GARNIX_ACTION_PRIVATE_KEY_FILE "$TEMP_SECRET" \
+           "''${TOKEN_ENV[@]}" \
            "''${REPO_BIND[@]}" \
            /bin/sh -c "echo \$\$ > /pidfile; read -n 1 -t 30 _ <> /syncfile; $COMMAND" &
 

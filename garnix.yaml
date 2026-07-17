@@ -16,3 +16,8 @@ actions:
   - on: push
     run: backend_specs
     sandboxType: shared-resources
+    # Mint a descoped ephemeral GitHub App token so the spec suite's nixpkgs
+    # (and other public github:) flake-input fetches authenticate at 5000/hr
+    # instead of hitting GitHub's 60/hr anonymous rate limit. nixpkgs is
+    # public, so 'descoped' (no repo access, just the rate-limit lift) suffices.
+    githubToken: descoped

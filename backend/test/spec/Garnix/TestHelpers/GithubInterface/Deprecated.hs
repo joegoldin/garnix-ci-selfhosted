@@ -24,6 +24,7 @@ testGithubInterface tmp buildRef = do
         _githubInterfaceGetInstallations = const $ pure [],
         _githubInterfaceGetGarnixInstallationId = \_ _ -> pure $ Just 1,
         _githubInterfaceGetAccessToken = const $ pure (GhToken "test-token"),
+        _githubInterfaceMintScopedActionToken = \_ _ _ -> pure (GhToken "ghs_test-scoped-token"),
         _githubInterfaceGetDefaultBranch = \_ _ _ -> pure (Just $ Branch "main"),
         _githubInterfaceGetHeadCommit = \_ _ _ _ -> pure defaultCommitHash,
         _githubInterfaceGetRemote = \_ -> do

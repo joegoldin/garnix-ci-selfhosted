@@ -300,7 +300,7 @@ spec = do
                       run: free
                 |]
         (_garnixConfigActions <$> decodeConfig config)
-          `shouldBe` Right [Action "free" ActionTriggerPush FastStartup False]
+          `shouldBe` Right [Action "free" ActionTriggerPush FastStartup False GithubTokenNone]
 
       it "parses multiple actions" $ do
         let config =
@@ -317,9 +317,96 @@ spec = do
                 |]
         (_garnixConfigActions <$> decodeConfig config)
           `shouldBe` Right
-            [ Action "free" ActionTriggerPush FastStartup False,
-              Action "wild" ActionTriggerPush SharedResources True
+            [ Action "free" ActionTriggerPush FastStartup False GithubTokenNone,
+              Action "wild" ActionTriggerPush SharedResources True GithubTokenNone
             ]
+
+      it "defaults githubToken to none" $ do
+        let config =
+              cs
+                [i|
+                  actions:
+                    - on: push
+                      run: free
+                |]
+        (fmap (^. githubToken) . _garnixConfigActions <$> decodeConfig config)
+          `shouldBe` Right [GithubTokenNone]
+
+      it "parses the githubToken string modes" $ do
+        let config =
+              cs
+                [i|
+                  actions:
+                    - on: push
+                      run: none-action
+                      githubToken: none
+                    - on: push
+                      run: descoped-action
+                      githubToken: descoped
+                    - on: push
+                      run: repo-action
+                      githubToken: repo
+                    - on: push
+                      run: repo-write-action
+                      githubToken: repo-write
+                |]
+        (fmap (^. githubToken) . _garnixConfigActions <$> decodeConfig config)
+          `shouldBe` Right
+            [ GithubTokenNone,
+              GithubTokenDescoped,
+              GithubTokenContents GithubTokenThisRepo GithubTokenRead,
+              GithubTokenContents GithubTokenThisRepo GithubTokenWrite
+            ]
+
+      it "parses a githubToken list of repositories (contents:read)" $ do
+        let config =
+              cs
+                [i|
+                  actions:
+                    - on: push
+                      run: multi-repo
+                      githubToken:
+                        - nixpkgs
+                        - my-lib
+                |]
+        (fmap (^. githubToken) . _garnixConfigActions <$> decodeConfig config)
+          `shouldBe` Right [GithubTokenContents (GithubTokenNamedRepos ["nixpkgs", "my-lib"]) GithubTokenRead]
+
+      it "parses a githubToken object with explicit repositories and write permission" $ do
+        let config =
+              cs
+                [i|
+                  actions:
+                    - on: push
+                      run: writer
+                      githubToken:
+                        repositories:
+                          - my-lib
+                        permission: write
+                |]
+        (fmap (^. githubToken) . _garnixConfigActions <$> decodeConfig config)
+          `shouldBe` Right [GithubTokenContents (GithubTokenNamedRepos ["my-lib"]) GithubTokenWrite]
+
+      it "parses a githubToken object defaulting repositories to this repo" $ do
+        let config =
+              cs
+                [i|
+                  actions:
+                    - on: push
+                      run: writer
+                      githubToken:
+                        permission: write
+                |]
+        (fmap (^. githubToken) . _garnixConfigActions <$> decodeConfig config)
+          `shouldBe` Right [GithubTokenContents GithubTokenThisRepo GithubTokenWrite]
+
+      it "maps githubToken modes to token scopes" $ do
+        githubTokenModeScope GithubTokenNone `shouldBe` Nothing
+        githubTokenModeScope GithubTokenDescoped `shouldBe` Just GithubTokenScopeDescoped
+        githubTokenModeScope (GithubTokenContents GithubTokenThisRepo GithubTokenRead)
+          `shouldBe` Just (GithubTokenScopeContents GithubTokenThisRepo GithubTokenRead)
+        githubTokenModeScope (GithubTokenContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenWrite)
+          `shouldBe` Just (GithubTokenScopeContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenWrite)
 
     inM . aroundM_ suppressLogsWhenPassing . context "parsing from flake.nix" $ do
       it "uses default config when there's no yaml file and no config section in flake" $ GH.withFakeGithubInterface $ \ghState -> do

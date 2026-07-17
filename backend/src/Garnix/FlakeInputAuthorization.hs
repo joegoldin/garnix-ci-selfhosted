@@ -4,6 +4,7 @@
 
 module Garnix.FlakeInputAuthorization
   ( checkAuthorization,
+    githubAccessTokenNixConfig,
     -- exported for tests
     FlakeInput (..),
     GithubFlakeInput (..),

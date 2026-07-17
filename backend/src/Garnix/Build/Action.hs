@@ -22,6 +22,7 @@ import Garnix.Async qualified as Async
 import Garnix.Attribute
 import Garnix.DB qualified as DB
 import Garnix.Duration
+import Garnix.FlakeInputAuthorization (githubAccessTokenNixConfig)
 import Garnix.Monad
 import Garnix.Nix.StorePath (withStorePath)
 import Garnix.Nix.Types qualified as Nix
@@ -33,7 +34,7 @@ import Garnix.Request
 import Garnix.SafeUnix (safeCreatePipe)
 import Garnix.Sandbox
 import Garnix.Types
-import Garnix.YamlConfig (Action (..), ActionSandboxType (..), sandboxType)
+import Garnix.YamlConfig (Action (..), ActionSandboxType (..), githubTokenModeScope, sandboxType)
 import Garnix.YamlConfig qualified as Config
 import System.Directory qualified as IO
 import System.IO (hClose, hFlush)
@@ -42,7 +43,7 @@ getActionAppAttributes :: Config.GarnixConfig -> [(Attribute, Action)]
 getActionAppAttributes config = go <$> config ^. Config.actions
   where
     go :: Config.Action -> (Attribute, Action)
-    go a@(Config.Action package _ _ _) =
+    go a@(Config.Action package _ _ _ _) =
       ( Attribute
           { _attributePackageType = TypeApp,
             _attributeSystem = Just X8664Linux,
@@ -75,12 +76,14 @@ run flakeDir repoConfig reporter commitInfo attr actionConfig build =
     derivation <- getBuildDerivation build
     command <- evaluateAppExecPath flakeDir repoConfig build
     let name = "action " <> maybe "Unknown" cs (attr ^. packageName)
+    githubTokenVars <- actionGithubTokenEnv commitInfo actionConfig
     let environmentVars =
           Map.fromList
             [ ("GARNIX_CI", "true"),
               ("GARNIX_BRANCH", maybe "" getBranch $ build ^. branch),
               ("GARNIX_COMMIT_SHA", build ^. gitCommit . to getCommitHash)
             ]
+            <> githubTokenVars
     run <- DB.newRun name commitInfo
     withRunReporter reporter (ReportRun run) $ \runReporter -> withStorePath build "out" $ \_ -> do
       ensureAllowedSandboxType (build ^. repoUser) actionConfig
@@ -138,6 +141,34 @@ run flakeDir repoConfig reporter commitInfo attr actionConfig build =
           log Warning $ "Unexpected: could not find the app derivation: " <> err
           throw $ OtherError "Cannot run action: could not find the derivation needed to run the application. Did you make sure the 'program' is an executable path that's part of a derivation?"
         Right derivation -> pure derivation
+
+-- | When an action opts into a GitHub token (garnix.yaml @githubToken:
+-- descoped|repo@), mint a short-lived, scoped GitHub App installation access
+-- token and expose it to the action as both a @GITHUB_TOKEN@ env var and nix
+-- @access-tokens = github.com=…@ (threaded via @NIX_CONFIG@, the same setting
+-- 'NixConfig.addNixConfigEnvironment' threads for build nix invocations), so
+-- the action's @github:@ flake-input fetches authenticate instead of hitting
+-- GitHub's 60/hr anonymous rate limit.
+--
+-- GitHub-only: for non-GitHub forges (e.g. Gitea, which has no App
+-- installation) this mints nothing and returns no extra environment. The token
+-- value is never logged — it only ever reaches the action process' environment
+-- (and, should it surface in action output/logs, is redacted by
+-- 'obfuscateGithubToken', which matches @ghs_@ installation tokens).
+actionGithubTokenEnv :: CommitInfo -> Action -> M (Map.Map Text Text)
+actionGithubTokenEnv commitInfo actionConfig =
+  case (commitInfo ^. repoInfo . forge, githubTokenModeScope (actionConfig ^. githubToken)) of
+    (ForgeGithub, Just scope) -> do
+      let owner = commitInfo ^. repoInfo . ghRepoOwner
+          repo = commitInfo ^. repoInfo . ghRepoName
+      token <- mintScopedActionToken owner repo scope
+      let nixConfig = githubAccessTokenNixConfig token
+      pure
+        $ Map.fromList
+          [ ("GITHUB_TOKEN", getGhToken token),
+            ("NIX_CONFIG", cs (NixConfig.formatConfig nixConfig))
+          ]
+    _ -> pure mempty
 
 validateApplication :: Nix.AppExecPath -> M ()
 validateApplication (Nix.AppExecPath path) = do

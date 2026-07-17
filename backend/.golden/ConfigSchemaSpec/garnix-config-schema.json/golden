@@ -8,6 +8,53 @@
                     "items": {
                         "$comment": "actions",
                         "properties": {
+                            "githubToken": {
+                                "$comment": "Whether garnix mints a short-lived, scoped GitHub App token for this action, exposed as GITHUB_TOKEN and nix access-tokens so github: flake fetches authenticate (avoiding GitHub's 60/hr anonymous rate limit). GitHub-only. 'none' (default): no token. 'descoped': a token with no permissions that only lifts the anonymous rate limit (good for public inputs like nixpkgs). 'repo': a token scoped to this repo with contents:read, like GitHub Actions' GITHUB_TOKEN.",
+                                "oneOf": [
+                                    {
+                                        "const": "none"
+                                    },
+                                    {
+                                        "const": "descoped"
+                                    },
+                                    {
+                                        "const": "repo"
+                                    },
+                                    {
+                                        "const": "repo-write"
+                                    },
+                                    {
+                                        "items": {
+                                            "type": "string"
+                                        },
+                                        "type": "array"
+                                    },
+                                    {
+                                        "$comment": "githubToken",
+                                        "properties": {
+                                            "permission": {
+                                                "$comment": "The 'contents' permission granted: 'read' (default) or 'write'.",
+                                                "oneOf": [
+                                                    {
+                                                        "const": "read"
+                                                    },
+                                                    {
+                                                        "const": "write"
+                                                    }
+                                                ]
+                                            },
+                                            "repositories": {
+                                                "$comment": "Repository short-names to scope the token to. Omit (or empty) for just this repo. All must belong to the same GitHub App installation.",
+                                                "items": {
+                                                    "type": "string"
+                                                },
+                                                "type": "array"
+                                            }
+                                        },
+                                        "type": "object"
+                                    }
+                                ]
+                            },
                             "on": {
                                 "$comment": "Event that triggers this action",
                                 "const": "push"

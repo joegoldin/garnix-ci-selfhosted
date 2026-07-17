@@ -6,9 +6,12 @@ module Garnix.YamlConfig
   ( Action (..),
     ActionSandboxType (..),
     ActionTrigger (..),
+    GithubTokenMode (..),
+    githubTokenModeScope,
     sandboxType,
     trigger,
     withRepoContents,
+    githubToken,
     ArtifactSection (..),
     artifactDisplayName,
     artifacts,
@@ -403,11 +406,115 @@ data ActionTrigger = ActionTriggerPush
 instance HasCodec ActionTrigger where
   codec = stringConstCodec $ fromList [(ActionTriggerPush, "push")]
 
+-- | Whether (and how) garnix mints a short-lived, scoped GitHub App
+-- installation access token for an action, handing it to the action as both a
+-- @GITHUB_TOKEN@ env var and nix @access-tokens = github.com=…@ (so
+-- @github:@ flake-input fetches authenticate instead of hitting GitHub's
+-- 60/hr anonymous rate limit). GitHub-only; a no-op on other forges.
+--
+-- Its garnix.yaml representation is a small union:
+--
+--   * a string — @none@ (default), @descoped@, @repo@ (this repo,
+--     @contents: read@), or @repo-write@ (this repo, @contents: write@);
+--   * a list of repo short-names — scope a @contents: read@ token to exactly
+--     those repos (e.g. @githubToken: [nixpkgs, my-lib]@);
+--   * an object — @{ repositories: [...], permission: read|write }@ for full
+--     control (both fields optional; @repositories@ defaults to this repo,
+--     @permission@ defaults to @read@).
+data GithubTokenMode
+  = -- | Default. Mint nothing; the action gets no GitHub token.
+    GithubTokenNone
+  | -- | Mint a token with no permissions (@permissions: {}@). Grants no repo
+    -- access, but authenticates public-data fetches at 5000/hr instead of
+    -- 60/hr. Enough for public @github:@ inputs (e.g. nixpkgs).
+    GithubTokenDescoped
+  | -- | Mint a token scoped to some repositories with a @contents@ read/write
+    -- permission. The string @repo@ is sugar for
+    -- @GithubTokenContents GithubTokenThisRepo GithubTokenRead@.
+    GithubTokenContents GithubTokenRepositories GithubTokenPermission
+  deriving stock (Eq, Show, Generic)
+
+instance HasCodec GithubTokenPermission where
+  codec =
+    stringConstCodec
+      $ fromList [(GithubTokenRead, "read"), (GithubTokenWrite, "write")]
+
+instance HasCodec GithubTokenMode where
+  codec =
+    dimapCodec collapse expand
+      $ disjointEitherCodec stringVariant
+      $ disjointEitherCodec listVariant objectVariant
+    where
+      -- string: none | descoped | repo | repo-write
+      stringVariant :: JSONCodec GithubTokenMode
+      stringVariant =
+        stringConstCodec
+          $ fromList
+            [ (GithubTokenNone, "none"),
+              (GithubTokenDescoped, "descoped"),
+              (GithubTokenContents GithubTokenThisRepo GithubTokenRead, "repo"),
+              (GithubTokenContents GithubTokenThisRepo GithubTokenWrite, "repo-write")
+            ]
+      -- list of repo names -> contents:read scoped to those repos
+      listVariant :: JSONCodec GithubTokenMode
+      listVariant = dimapCodec fromRepoList toRepoList (codec :: JSONCodec [Text])
+        where
+          fromRepoList repos = GithubTokenContents (GithubTokenNamedRepos repos) GithubTokenRead
+          toRepoList = \case
+            GithubTokenContents (GithubTokenNamedRepos repos) _ -> repos
+            _ -> []
+      -- object: { repositories?: [...], permission?: read|write }
+      objectVariant :: JSONCodec GithubTokenMode
+      objectVariant = dimapCodec fromObj toObj $ object "githubToken" objCodec
+        where
+          objCodec =
+            (,)
+              <$> optionalFieldWithDefault
+                "repositories"
+                ([] :: [Text])
+                "Repository short-names to scope the token to. Omit (or empty) for just this repo. All must belong to the same GitHub App installation."
+              .= fst
+              <*> optionalFieldWithDefault
+                "permission"
+                GithubTokenRead
+                "The 'contents' permission granted: 'read' (default) or 'write'."
+              .= snd
+          fromObj (repos, perm) =
+            GithubTokenContents
+              (if null repos then GithubTokenThisRepo else GithubTokenNamedRepos repos)
+              perm
+          toObj = \case
+            GithubTokenContents GithubTokenThisRepo perm -> ([], perm)
+            GithubTokenContents (GithubTokenNamedRepos repos) perm -> (repos, perm)
+            _ -> ([], GithubTokenRead)
+      collapse :: Either GithubTokenMode (Either GithubTokenMode GithubTokenMode) -> GithubTokenMode
+      collapse = \case
+        Left m -> m
+        Right (Left m) -> m
+        Right (Right m) -> m
+      expand :: GithubTokenMode -> Either GithubTokenMode (Either GithubTokenMode GithubTokenMode)
+      expand = \case
+        GithubTokenNone -> Left GithubTokenNone
+        GithubTokenDescoped -> Left GithubTokenDescoped
+        m@(GithubTokenContents GithubTokenThisRepo GithubTokenRead) -> Left m
+        m@(GithubTokenContents GithubTokenThisRepo GithubTokenWrite) -> Left m
+        m@(GithubTokenContents (GithubTokenNamedRepos _) GithubTokenRead) -> Right (Left m)
+        m@(GithubTokenContents _ _) -> Right (Right m)
+
+-- | The GitHub-facing token scope for a 'GithubTokenMode', or 'Nothing' when no
+-- token should be minted ('GithubTokenNone').
+githubTokenModeScope :: GithubTokenMode -> Maybe GithubTokenScope
+githubTokenModeScope = \case
+  GithubTokenNone -> Nothing
+  GithubTokenDescoped -> Just GithubTokenScopeDescoped
+  GithubTokenContents repos perm -> Just (GithubTokenScopeContents repos perm)
+
 data Action = Action
   { _actionName :: PackageName,
     _actionTrigger :: ActionTrigger,
     _actionSandboxType :: ActionSandboxType,
-    _actionWithRepoContents :: Bool
+    _actionWithRepoContents :: Bool,
+    _actionGithubToken :: GithubTokenMode
   }
   deriving stock (Eq, Show, Generic)
 
@@ -423,6 +530,8 @@ instance HasCodec Action where
       .= _actionSandboxType
       <*> optionalFieldWithDefault "withRepoContents" False "Whether the action should run with access to the entire repo. If false (default), only the closure of the action is available."
       .= _actionWithRepoContents
+      <*> optionalFieldWithDefault "githubToken" GithubTokenNone "Whether garnix mints a short-lived, scoped GitHub App token for this action, exposed as GITHUB_TOKEN and nix access-tokens so github: flake fetches authenticate (avoiding GitHub's 60/hr anonymous rate limit). GitHub-only. 'none' (default): no token. 'descoped': a token with no permissions that only lifts the anonymous rate limit (good for public inputs like nixpkgs). 'repo': a token scoped to this repo with contents:read, like GitHub Actions' GITHUB_TOKEN."
+      .= _actionGithubToken
 
 data ArtifactSection = ArtifactSection
   { _artifactSectionPackage :: PackageName,

@@ -3,6 +3,7 @@ module Garnix.NixConfig
     fromNetRcFile,
     getNetRcFileSetting,
     addNixConfigEnvironment,
+    formatConfig,
     nixConfDefaults,
   )
 where

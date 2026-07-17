@@ -899,6 +899,38 @@ obfuscateGithubToken :: Text -> Text
 obfuscateGithubToken =
   [RE.regex|gh[pousr]_\w{15,255}|] . RE.match .~ "XXXXXXXXXXXXXXXX"
 
+-- | The @contents@ permission level granted to a scoped GitHub token.
+data GithubTokenPermission = GithubTokenRead | GithubTokenWrite
+  deriving stock (Eq, Show, Generic, Bounded, Enum)
+
+-- | Which repositories a scoped GitHub token grants access to.
+data GithubTokenRepositories
+  = -- | Just the repository the action runs in (like GitHub Actions' own
+    -- @GITHUB_TOKEN@).
+    GithubTokenThisRepo
+  | -- | An explicit list of repository short-names. They must all belong to the
+    -- same GitHub App installation (i.e. the org/user garnix is installed on);
+    -- GitHub rejects the mint otherwise.
+    GithubTokenNamedRepos [Text]
+  deriving stock (Eq, Show, Generic)
+
+-- | Scope for an ephemeral GitHub App installation access token minted for a
+-- garnix action (opt-in via the garnix.yaml action @githubToken@ field). This
+-- is the runtime, GitHub-facing counterpart of 'Garnix.YamlConfig.GithubTokenMode'
+-- (which additionally carries the "don't mint anything" case).
+--
+--   * 'GithubTokenScopeDescoped' — no permissions at all (@permissions: {}@).
+--     The token grants no access to any resource; it only authenticates the
+--     requester so public data is served at the 5000/hr authenticated rate
+--     limit instead of the 60/hr anonymous one. Enough to unblock
+--     @github:NixOS/nixpkgs@-style flake-input fetches.
+--   * 'GithubTokenScopeContents' — a token scoped to one or more repositories
+--     with a @contents@ read/write permission.
+data GithubTokenScope
+  = GithubTokenScopeDescoped
+  | GithubTokenScopeContents GithubTokenRepositories GithubTokenPermission
+  deriving stock (Eq, Show, Generic)
+
 data CommitSummary = CommitSummary
   { _commitSummaryRepoOwner :: GhRepoOwner,
     _commitSummaryRepoName :: GhRepoName,

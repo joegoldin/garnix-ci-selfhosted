@@ -384,6 +384,11 @@ data GithubInterface = GithubInterface
     _githubInterfaceGetInstallations :: (HasCallStack) => GhToken -> M [GH.Id GHA.Installation],
     _githubInterfaceGetGarnixInstallationId :: (HasCallStack) => GhRepoOwner -> GhRepoName -> M (Maybe Integer),
     _githubInterfaceGetAccessToken :: (HasCallStack) => GHA.InstallationAuth -> M GhToken,
+    -- | Mint a short-lived, scoped GitHub App installation access token for an
+    -- action (garnix.yaml @githubToken@). Unlike '_githubInterfaceGetAccessToken'
+    -- (a full-access installation token), this narrows the token's
+    -- permissions/repositories per the 'GithubTokenScope'. GitHub-only.
+    _githubInterfaceMintScopedActionToken :: (HasCallStack) => GhRepoOwner -> GhRepoName -> GithubTokenScope -> M GhToken,
     _githubInterfaceGetDefaultBranch :: (HasCallStack) => Maybe GHA.InstallationAuth -> GhRepoOwner -> GhRepoName -> M (Maybe Branch),
     _githubInterfaceGetHeadCommit :: (HasCallStack) => GhToken -> GhRepoOwner -> GhRepoName -> Branch -> M CommitHash,
     _githubInterfaceNewBuildReport :: (HasCallStack) => RepoInfo -> GhRunReport -> M GhRunId,
@@ -463,6 +468,11 @@ getAccessToken :: GHA.InstallationAuth -> M GhToken
 getAccessToken iAuth = do
   gh <- view #githubInterface
   _githubInterfaceGetAccessToken gh iAuth
+
+mintScopedActionToken :: (HasCallStack) => GhRepoOwner -> GhRepoName -> GithubTokenScope -> M GhToken
+mintScopedActionToken owner repo scope = do
+  gh <- view #githubInterface
+  _githubInterfaceMintScopedActionToken gh owner repo scope
 
 getDefaultBranch :: Maybe GHA.InstallationAuth -> GhRepoOwner -> GhRepoName -> M (Maybe Branch)
 getDefaultBranch miAuth owner repo = do
