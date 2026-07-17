@@ -40,6 +40,27 @@
                     },
                     "type": "array"
                 },
+                "artifacts": {
+                    "$comment": "Build outputs to publish as downloadable artifacts.",
+                    "items": {
+                        "$comment": "artifacts",
+                        "properties": {
+                            "name": {
+                                "$comment": "The artifact's display/URL name ([a-zA-Z0-9._-]+). Defaults to the package name.",
+                                "type": "string"
+                            },
+                            "package": {
+                                "$comment": "The flake package whose build output is published as a downloadable artifact. Automatically included in builds.",
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "package"
+                        ],
+                        "type": "object"
+                    },
+                    "type": "array"
+                },
                 "builds": {
                     "$comment": "Specifies what should be built. Everything in the `include` section, minus everything in the `exclude` section, is built.",
                     "oneOf": [

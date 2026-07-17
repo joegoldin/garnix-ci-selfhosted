@@ -265,6 +265,27 @@ spec = do
         actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 True) Nothing False False [] []]
         roundtripTest actual
 
+    context "artifacts section" $ do
+      it "parses the artifacts section" $ do
+        let config =
+              cs
+                [i|
+                  artifacts:
+                    - package: web-skills-zips
+                      name: claude-skills
+                |]
+            actual = (^. artifacts) <$> decodeConfig config
+        actual
+          `shouldBe` Right
+            [ ArtifactSection
+                { _artifactSectionPackage = "web-skills-zips",
+                  _artifactSectionName = Just "claude-skills"
+                }
+            ]
+
+      it "artifact name defaults to the package" $ do
+        artifactDisplayName (ArtifactSection "some-pkg" Nothing) `shouldBe` "some-pkg"
+
     context "actions section" $ do
       it "allows empty action sections" $ do
         let config = "actions: []"

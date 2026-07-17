@@ -9,6 +9,9 @@ module Garnix.YamlConfig
     sandboxType,
     trigger,
     withRepoContents,
+    ArtifactSection (..),
+    artifactDisplayName,
+    artifacts,
     AttributeMatcher (..),
     BuildSection (..),
     DeploySection (OnBranch, OnPullRequest),
@@ -421,6 +424,28 @@ instance HasCodec Action where
       <*> optionalFieldWithDefault "withRepoContents" False "Whether the action should run with access to the entire repo. If false (default), only the closure of the action is available."
       .= _actionWithRepoContents
 
+data ArtifactSection = ArtifactSection
+  { _artifactSectionPackage :: PackageName,
+    _artifactSectionName :: Maybe Text
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance HasCodec ArtifactSection where
+  codec =
+    object "artifacts"
+      $ ArtifactSection
+      <$> requiredField
+        "package"
+        "The flake package whose build output is published as a downloadable artifact. Automatically included in builds."
+      .= _artifactSectionPackage
+      <*> optionalField
+        "name"
+        "The artifact's display/URL name ([a-zA-Z0-9._-]+). Defaults to the package name."
+      .= _artifactSectionName
+
+artifactDisplayName :: ArtifactSection -> Text
+artifactDisplayName s = fromMaybe (getPackageName (_artifactSectionPackage s)) (_artifactSectionName s)
+
 newtype ModuleSection = ModuleSection
   { publish :: Bool
   }
@@ -444,6 +469,7 @@ data GarnixConfig = GarnixConfig
     _garnixConfigIncrementalizeBuildsSection :: IncrementalizeBuildsSection,
     _garnixConfigServerSection :: [ServerSection],
     _garnixConfigActions :: [Action],
+    _garnixConfigArtifacts :: [ArtifactSection],
     _garnixConfigModuleSection :: ModuleSection,
     _garnixConfigFodChecks :: Bool,
     _garnixConfigCancelSupersededBuilds :: Bool,
@@ -452,7 +478,7 @@ data GarnixConfig = GarnixConfig
   deriving stock (Eq, Show, Generic)
 
 instance Default GarnixConfig where
-  def = GarnixConfig [def] def [] [] def False False (FlakeDir ".")
+  def = GarnixConfig [def] def [] [] [] def False False (FlakeDir ".")
 
 instance FromJSON GarnixConfig where
   parseJSON = parseJSONViaCodec
@@ -507,6 +533,12 @@ instance HasCodec GarnixConfig where
                   .= _garnixConfigActions
               )
           <*> ( optionalFieldWithDefault
+                  "artifacts"
+                  []
+                  "Build outputs to publish as downloadable artifacts."
+                  .= _garnixConfigArtifacts
+              )
+          <*> ( optionalFieldWithDefault
                   "modules"
                   def
                   "Specifies which actions to run."
@@ -543,3 +575,4 @@ makeFields ''AttributeMatcher
 makeFields ''BuildSection
 makeFields ''ServerSection
 makeFields ''Action
+makeFields ''ArtifactSection

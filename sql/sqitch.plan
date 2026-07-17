@@ -9,3 +9,4 @@ add-runs-run-started-at 2026-07-16T08:00:00Z joegoldin <joe@joegold.in> # Runs s
 add-servers-exposed 2026-07-16T16:00:00Z joegoldin <joe@joegold.in> # servers.exposed jsonb: ssh/port DNAT exposure for deployed servers
 drop-billing-and-plans 2026-07-16T19:00:00Z joegoldin <joe@joegold.in> # Self-host only: drop product/plan/usage-limit tables + Stripe columns
 rename-hetzner-id-to-provisioner-id 2026-07-16T19:30:00Z joegoldin <joe@joegold.in> # Local-provisioner only: rename hetzner_id -> provisioner_id
+add-artifacts 2026-07-17T08:00:00Z joegoldin <joe@joegold.in> # Build artifacts: artifacts + artifact_objects tables, retention settings
