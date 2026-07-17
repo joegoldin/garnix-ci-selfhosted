@@ -190,9 +190,15 @@ in
         defaultOutput = {
           Name = "opensearch";
           Host = cfg.opensearch.fqdn;
-          Port = 443;
-          Tls = "On";
-          "Tls.verify" = if config.garnix.devMode.enable then "Off" else "On";
+          # Honor the configured endpoint: a self-host opensearch is typically
+          # plain HTTP on loopback (:9200). Hardcoding 443/TLS sent journal
+          # logs to the local reverse proxy, which alerted every handshake.
+          Port = cfg.opensearch.port;
+          Tls = if cfg.opensearch.tls then "On" else "Off";
+          "Tls.verify" =
+            if config.garnix.devMode.enable || !cfg.opensearch.tls
+            then "Off"
+            else "On";
           HTTP_User = cfg.opensearch.basicAuth.username;
           HTTP_Passwd = ''''${OPENSEARCH_PASSWORD}'';
           Logstash_Format = "On";

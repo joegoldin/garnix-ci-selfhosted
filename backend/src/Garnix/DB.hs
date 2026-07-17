@@ -1690,6 +1690,21 @@ getPreprovisionedServerCount tier = do
     [Just c] -> pure c
     _ -> throw $ OtherError "getPreprovisionedServerCount: Unexpected return type"
 
+-- | Remove pool rows that never became ready. A provisioning attempt that
+-- died between inserting its row and readiness (daemon error, backend
+-- restart) otherwise counts toward the pool forever: the loop thinks the
+-- pool is full while claims find nothing ready — deploys then time out.
+-- Provisioning normally takes well under 15 minutes.
+deleteStaleUnreadyPoolRows :: M Int64
+deleteStaleUnreadyPoolRows =
+  pgExec
+    [pgSQL|
+      DELETE FROM server_pool
+        WHERE ready_at IS NULL
+          AND created_at < now() - interval '15 minutes'
+    |]
+    <&> fromIntegral
+
 -- Claim a preprovisioned server, if there is one.
 claimServerDB :: ServerToSpinUp -> Maybe GhPullRequestId -> M (Maybe ServerInfo)
 claimServerDB serverToSpinUp pullRequest =

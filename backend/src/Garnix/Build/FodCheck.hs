@@ -51,7 +51,11 @@ withFodChecker reporter commitInfo plan action = do
         Just fodChecker -> \logLine -> reportLogs (fodChecker ^. #runReporter) $ LogLine (Just $ PackageName "FOD Summary") Nothing logLine
         Nothing -> const $ pure ()
   reportToSummary "Checking fixed output derivations..."
-  a <- action fodChecker
+  -- The FOD run must ALWAYS reach a terminal state, even when the wrapped
+  -- build/deploy flow throws (e.g. a failed deployment) — otherwise it sits
+  -- Pending forever. Collect the action's outcome, complete the run from
+  -- whatever checks did happen, then rethrow.
+  actionResult <- try (action fodChecker)
   case fodChecker of
     Nothing -> pure ()
     Just fodChecker -> do
@@ -59,7 +63,7 @@ withFodChecker reporter commitInfo plan action = do
         swapMVar (fodChecker ^. #promises) Nothing
           <&> fromMaybe (error "impossible: should still be Just")
       -- A check that THROWS (rather than returning Left) must still complete
-      -- the run — otherwise the "FOD checks" run sits Pending forever.
+      -- the run.
       results <- try (resolve =<< joinAll promises)
       errors :: Either [Text] () <- case results of
         Right rs -> pure $ mapLeft (map snd . join) (collectErrors rs)
@@ -83,7 +87,7 @@ withFodChecker reporter commitInfo plan action = do
         Left (errors :: [Text]) -> do
           reportToSummary $ show (length errors) <> " FOD checks failed."
           reportComplete (fodChecker ^. #runReporter) RunReportStatusFailure
-  pure a
+  either rethrow pure actionResult
 
 getFodChecker :: Reporter -> CommitInfo -> ProductPlan -> M (Maybe FodChecker)
 getFodChecker reporter commitInfo _plan = do

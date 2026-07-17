@@ -53,6 +53,13 @@ createServer repoInfo deployType serverToSpinUp = do
 initializeProvisioningPool :: M ThreadId
 initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ do
   NoThrow.forkForever _checkServerPoolInterval $ do
+    -- Self-heal: drop rows whose provisioning died before readiness, so they
+    -- stop counting toward the pool (a wedged row otherwise blocks refills
+    -- forever while claims time out).
+    stale <- DB.deleteStaleUnreadyPoolRows
+    when (stale > 0)
+      $ log Warning
+      $ "Removed " <> show stale <> " stale unready server-pool rows (provisioning died before readiness)."
     serverPoolConfig <- view #serverPoolConfig
     NoThrow.forConcurrently_ serverPoolConfig $ \(serverTier, idealPoolSize) -> do
       withSpan serverTier $ do
