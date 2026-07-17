@@ -161,6 +161,21 @@ in
             GARNIX_ACTION_HOST. When null, actions won't run on a self-host box.
           '';
         };
+        s3Artifacts = lib.mkOption {
+          type = lib.types.nullOr (lib.types.submodule {
+            options = {
+              publicBucket = lib.mkOption { type = lib.types.str; };
+              privateBucket = lib.mkOption { type = lib.types.str; };
+              publicBaseUrl = lib.mkOption { type = lib.types.str; };
+            };
+          });
+          default = null;
+          description = ''
+            Build-artifact buckets (garnix.yaml `artifacts:`). Key pairs are read from
+            /run/secrets/s3-artifacts-{public,private}-{access-key-id,secret-access-key}.
+            Feature is off when null.
+          '';
+        };
         provisionerSocket = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -474,6 +489,11 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.actionHost != null) [
           "GARNIX_ACTION_HOST=${config.services.garnixServer.actionHost}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.s3Artifacts != null) [
+          "S3_ARTIFACTS_PUBLIC_BUCKET=${config.services.garnixServer.s3Artifacts.publicBucket}"
+          "S3_ARTIFACTS_PRIVATE_BUCKET=${config.services.garnixServer.s3Artifacts.privateBucket}"
+          "S3_ARTIFACTS_PUBLIC_BASE_URL=${config.services.garnixServer.s3Artifacts.publicBaseUrl}"
         ]
         ++ lib.optionals (config.services.garnixServer.metricsScrapeUrl != null) [
           "GARNIX_METRICS_SCRAPE_URL=${config.services.garnixServer.metricsScrapeUrl}"

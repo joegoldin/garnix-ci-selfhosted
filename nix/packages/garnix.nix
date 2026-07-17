@@ -117,6 +117,7 @@
 , warp
 , wreq
 , yaml
+, zip-archive
 }:
 mkDerivation {
   pname = "garnix";
@@ -225,6 +226,7 @@ mkDerivation {
     warp
     wreq
     yaml
+    zip-archive
   ];
   executableHaskellDepends = [
     aeson
@@ -328,6 +330,7 @@ mkDerivation {
     warp
     wreq
     yaml
+    zip-archive
   ];
   testHaskellDepends = [
     aeson
@@ -446,6 +449,7 @@ mkDerivation {
     warp
     wreq
     yaml
+    zip-archive
   ];
   testToolDepends = [ hspec-discover ];
   homepage = "https://github.com/jkarni/garnix#readme";

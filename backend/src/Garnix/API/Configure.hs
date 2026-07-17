@@ -1,21 +1,29 @@
 -- | Self-host operator configuration exposed to the web UI's Configure page.
 --
--- Currently: the global default build/eval timeout and per-repo overrides. All
--- endpoints are gated on self-host mode plus admin (the operator), matching the
--- admin API's auth. In cloud garnix these values come from billing plans, so
--- the endpoints refuse outside self-host mode.
+-- Currently: the global default build/eval timeout and per-repo overrides,
+-- plus artifact retention (global default + per-repo overrides), per-repo
+-- artifact storage usage, and the locked-artifact-builds list. All endpoints
+-- are gated on self-host mode plus admin (the operator), matching the admin
+-- API's auth. In cloud garnix these values come from billing plans, so the
+-- endpoints refuse outside self-host mode.
 module Garnix.API.Configure
   ( ConfigureAPI (..),
     configureAPI,
     ConfigureSettingsDto (..),
     RepoTimeoutDto (..),
     SetTimeoutDto (..),
+    ArtifactRepoOverrideDto (..),
+    ArtifactUsageDto (..),
+    LockedArtifactBuildDto (..),
+    SetArtifactDefaultsDto (..),
+    SetArtifactRepoDto (..),
   )
 where
 
 import Control.Lens
 import Garnix.API.Admin (requireAdmin)
 import Garnix.DB qualified as DB
+import Garnix.DB.Artifacts qualified as Artifacts
 import Garnix.Entitlements (defaultBuildTimeoutMinutes)
 import Garnix.Monad
 import Garnix.Prelude
@@ -43,14 +51,41 @@ data ConfigureAPI route = ConfigureAPI
         :- "repo"
           :> Capture "owner" GhRepoOwner
           :> Capture "repo" GhRepoName
+          :> Delete '[JSON] NoContent,
+    _configureAPISetArtifactDefaults ::
+      route
+        :- "artifacts"
+          :> "default"
+          :> ReqBody '[JSON] SetArtifactDefaultsDto
+          :> Put '[JSON] NoContent,
+    _configureAPISetArtifactRepo ::
+      route
+        :- "artifacts"
+          :> "repo"
+          :> Capture "owner" GhRepoOwner
+          :> Capture "repo" GhRepoName
+          :> ReqBody '[JSON] SetArtifactRepoDto
+          :> Put '[JSON] NoContent,
+    _configureAPIDeleteArtifactRepo ::
+      route
+        :- "artifacts"
+          :> "repo"
+          :> Capture "owner" GhRepoOwner
+          :> Capture "repo" GhRepoName
           :> Delete '[JSON] NoContent
   }
   deriving (Generic)
 
--- | The current default timeout plus every per-repo override.
+-- | The current default timeout plus every per-repo override, and the
+-- artifact retention settings/usage/locks.
 data ConfigureSettingsDto = ConfigureSettingsDto
   { _configureSettingsDtoDefaultBuildTimeoutMinutes :: Maybe Int32,
-    _configureSettingsDtoRepoOverrides :: [RepoTimeoutDto]
+    _configureSettingsDtoRepoOverrides :: [RepoTimeoutDto],
+    _configureSettingsDtoArtifactRetentionDays :: Int32,
+    _configureSettingsDtoArtifactKeepLatest :: Bool,
+    _configureSettingsDtoArtifactRepoOverrides :: [ArtifactRepoOverrideDto],
+    _configureSettingsDtoArtifactUsage :: [ArtifactUsageDto],
+    _configureSettingsDtoLockedArtifactBuilds :: [LockedArtifactBuildDto]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -88,6 +123,86 @@ instance ToJSON SetTimeoutDto where
 instance FromJSON SetTimeoutDto where
   parseJSON = ourParseJSON
 
+-- | A repo's artifact retention override. 'Nothing' fields inherit the
+-- server-wide default.
+data ArtifactRepoOverrideDto = ArtifactRepoOverrideDto
+  { _artifactRepoOverrideDtoRepoUser :: GhRepoOwner,
+    _artifactRepoOverrideDtoRepoName :: GhRepoName,
+    _artifactRepoOverrideDtoRetentionDays :: Maybe Int32,
+    _artifactRepoOverrideDtoKeepLatest :: Maybe Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON ArtifactRepoOverrideDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON ArtifactRepoOverrideDto where
+  parseJSON = ourParseJSON
+
+-- | A repo's artifact storage usage in bytes (dedupe-aware: shared
+-- content-addressed objects count once per repo).
+data ArtifactUsageDto = ArtifactUsageDto
+  { _artifactUsageDtoRepoUser :: GhRepoOwner,
+    _artifactUsageDtoRepoName :: GhRepoName,
+    _artifactUsageDtoTotalSize :: Int64
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON ArtifactUsageDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON ArtifactUsageDto where
+  parseJSON = ourParseJSON
+
+-- | One locked artifact (per build + name): rows the reaper never deletes.
+data LockedArtifactBuildDto = LockedArtifactBuildDto
+  { _lockedArtifactBuildDtoBuildId :: BuildId,
+    _lockedArtifactBuildDtoRepoUser :: GhRepoOwner,
+    _lockedArtifactBuildDtoRepoName :: GhRepoName,
+    _lockedArtifactBuildDtoBranch :: Maybe Branch,
+    _lockedArtifactBuildDtoName :: Text,
+    _lockedArtifactBuildDtoCreatedAt :: UTCTime
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON LockedArtifactBuildDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON LockedArtifactBuildDto where
+  parseJSON = ourParseJSON
+
+-- | Body of @PUT configure\/artifacts\/default@.
+data SetArtifactDefaultsDto = SetArtifactDefaultsDto
+  { _setArtifactDefaultsDtoRetentionDays :: Int32,
+    _setArtifactDefaultsDtoKeepLatest :: Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetArtifactDefaultsDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetArtifactDefaultsDto where
+  parseJSON = ourParseJSON
+
+-- | Body of @PUT configure\/artifacts\/repo\/\<owner\>\/\<repo\>@. Absent and
+-- null fields both mean "inherit the server default".
+data SetArtifactRepoDto = SetArtifactRepoDto
+  { _setArtifactRepoDtoRetentionDays :: Maybe Int32,
+    _setArtifactRepoDtoKeepLatest :: Maybe Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetArtifactRepoDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetArtifactRepoDto where
+  parseJSON = ourParseJSON
+
 configureAPI :: AuthResult AuthJwtPayload -> ConfigureAPI (AsServerT M)
 configureAPI auth =
   ConfigureAPI
@@ -95,11 +210,23 @@ configureAPI auth =
         requireSelfHostConfig auth
         def <- DB.getDefaultBuildTimeout
         overrides <- DB.getReposWithBuildTimeout
+        (artifactRetentionDays, artifactKeepLatest) <- Artifacts.getArtifactSettings
+        artifactOverrides <- Artifacts.getArtifactRepoOverrides
+        artifactUsage <- Artifacts.getArtifactStorageUsage
+        lockedBuilds <- Artifacts.getLockedArtifactBuilds
         pure
           $ ConfigureSettingsDto
             { _configureSettingsDtoDefaultBuildTimeoutMinutes = def,
               _configureSettingsDtoRepoOverrides =
-                map (\(o, r, m) -> RepoTimeoutDto o r m) overrides
+                map (\(o, r, m) -> RepoTimeoutDto o r m) overrides,
+              _configureSettingsDtoArtifactRetentionDays = artifactRetentionDays,
+              _configureSettingsDtoArtifactKeepLatest = artifactKeepLatest,
+              _configureSettingsDtoArtifactRepoOverrides =
+                map (\(o, r, d, k) -> ArtifactRepoOverrideDto o r d k) artifactOverrides,
+              _configureSettingsDtoArtifactUsage =
+                map (\(o, r, s) -> ArtifactUsageDto o r s) artifactUsage,
+              _configureSettingsDtoLockedArtifactBuilds =
+                map toLockedArtifactBuildDto lockedBuilds
             },
       _configureAPISetDefault = \dto -> do
         requireSelfHostConfig auth
@@ -124,14 +251,45 @@ configureAPI auth =
         -- Removing the override reverts this repo to the global default (or 1h).
         globalDefault <- DB.getDefaultBuildTimeout
         DB.cancelRunningBuildsExceeding (fromMaybe defaultBuildTimeoutMinutes globalDefault) (Just (owner, repo))
+        pure NoContent,
+      _configureAPISetArtifactDefaults = \dto -> do
+        requireSelfHostConfig auth
+        Artifacts.setDefaultArtifactSettings
+          (max 0 $ _setArtifactDefaultsDtoRetentionDays dto)
+          (_setArtifactDefaultsDtoKeepLatest dto)
+        pure NoContent,
+      _configureAPISetArtifactRepo = \owner repo dto -> do
+        requireSelfHostConfig auth
+        Artifacts.setRepoArtifactSettings
+          owner
+          repo
+          (max 0 <$> _setArtifactRepoDtoRetentionDays dto)
+          (_setArtifactRepoDtoKeepLatest dto)
+        pure NoContent,
+      _configureAPIDeleteArtifactRepo = \owner repo -> do
+        requireSelfHostConfig auth
+        Artifacts.deleteRepoArtifactSettings owner repo
         pure NoContent
     }
   where
     -- Keep values within the Int16 minute range the plan timeout fields use.
     -- 0 is allowed and means "no limit"; the 1-hour default applies only when
     -- the value is cleared (Nothing), not when it is explicitly 0.
+    -- (Artifact retention days are only floored at 0: a negative retention
+    -- would make the reaper delete rows the moment they are created.)
     clamp :: Int32 -> Int32
     clamp = min 32767 . max 0
+
+toLockedArtifactBuildDto :: Artifacts.ArtifactRow -> LockedArtifactBuildDto
+toLockedArtifactBuildDto row =
+  LockedArtifactBuildDto
+    { _lockedArtifactBuildDtoBuildId = Artifacts._artifactRowBuildId row,
+      _lockedArtifactBuildDtoRepoUser = Artifacts._artifactRowRepoUser row,
+      _lockedArtifactBuildDtoRepoName = Artifacts._artifactRowRepoName row,
+      _lockedArtifactBuildDtoBranch = Artifacts._artifactRowBranch row,
+      _lockedArtifactBuildDtoName = Artifacts._artifactRowName row,
+      _lockedArtifactBuildDtoCreatedAt = Artifacts._artifactRowCreatedAt row
+    }
 
 -- | Throw 'Unauthorized' unless self-host mode is on and the caller is an admin.
 requireSelfHostConfig :: AuthResult AuthJwtPayload -> M ()

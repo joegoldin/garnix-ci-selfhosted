@@ -108,6 +108,10 @@ data Env = Env
     defaultAuthentik :: Maybe DefaultAuthentikConfig,
     sshUserHostingKeys :: [FilePath],
     s3CacheEnv :: S3CacheEnv,
+    -- | Storage backend for build artifacts (garnix.yaml @artifacts:@).
+    -- 'Nothing' when the S3_ARTIFACTS_* buckets are not configured, which
+    -- disables the feature.
+    artifactStore :: Maybe ArtifactStore,
     action :: ActionEnv,
     repoSecretsEncryptionKeyPath :: RepoSecretsEncryptionKeyPath,
     repoSecretsEncryptionPubKey :: RepoSecretsEncryptionPubKey,
@@ -174,6 +178,41 @@ envForBucket :: S3CacheEnv -> Amazonka.BucketName -> Amazonka.Env
 envForBucket s3CacheEnv bucket
   | bucket == s3CacheEnv ^. #privateBucket = s3CacheEnv ^. #amazonkaEnvPrivate
   | otherwise = s3CacheEnv ^. #amazonkaEnv
+
+-- | Which of the two artifact buckets an object lives in. Private-repo
+-- artifacts go to the private bucket and are served via presigned URLs;
+-- public-repo artifacts are directly downloadable from the public bucket.
+data ArtifactBucket = ArtifactPublic | ArtifactPrivate
+  deriving stock (Eq, Show, Generic)
+
+-- | The text form stored in the database's @bucket@ columns.
+artifactBucketText :: ArtifactBucket -> Text
+artifactBucketText = \case
+  ArtifactPublic -> "public"
+  ArtifactPrivate -> "private"
+
+artifactBucketFromText :: Text -> Maybe ArtifactBucket
+artifactBucketFromText = \case
+  "public" -> Just ArtifactPublic
+  "private" -> Just ArtifactPrivate
+  _ -> Nothing
+
+-- | Storage operations for build artifacts (garnix.yaml @artifacts:@), as a
+-- record of functions so tests can plug in an in-memory implementation. The
+-- amazonka-backed production implementation lives in "Garnix.Artifacts.Store".
+data ArtifactStore = ArtifactStore
+  { -- | @putFile bucket key path@ uploads a file from disk.
+    _artifactStorePutFile :: ArtifactBucket -> Text -> FilePath -> M (),
+    -- | @putBytes bucket key bytes@ uploads an in-memory object.
+    _artifactStorePutBytes :: ArtifactBucket -> Text -> BSL.ByteString -> M (),
+    -- | @deletePrefix bucket prefix@ deletes every object under a key prefix.
+    _artifactStoreDeletePrefix :: ArtifactBucket -> Text -> M (),
+    -- | @presignGet bucket key@ returns a short-lived (10 minutes) GET URL.
+    _artifactStorePresignGet :: ArtifactBucket -> Text -> M Text,
+    -- | @publicUrl key@ is the stable URL of a public-bucket object.
+    _artifactStorePublicUrl :: Text -> Text
+  }
+  deriving (Generic)
 
 data ActionEnv = ActionEnv
   { runnerHost :: Text,

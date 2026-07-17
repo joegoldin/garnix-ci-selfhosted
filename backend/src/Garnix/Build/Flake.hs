@@ -4,6 +4,7 @@ module Garnix.Build.Flake
 where
 
 import Control.Lens
+import Garnix.Artifacts qualified as Artifacts
 import Garnix.Attribute
 import Garnix.Build.Action qualified as Action
 import Garnix.Build.Checkout (Remote, runWithCheckout, withAuthorization)
@@ -21,7 +22,7 @@ import Garnix.Monad
 import Garnix.Monad.Async (joinAll, joinAll_, resolve, spawn)
 import Garnix.Prelude
 import Garnix.Types as Types
-import Garnix.YamlConfig (Action, ExcludeBranches (..), GarnixConfig, IncrementalizeBuildsSection (..), cancelSupersededBuilds, flakeDir, incrementalizeBuildsSection)
+import Garnix.YamlConfig (Action, ExcludeBranches (..), GarnixConfig, IncrementalizeBuildsSection (..), artifacts, cancelSupersededBuilds, flakeDir, incrementalizeBuildsSection)
 
 runBuildFlake :: (HasCallStack) => Reporter -> BuildKind -> CommitInfo -> Remote -> M ()
 runBuildFlake reporter buildKind commitInfo withCheckout = do
@@ -73,6 +74,7 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
                     initialBuild
                     actionConfig
               builds <- joinAll buildPromises >>= resolve
+              Artifacts.publishArtifacts config builds
               joinAll_ actionPromises >>= resolve
 
               let allBuildsSucceeded = all (\build -> build ^. status == Just Success) builds
@@ -111,8 +113,18 @@ setupBuilds :: Reporter -> CommitInfo -> GarnixConfig -> ProductPlan -> M [(Buil
 setupBuilds reporter commitInfo config _plan = do
   -- No per-plan package limit in this fork.
   toBuild <- getAttributesToBuild commitInfo config
-  log Informational $ "Will build the following attributes: " <> show toBuild
-  forM toBuild $ \attr -> do
+  -- garnix.yaml `artifacts:` packages are built even when the build sections
+  -- don't include them (mirroring how actions auto-include their apps).
+  let artifactAttr section =
+        Attribute
+          { _attributePackageType = TypePackage,
+            _attributeSystem = Just X8664Linux,
+            _attributePackageName = Just (section ^. package),
+            _attributeExtension = Nothing
+          }
+      withArtifacts = toBuild <> filter (`notElem` toBuild) (map artifactAttr (config ^. artifacts))
+  log Informational $ "Will build the following attributes: " <> show withArtifacts
+  forM withArtifacts $ \attr -> do
     setupBuild reporter config commitInfo attr
 
 setupActions :: Reporter -> CommitInfo -> GarnixConfig -> M [(Build, RunReporter, Action)]

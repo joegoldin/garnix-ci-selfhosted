@@ -146,6 +146,7 @@ dependencies:
   - warp
   - wreq
   - yaml
+  - zip-archive
 
 library:
   source-dirs: src

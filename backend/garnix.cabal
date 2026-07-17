@@ -31,6 +31,7 @@ library
       Garnix.API
       Garnix.API.Account
       Garnix.API.Admin
+      Garnix.API.Artifacts
       Garnix.API.Auth
       Garnix.API.Badges
       Garnix.API.Builds
@@ -51,6 +52,9 @@ library
       Garnix.API.Keys
       Garnix.API.Modules
       Garnix.API.Runs
+      Garnix.Artifacts
+      Garnix.Artifacts.Reaper
+      Garnix.Artifacts.Store
       Garnix.Async
       Garnix.Attribute
       Garnix.Build
@@ -69,6 +73,7 @@ library
       Garnix.BuildLogs.Internal
       Garnix.BuildLogs.Types
       Garnix.DB
+      Garnix.DB.Artifacts
       Garnix.DB.FeatureFlags
       Garnix.DB.FeatureFlags.Types
       Garnix.DB.ModuleValues
@@ -269,6 +274,7 @@ library
     , warp
     , wreq
     , yaml
+    , zip-archive
   default-language: Haskell2010
 
 executable convert-hashids
@@ -417,6 +423,7 @@ executable convert-hashids
     , warp
     , wreq
     , yaml
+    , zip-archive
   default-language: Haskell2010
 
 executable generate-yaml-config-docs
@@ -566,6 +573,7 @@ executable generate-yaml-config-docs
     , warp
     , wreq
     , yaml
+    , zip-archive
   default-language: Haskell2010
 
 executable server
@@ -714,6 +722,7 @@ executable server
     , warp
     , wreq
     , yaml
+    , zip-archive
   default-language: Haskell2010
 
 test-suite spec
@@ -723,12 +732,14 @@ test-suite spec
       Garnix.AccessTokenSpec
       Garnix.ActionSpec
       Garnix.API.AccountSpec
+      Garnix.API.ArtifactsSpec
       Garnix.API.AuthSpec
       Garnix.API.BadgesSpec
       Garnix.API.BuildSpec
       Garnix.API.Cache.PermissionsSpec
       Garnix.API.CommitSpec
       Garnix.API.ConfigSchemaSpec
+      Garnix.API.ConfigureSpec
       Garnix.API.DevSpec
       Garnix.API.GhWebhooksSpec
       Garnix.API.HealthSpec
@@ -736,6 +747,8 @@ test-suite spec
       Garnix.API.KeysSpec
       Garnix.API.ModulesSpec
       Garnix.API.RunsSpec
+      Garnix.Artifacts.ReaperSpec
+      Garnix.ArtifactsSpec
       Garnix.AsyncSpec
       Garnix.AttributeSpec
       Garnix.Build.CheckoutSpec
@@ -743,6 +756,7 @@ test-suite spec
       Garnix.Build.HelpersSpec
       Garnix.Build.ModuleSpec
       Garnix.BuildSpec
+      Garnix.DB.ArtifactsSpec
       Garnix.DB.FeatureFlagsSpec
       Garnix.DBSpec
       Garnix.DeploySpec
@@ -796,6 +810,7 @@ test-suite spec
       Garnix.API
       Garnix.API.Account
       Garnix.API.Admin
+      Garnix.API.Artifacts
       Garnix.API.Auth
       Garnix.API.Badges
       Garnix.API.Builds
@@ -816,6 +831,9 @@ test-suite spec
       Garnix.API.Keys
       Garnix.API.Modules
       Garnix.API.Runs
+      Garnix.Artifacts
+      Garnix.Artifacts.Reaper
+      Garnix.Artifacts.Store
       Garnix.Async
       Garnix.Attribute
       Garnix.Build
@@ -834,6 +852,7 @@ test-suite spec
       Garnix.BuildLogs.Internal
       Garnix.BuildLogs.Types
       Garnix.DB
+      Garnix.DB.Artifacts
       Garnix.DB.FeatureFlags
       Garnix.DB.FeatureFlags.Types
       Garnix.DB.ModuleValues
@@ -1050,4 +1069,5 @@ test-suite spec
     , warp
     , wreq
     , yaml
+    , zip-archive
   default-language: Haskell2010

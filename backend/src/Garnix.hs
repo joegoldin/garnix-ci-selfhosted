@@ -21,6 +21,8 @@ import Data.Text.IO qualified as T
 import Database.PostgreSQL.Typed (pgDisconnect)
 import GHC.Conc (getNumProcessors)
 import Garnix.API
+import Garnix.Artifacts.Reaper qualified as ArtifactReaper
+import Garnix.Artifacts.Store (s3ArtifactStore)
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags (withRecachedFeatureFlags)
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
@@ -140,6 +142,27 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
           $ "ssh key not found: "
           <> cs sshKey
       liftIO $ makeAbsolute sshKey
+  -- S3 connection scaffolding shared by the binary cache and the build
+  -- artifacts store: every bucket lives at the same S3-compatible provider
+  -- (S3_CACHE_HOST/S3_CACHE_REGION), only the credential pairs differ.
+  s3Region <- cs <$> getEnv "S3_CACHE_REGION"
+  s3Host <- cs <$> getEnv "S3_CACHE_HOST"
+  let mkAmazonkaEnv accessKey secretKey =
+        Amazonka.newEnv (pure . Amazonka.fromKeys accessKey secretKey)
+          <&> (#region .~ Amazonka.Region' s3Region)
+          <&> Amazonka.overrideService (Amazonka.setEndpoint True s3Host 443)
+          <&> Amazonka.overrideService (#s3AddressingStyle .~ Amazonka.S3AddressingStylePath)
+      -- Resolves an optional secret: env var -> secret file if it exists ->
+      -- 'Nothing'. B2 application keys are single-bucket, so each optional
+      -- bucket gets its own pair through this helper.
+      readOptionalSecret :: String -> FilePath -> IO (Maybe StrictByteString)
+      readOptionalSecret envVarName filePath =
+        lookupEnv envVarName >>= \case
+          Just value -> pure (Just (cs value))
+          Nothing ->
+            doesFileExist filePath >>= \case
+              True -> Just <$> BSC.readFile filePath
+              False -> pure Nothing
   s3CacheEnv <- do
     accessKeyId <-
       ( lookupEnv "S3_CACHE_ACCESS_KEY_ID"
@@ -151,28 +174,12 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
           >>= maybe (BSC.readFile "/run/secrets/s3-cache-secret-access-key") (pure . cs)
         )
         <&> Amazonka.SecretKey
-    region <- cs <$> getEnv "S3_CACHE_REGION"
-    host <- cs <$> getEnv "S3_CACHE_HOST"
-    let mkAmazonkaEnv accessKey secretKey =
-          Amazonka.newEnv (pure . Amazonka.fromKeys accessKey secretKey)
-            <&> (#region .~ Amazonka.Region' region)
-            <&> Amazonka.overrideService (Amazonka.setEndpoint True host 443)
-            <&> Amazonka.overrideService (#s3AddressingStyle .~ Amazonka.S3AddressingStylePath)
     amazonkaEnv <- mkAmazonkaEnv accessKeyId secretAccessKey
     -- Optional per-bucket credentials for the private cache bucket. Each key is
     -- resolved: env var -> secret file if it exists -> fall back to the shared
-    -- (public) pair. B2 application keys are single-bucket, so self-hosters can
-    -- supply a distinct pair for the private bucket. Absent both overrides, the
-    -- private env is the very same value as the public one, keeping upstream
-    -- single-pair deployments byte-identical (and never reading the new files).
-    let readOptionalSecret :: String -> FilePath -> IO (Maybe StrictByteString)
-        readOptionalSecret envVarName filePath =
-          lookupEnv envVarName >>= \case
-            Just value -> pure (Just (cs value))
-            Nothing ->
-              doesFileExist filePath >>= \case
-                True -> Just <$> BSC.readFile filePath
-                False -> pure Nothing
+    -- (public) pair. Absent both overrides, the private env is the very same
+    -- value as the public one, keeping upstream single-pair deployments
+    -- byte-identical (and never reading the new files).
     privateAccessKeyId <-
       readOptionalSecret "S3_CACHE_PRIVATE_ACCESS_KEY_ID" "/run/secrets/s3-cache-private-access-key-id"
     privateSecretAccessKey <-
@@ -213,6 +220,31 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
           maxUploadSize,
           isInNixosCacheMemoTable
         }
+  -- Build artifacts (optional feature): both buckets must be configured, each
+  -- with its own credential pair (B2 application keys are single-bucket).
+  artifactsPublicBucket <- lookupEnv "S3_ARTIFACTS_PUBLIC_BUCKET"
+  artifactsPrivateBucket <- lookupEnv "S3_ARTIFACTS_PRIVATE_BUCKET"
+  artifactsPublicBaseUrl <- lookupEnv "S3_ARTIFACTS_PUBLIC_BASE_URL"
+  artifactStore <- case (artifactsPublicBucket, artifactsPrivateBucket, artifactsPublicBaseUrl) of
+    (Just pub, Just priv, Just baseUrl) -> do
+      pubKeyId <- readOptionalSecret "S3_ARTIFACTS_PUBLIC_ACCESS_KEY_ID" "/run/secrets/s3-artifacts-public-access-key-id"
+      pubKey <- readOptionalSecret "S3_ARTIFACTS_PUBLIC_SECRET_ACCESS_KEY" "/run/secrets/s3-artifacts-public-secret-access-key"
+      privKeyId <- readOptionalSecret "S3_ARTIFACTS_PRIVATE_ACCESS_KEY_ID" "/run/secrets/s3-artifacts-private-access-key-id"
+      privKey <- readOptionalSecret "S3_ARTIFACTS_PRIVATE_SECRET_ACCESS_KEY" "/run/secrets/s3-artifacts-private-secret-access-key"
+      case (pubKeyId, pubKey, privKeyId, privKey) of
+        (Just a, Just b, Just c, Just d) -> do
+          pubEnv <- mkAmazonkaEnv (Amazonka.AccessKey a) (Amazonka.SecretKey b)
+          privEnv <- mkAmazonkaEnv (Amazonka.AccessKey c) (Amazonka.SecretKey d)
+          pure
+            $ Just
+            $ s3ArtifactStore
+              pubEnv
+              privEnv
+              (Amazonka.BucketName (cs pub))
+              (Amazonka.BucketName (cs priv))
+              (cs baseUrl)
+        _ -> error "S3_ARTIFACTS_* buckets are set but their key pairs are missing."
+    _ -> pure Nothing
   actionServerUrl <- fromMaybe "action-runner2.garnix.io" <$> lookupEnv "GARNIX_ACTION_HOST"
   actionRunnerSshKey <- lookupEnv "GARNIX_ACTION_RUNNER_SSH_KEY" >>= maybe (pure "/run/secrets/garnix_action_runner_ssh") makeAbsolute
   curDir <- getCurrentDirectory
@@ -376,6 +408,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               opensearchPassword = opensearchPass,
               sshUserHostingKeys = sshKeys,
               s3CacheEnv,
+              artifactStore,
               action =
                 ActionEnv
                   { runnerHost = cs actionServerUrl,
@@ -439,6 +472,9 @@ runWith opts = do
       if Garnix.provisionServerPool opts
         then void $ runM env ServerPool.initializeProvisioningPool
         else hPutStrLn stderr "Not provisioning server pool"
+      when (isJust (env ^. #artifactStore))
+        $ void
+        $ runM env ArtifactReaper.initializeArtifactReaper
       let settings =
             Warp.defaultSettings
               & Warp.setPort (port opts)
