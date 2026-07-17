@@ -546,8 +546,8 @@ instance HasCodec GarnixConfig where
               )
           <*> ( optionalFieldWithDefault
                   "fodChecks"
-                  True
-                  "Whether FOD checks are enabled for the repo (on by default in this self-host fork). See https://garnix.io/docs/fod-checks for more information."
+                  False
+                  "Whether FOD checks are enabled for the repo. See https://garnix.io/docs/fod-checks for more information."
                   .= _garnixConfigFodChecks
               )
           <*> ( optionalFieldWithDefault

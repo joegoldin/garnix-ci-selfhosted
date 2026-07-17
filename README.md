@@ -348,10 +348,12 @@ builds:
     - "nixosConfigurations.*"
 ```
 
-**Fixed-output derivation (FOD) checks** are **on by default** in this fork
-(`fodChecks: true`) — garnix rebuilds FODs (fetchers, `vendorHash`/`cargoHash`
-closures) ignoring the cache so a stale or wrong hash surfaces in CI. Set
-`fodChecks: false` in `garnix.yaml` to opt out.
+**Fixed-output derivation (FOD) checks** (opt-in: `fodChecks: true` in
+`garnix.yaml`) — garnix rebuilds FODs (fetchers, `vendorHash`/`cargoHash`
+closures) ignoring the cache so a lying hash surfaces in CI. Only a **hash
+mismatch** fails the run; FODs whose source can't be re-fetched (dead mirrors,
+CDNs blocking automation user-agents) are reported as skipped-with-warning,
+since a failed fetch proves nothing about the hash.
 
 **Only the latest commit matters?** Set `cancelSupersededBuilds: true` in
 `garnix.yaml` and a new push to a branch cancels the still-queued/running

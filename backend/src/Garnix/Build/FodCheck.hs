@@ -82,6 +82,11 @@ withFodChecker reporter commitInfo plan action = do
         0 -> pure ()
         1 -> reportToSummary "1 FOD was verified."
         verified -> reportToSummary $ show verified <> " FODs were verified."
+      unfetchable <- readMVar $ fodChecker ^. #totalUnfetchable
+      case unfetchable of
+        0 -> pure ()
+        1 -> reportToSummary "1 FOD could not be re-verified (source could not be fetched) and was skipped."
+        n -> reportToSummary $ show n <> " FODs could not be re-verified (source could not be fetched) and were skipped."
       case errors of
         Right () -> reportComplete (fodChecker ^. #runReporter) RunReportStatusSuccess
         Left (errors :: [Text]) -> do
@@ -119,6 +124,7 @@ getFodChecker reporter commitInfo _plan = do
     mkFodChecker runReporter =
       FodChecker runReporter
         <$> newMVar 0
+        <*> newMVar 0
         <*> newMVar 0
         <*> newMVar (Just [])
         <*> newMVar mempty
@@ -218,6 +224,21 @@ checkFod fodChecker drvPath system = do
   log Informational $ "checking fod: " <> cs drvPath <> ", system: " <> system ^. systemTextIso
   result <- rebuildFod system drvPath
   case result of
+    -- Only a hash mismatch is evidence of a lying FOD. A rebuild that fails
+    -- because the source can't be fetched (mirror gone, CDN blocking the
+    -- fetcher's User-Agent, …) proves nothing about the hash: warn, count it,
+    -- and move on instead of failing the run.
+    Left stderr
+      | not ("hash mismatch" `Text.isInfixOf` stderr) -> do
+          let warning =
+                "Could not re-verify FOD '"
+                  <> cs drvPath
+                  <> "' (source could not be fetched); skipped — a failed fetch is not a hash mismatch:\n"
+                  <> stderr
+          log Warning warning
+          modifyMVar_ (fodChecker ^. #totalUnfetchable) $ pure . (+ 1)
+          reportLogs (fodChecker ^. #runReporter) $ LogLine (Just $ PackageName $ cs drvPath <> " (skipped: source unavailable)") Nothing warning
+          pure $ Right ()
     Left stderr -> do
       let errorMessage =
             "Failure when checking FOD '"

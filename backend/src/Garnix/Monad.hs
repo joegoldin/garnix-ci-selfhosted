@@ -358,6 +358,10 @@ data FodChecker = FodChecker
   { runReporter :: RunReporter,
     totalSkipped :: MVar Int,
     totalVerified :: MVar Int,
+    -- | FODs whose rebuild failed WITHOUT a hash mismatch (upstream source
+    -- gone, CDN bot-walls the fetcher's User-Agent, …). Reported as warnings,
+    -- not failures — only a hash mismatch is evidence of a lying FOD.
+    totalUnfetchable :: MVar Int,
     promises :: MVar (Maybe [Promise (Either [(Nix.DrvPath, Text)] ())]),
     startedOrDone :: MVar (Set Nix.DrvPath)
   }

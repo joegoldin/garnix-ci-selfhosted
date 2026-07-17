@@ -85,10 +85,23 @@ let
            --ro-bind "$RESOLVCONF" /etc/resolv.conf \
            --bind "$PASSWDFILE" /etc/passwd \
            --bind "$GROUPFILE" /etc/group \
+           `# The full device-node set upstream bound: actions (e.g. the fork's` \
+           `# own test suite) nest garnix's bubblewrap build sandbox, which` \
+           `# re-binds these from inside — a missing node (like /dev/zero)` \
+           `# fails every nested nix invocation.` \
+           --dev-bind-try /dev/console /dev/console \
+           --dev-bind-try /dev/core /dev/core \
+           --dev-bind-try /dev/full /dev/full \
            --dev-bind-try /dev/null /dev/null \
+           --dev-bind-try /dev/ptmx /dev/ptmx \
+           --dev-bind-try /dev/pts /dev/pts \
            --dev-bind-try /dev/random /dev/random \
+           --dev-bind-try /dev/shm /dev/shm \
+           --dev-bind-try /dev/tty /dev/tty \
            --dev-bind-try /dev/urandom /dev/urandom \
+           --dev-bind-try /dev/zero /dev/zero \
            --dev-bind-try /dev/net/tun /dev/net/tun \
+           --dev-bind-try /dev/kvm /dev/kvm \
            --proc /proc \
            --symlink /proc/self/fd /dev/fd \
            --tmpfs /tmp \

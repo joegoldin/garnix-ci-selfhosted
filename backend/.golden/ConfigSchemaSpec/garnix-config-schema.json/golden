@@ -126,7 +126,7 @@
                     "type": "string"
                 },
                 "fodChecks": {
-                    "$comment": "Whether FOD checks are enabled for the repo (on by default in this self-host fork). See https://garnix.io/docs/fod-checks for more information.",
+                    "$comment": "Whether FOD checks are enabled for the repo. See https://garnix.io/docs/fod-checks for more information.",
                     "type": "boolean"
                 },
                 "incrementalizeBuilds": {

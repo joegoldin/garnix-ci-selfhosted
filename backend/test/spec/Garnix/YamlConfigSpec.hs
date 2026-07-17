@@ -32,7 +32,7 @@ spec = do
 
               incrementalizeBuilds: false
 
-              fodChecks: true
+              fodChecks: false
             |]
     it "parses the empty config to the default config"
       $ decodeConfig ""
@@ -289,7 +289,7 @@ spec = do
     context "actions section" $ do
       it "allows empty action sections" $ do
         let config = "actions: []"
-        decodeConfig config `shouldBe` Right (def & fodChecks .~ True)
+        decodeConfig config `shouldBe` Right def
 
       it "parses single action" $ do
         let config =
@@ -398,7 +398,7 @@ spec = do
 
       it "sets the publish field for an empty section to false" $ do
         let config = "modules: {}"
-        decodeConfig config `shouldBe` Right (def & fodChecks .~ True)
+        decodeConfig config `shouldBe` Right def
 
       it "correctly parses when publish is set to true" $ do
         let config = "modules:\n  publish: true"
