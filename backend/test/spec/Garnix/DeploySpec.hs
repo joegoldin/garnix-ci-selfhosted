@@ -105,7 +105,6 @@ spec = do
         context "build" $ around_ Deprecated.addTestSecrets $ do
           it "build fails when persistence is enabled and name is empty" $ do
             (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db" "" "local") yaml branch $ \_mockGithubRepo commit -> do
-              addBranchHostingEntitlement
               withMockReturning #executeDeployPlanMock [] $ do
                 resolve =<< buildFlake mempty (commitInfo commit)
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
@@ -115,7 +114,6 @@ spec = do
         context "planning" $ around_ Deprecated.addTestSecrets $ do
           it "ignores persistence names if persistence is not enabled" $ do
             result <- Deprecated.withMockRepo (cs $ flakeWithPersistence False "db" "db" "local") yaml branch $ \_mockGithubRepo commit -> do
-              addBranchHostingEntitlement
               withMockReturning #executeDeployPlanMock [] $ do
                 resolve =<< buildFlake mempty (commitInfo commit)
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
@@ -124,14 +122,12 @@ spec = do
 
           it "fails if persistence name is not a valid subdomain" $ do
             (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db/invalid-name" "db" "local") yaml branch $ \_mockGithubRepo commit -> do
-              addBranchHostingEntitlement
               withMockReturning #executeDeployPlanMock [] $ do
                 resolve =<< buildFlake mempty (commitInfo commit)
             err error `shouldBe` NameIsNotValidSubdomain PersistenceNameSubdomain "db/invalid-name"
 
           it "correctly reads and stores the persistence name" $ do
             result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-              addBranchHostingEntitlement
               withMockReturning #executeDeployPlanMock [] $ do
                 resolve =<< buildFlake mempty (commitInfo commit)
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
@@ -140,7 +136,6 @@ spec = do
 
           it "plans to redeploy to the same server" $ do
             result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-              addBranchHostingEntitlement
               withMockReturning #executeDeployPlanMock [] $ do
                 now <- liftIO getCurrentTime
                 [existingBuild] <- createBuildsFor "owner" "repo" "branch" "prevcommit" [("db", Just "db")]
@@ -161,7 +156,6 @@ spec = do
 
         it "reuses servers @slow" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \mockGithubRepo commit -> do
-            addBranchHostingEntitlement
 
             resolve =<< buildFlake mempty (commitInfo commit)
             firstGenServer <- fromSingleton <$> getAllDbServers
@@ -267,7 +261,6 @@ spec = do
         it "stops servers that do not have a heartbeat" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
             let ci = commitInfo commit
-            addPrHostingEntitlement
 
             runPrEvent ci
             before <- fromSingleton <$> getAllDbServers
@@ -290,7 +283,6 @@ spec = do
         it "does not stop servers were started recently" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
             let ci = commitInfo commit
-            addPrHostingEntitlement
 
             runPrEvent ci
             before <- fromSingleton <$> getAllDbServers
@@ -307,7 +299,6 @@ spec = do
         it "does not stop servers with a heartbeat" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
             let ci = commitInfo commit
-            addPrHostingEntitlement
 
             runPrEvent ci
             before <- fromSingleton <$> getAllDbServers
@@ -334,7 +325,6 @@ spec = do
           let branchYaml = Just $ getMultiConfig branch [PackageName "db"]
           result <- Deprecated.withMockRepo flake branchYaml branch $ \_mockGithubRepo commit -> do
             let ci = commitInfo commit
-            addBranchHostingEntitlement
 
             resolve =<< buildFlake mempty ci
             before <- fromSingleton <$> getAllDbServers
@@ -456,7 +446,7 @@ spec = do
             liftIO $ do
               logs' `shouldContain` "Server has been successfully redeployed to: https://db.branch.repo.owner.garnix.me"
 
-  describe "branch deployments" $ inM $ beforeM_ (truncateDBM >> addBranchHostingEntitlement) $ do
+  describe "branch deployments" $ inM $ beforeM_ truncateDBM $ do
     let user = "owner"
         name = "repo"
         commit = "aaaa"
@@ -780,15 +770,6 @@ withContext :: CheckSuiteEvent -> (RepoInfo -> Branch -> M a) -> M a
 withContext event action = do
   let (owner, name) = event ^. eventRepoName
   let Just branch = event ^. eventBranch
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO repo_owner_has_product
-          (repo_owner, product)
-          VALUES
-          ('owner', 'hosting-beta')
-          ON CONFLICT DO NOTHING
-      |]
   iAuth <- getInstallation $ Github.Data.Id 42
   let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") owner name
   withPrivateNixXdgCache $ action repoInfo branch
@@ -1214,35 +1195,6 @@ startServerAndFailOnAllExcept sync provision (reporter, commitInfo, deploymentTy
       _ <- liftIO $ readMVar sync
       throw $ ProvisioningError "test error"
 
-addBranchHostingEntitlement :: M ()
-addBranchHostingEntitlement =
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO repo_owner_has_product
-          (repo_owner, product)
-          VALUES
-          ('owner', 'hosting-beta')
-      |]
-
-addPrHostingEntitlement :: M ()
-addPrHostingEntitlement = do
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO products
-          (name, pr_hosting)
-          VALUES ('pr-hosting-beta', 1000)
-          ON CONFLICT DO NOTHING;
-      |]
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO repo_owner_has_product
-          (repo_owner, product)
-          VALUES
-          ('owner', 'pr-hosting-beta')
-      |]
 
 createBuildsFor :: GhRepoOwner -> GhRepoName -> Branch -> CommitHash -> [(PackageName, Maybe Text)] -> M [Build]
 createBuildsFor user name branchName commit machines = do

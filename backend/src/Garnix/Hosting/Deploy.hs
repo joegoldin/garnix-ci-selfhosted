@@ -157,9 +157,11 @@ withErrorReporter reporter commitInfo action = do
   case checkResult of
     Left error -> do
       run <- DB.newRun "deployment plan" commitInfo
-      runReporter <- createNewRun reporter (ReportRun run)
-      reportLogs runReporter (mkLogLine $ userMessage $ toErrorDetails error)
-      reportComplete runReporter RunReportStatusFailure
+      -- withRunReporter carries the shared pending->running-on-first-output
+      -- logic that every run kind follows.
+      withRunReporter reporter (ReportRun run) $ \runReporter -> do
+        reportLogs runReporter (mkLogLine $ userMessage $ toErrorDetails error)
+        reportComplete runReporter RunReportStatusFailure
       rethrow error
     Right a -> pure a
 

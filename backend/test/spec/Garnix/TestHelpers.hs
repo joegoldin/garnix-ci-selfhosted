@@ -177,9 +177,6 @@ truncateDBMNoInsert = do
           artifact_objects,
           commits,
           servers,
-          repo_owner_has_product,
-          repo_owner_usage_limits,
-          products,
           installations,
           heartbeat,
           access_tokens,
@@ -193,23 +190,10 @@ truncateDBMNoInsert = do
           verified_fods
       |]
 
+-- The billing tables (and their seed products) are gone in this fork;
+-- truncation is all that's left to do.
 truncateDBM :: M ()
-truncateDBM = do
-  truncateDBMNoInsert
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO products
-          (name, ci_minutes) VALUES
-          ('free-v1', 50000)
-      |]
-  void
-    $ DB.pgExec
-      [pgSQL|
-        INSERT INTO products
-          (name, hosting) VALUES
-          ('hosting-beta', 2)
-      |]
+truncateDBM = truncateDBMNoInsert
 
 runTestM :: (HasCallStack) => M a -> IO a
 runTestM action = do
@@ -280,10 +264,6 @@ testUser =
     (Email "foo@example.com")
     FreeSubscription
     True
-
-compAllUserBuilds :: GhRepoOwner -> M ()
-compAllUserBuilds owner = do
-  void $ DB.pgExec [pgSQL| UPDATE builds SET comped = true WHERE repo_user = ${owner} |]
 
 testBuild :: (Build -> Build) -> M Build
 testBuild f = do

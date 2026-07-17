@@ -14,6 +14,7 @@ import Control.Lens ((<&>))
 import Control.Monad.Extra (mapMaybeM)
 import Cradle
 import Data.Attoparsec.Text hiding (try, (<?>))
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Either.Extra (mapLeft)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -90,7 +91,18 @@ getFodChecker reporter commitInfo _plan = do
   if garnixConfig ^. YamlConfig.fodChecks
     then do
       run <- DB.newRun "FOD checks" commitInfo
-      runReporter <- createNewRun reporter (ReportRun run)
+      runReporter' <- createNewRun reporter (ReportRun run)
+      -- Like every other run kind (withRunReporter), the FOD run leaves
+      -- "pending" on its first line of output. The FodChecker outlives any
+      -- lexical scope, so it can't use withRunReporter itself.
+      pendingRef <- liftIO $ newIORef True
+      let runReporter =
+            runReporter'
+              { reportLogs = \logLine -> do
+                  isFirst <- liftIO $ atomicModifyIORef' pendingRef (False,)
+                  when isFirst $ DB.markRunRunning (_runId run)
+                  reportLogs runReporter' logLine
+              }
       -- No billing in this fork: FOD checks are available to everyone.
       Just <$> mkFodChecker runReporter
     else do

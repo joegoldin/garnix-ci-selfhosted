@@ -56,18 +56,25 @@
       PasswordAuthentication = false;
       KbdInteractiveAuthentication = false;
     };
+    # The deploy drops /var/garnix/keys/authorized_keys at RUNTIME when a
+    # server opts in via authorizeDeployerGithubKeys / authorizedSSHKeys
+    # (copyAuthorizedKeys), so sshd must read it at auth time — scoped to the
+    # garnix user only. (authorizedKeys.keyFiles would read it at build time,
+    # which both breaks pure eval and can never see the runtime file.) sshd
+    # tolerates the file being absent: the garnix user stays login-closed
+    # until it exists. Declare your own login users in the guest config for
+    # the user-module pattern.
+    services.openssh.extraConfig = ''
+      Match User garnix
+        AuthorizedKeysFile .ssh/authorized_keys /var/garnix/keys/authorized_keys
+      Match all
+    '';
     users.users.root.openssh.authorizedKeys.keys = [ config.garnix.guest.sshPublicKey ];
     users.users.garnix = {
       isNormalUser = true;
       extraGroups = [ "wheel" ];
-      # The hosting key (for backend redeploys) is always authorized. The garnix
-      # user is otherwise login-closed: garnix only writes
-      # /var/garnix/keys/authorized_keys when a server opts in via
-      # authorizeDeployerGithubKeys / authorizedSSHKeys (copyAuthorizedKeys).
-      # sshd tolerates the keyFile being absent. Declare your own login users in
-      # the guest config for the user-module pattern.
+      # The hosting key (for backend redeploys) is always authorized.
       openssh.authorizedKeys.keys = [ config.garnix.guest.sshPublicKey ];
-      openssh.authorizedKeys.keyFiles = [ "/var/garnix/keys/authorized_keys" ];
     };
     security.sudo.wheelNeedsPassword = false;
     # Guests live on a host-only bridge; Traefik fronts them.
