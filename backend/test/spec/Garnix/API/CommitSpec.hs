@@ -42,9 +42,12 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               "succeeded": 2,
               "failed": 0,
               "pending": 0,
-              "cancelled": 0
+              "running": 0,
+              "cancelled": 0,
+              "forge": "github"
             },
             "runs": [],
+            "running_build_ids": [],
             "builds": [{
               "id": #{bar ^. id},
               "package_type": "package",
@@ -61,7 +64,8 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               "wants_incrementalism": false,
               "eval_host": "garnix-server-test",
               "uploaded_to_cache": false,
-              "already_built": false
+              "already_built": false,
+              "forge": "github"
             }, {
               "id": #{foo ^. id},
               "package_type": "package",
@@ -78,7 +82,8 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               "wants_incrementalism": false,
               "eval_host": "garnix-server-test",
               "uploaded_to_cache": false,
-              "already_built": false
+              "already_built": false,
+              "forge": "github"
             }]
           }
         |]
@@ -115,9 +120,12 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                 "succeeded": 1,
                 "failed": 0,
                 "pending": 0,
-                "cancelled": 0
+                "running": 0,
+                "cancelled": 0,
+                "forge": "github"
               },
               "runs": [],
+              "running_build_ids": [],
               "builds": [{
                 "id": #{build ^. id},
                 "package_type": "package",
@@ -134,7 +142,8 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                 "wants_incrementalism": false,
                 "eval_host": "garnix-server-test",
                 "uploaded_to_cache": false,
-                "already_built": false
+                "already_built": false,
+                "forge": "github"
               }]
             }
           |]
@@ -168,9 +177,12 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                   "succeeded": 1,
                   "failed": 0,
                   "pending": 0,
-                  "cancelled": 0
+                  "running": 0,
+                  "cancelled": 0,
+                  "forge": "github"
                 },
                 "runs": [],
+                "running_build_ids": [],
                 "builds": [{
                   "id": #{foo ^. id},
                   "package_type": "package",
@@ -187,7 +199,8 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                   "wants_incrementalism": false,
                   "eval_host": "garnix-server-test",
                   "uploaded_to_cache": false,
-                  "already_built": false
+                  "already_built": false,
+                  "forge": "github"
                 }]
               }
           |]
@@ -212,7 +225,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                       "succeeded": 1,
                       "failed": 0,
                       "pending": 0,
-                      "cancelled": 0
+                      "running": 0,
+                      "cancelled": 0,
+                      "forge": "github"
                     },
                     {
                       "repo_owner": "test-owner",
@@ -225,7 +240,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                       "succeeded": 1,
                       "failed": 0,
                       "pending": 0,
-                      "cancelled": 0
+                      "running": 0,
+                      "cancelled": 0,
+                      "forge": "github"
                     }
                   ]
                 }
@@ -259,7 +276,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                     "succeeded": 3,
                     "failed": 2,
                     "pending": 1,
-                    "cancelled": 1
+                    "running": 0,
+                    "cancelled": 1,
+                    "forge": "github"
                   }
                 ]
               }
@@ -289,7 +308,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                     "succeeded": #{length cases},
                     "failed": 0,
                     "pending": 0,
-                    "cancelled": 0
+                    "running": 0,
+                    "cancelled": 0,
+                    "forge": "github"
                   }
                 ]
               }
@@ -315,7 +336,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                     "succeeded": 1,
                     "failed": 0,
                     "pending": 0,
-                    "cancelled": 0
+                    "running": 0,
+                    "cancelled": 0,
+                    "forge": "github"
                   }
                 ]
               }
@@ -364,7 +387,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               succeeded: 2,
               cancelled: 0,
               failed: 0,
-              pending: 0
+              pending: 0,
+              running: 0,
+              forge: "github"
             },
             {
               repo_owner: "target-user",
@@ -377,7 +402,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               succeeded: 2,
               cancelled: 0,
               failed: 0,
-              pending: 0
+              pending: 0,
+              running: 0,
+              forge: "github"
             }
           ]
         }
@@ -433,7 +460,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               succeeded: 2,
               cancelled: 0,
               failed: 0,
-              pending: 0
+              pending: 0,
+              running: 0,
+              forge: "github"
             },
             {
               repo_owner: "target-user",
@@ -446,7 +475,9 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               succeeded: 2,
               cancelled: 0,
               failed: 0,
-              pending: 0
+              pending: 0,
+              running: 0,
+              forge: "github"
             }
           ]
         }

@@ -79,7 +79,7 @@ authServerSpec = inM $ beforeM_ truncateDBM $ aroundM_ suppressLogs $ do
               {
                 username: #{user ^. githubLogin},
                 email: #{user ^. email},
-                is_admin: true
+                is_admin: false
               }
             |]
 

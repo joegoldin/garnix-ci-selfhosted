@@ -34,7 +34,7 @@ spec = inM $ beforeM_ truncateDBM $ do
               {
                 username: "dev-user",
                 email: "dev-user@example.com",
-                is_admin: true
+                is_admin: false
               }
             |]
 
@@ -49,7 +49,7 @@ spec = inM $ beforeM_ truncateDBM $ do
               {
                 username: "dev-user",
                 email: "dev-user@example.com",
-                is_admin: true
+                is_admin: false
               }
             |]
 
