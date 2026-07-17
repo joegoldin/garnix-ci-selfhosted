@@ -67,6 +67,10 @@ let
            --hostname "garnix-action-runner" \
            --ro-bind /nix /nix \
            --bind /run /run \
+           `# NixOS provides /bin/sh + /usr/bin/env as store symlinks; the` \
+           `# sandbox execs /bin/sh -c and action shebangs use /usr/bin/env.` \
+           --ro-bind /bin/sh /bin/sh \
+           --ro-bind-try /usr/bin/env /usr/bin/env \
            --tmpfs /etc \
            --ro-bind-try /etc/hosts /etc/hosts \
            --ro-bind "$HOSTNAMEFILE" /etc/hostname \

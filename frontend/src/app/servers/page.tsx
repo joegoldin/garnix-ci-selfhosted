@@ -28,7 +28,7 @@ const statusToColor: Record<RunningServer["status"], string> = {
 };
 
 const Page = () => {
-  const { sshHost, selfHostMode } = useConfig();
+  const { sshHost } = useConfig();
   const serversResult = useLoading(getRunningServers, { poll: fromSecs(5) });
   if (serversResult.loading) return null;
   // Root-relative: both upstream and the self-host docs mirror serve /docs.

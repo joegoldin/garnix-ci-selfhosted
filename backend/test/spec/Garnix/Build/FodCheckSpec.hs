@@ -119,9 +119,13 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
           ]
     forM_ cases $ \(machinesFile, system, builders) -> do
       it ("picks out a remote builder fairly for " <> cs (system ^. systemTextIso)) $ do
-        pickedBuilderUrl <- (sort . nubOrd <$>) $ replicateM 100 $ do
+        pickedBuilderUrl <- (sort . nubOrd . catMaybes <$>) $ replicateM 100 $ do
           __pickRemoteBuilderUrlFromMachinesFile system (cs $ unindent machinesFile)
         pickedBuilderUrl `shouldBeM` map (\builder -> "ssh-ng://nix-ssh@" <> builder) builders
+
+    it "returns Nothing when no builder serves the system (self-host rebuilds locally)" $ do
+      picked <- __pickRemoteBuilderUrlFromMachinesFile (OtherSystem "riscv64-linux") (cs $ unindent realMachinesFile)
+      picked `shouldBeM` Nothing
 
   describe "__parseMachinesFile" $ do
     let cases =

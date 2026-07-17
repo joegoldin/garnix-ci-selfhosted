@@ -9,10 +9,11 @@ module Garnix.Build.FodCheck
 where
 
 import Control.Concurrent.Lifted (modifyMVar, modifyMVar_, newMVar, readMVar, swapMVar)
+import Control.Exception.Safe qualified as Safe
 import Control.Lens ((<&>))
 import Control.Monad.Extra (mapMaybeM)
 import Cradle
-import Data.Attoparsec.Text hiding ((<?>))
+import Data.Attoparsec.Text hiding (try, (<?>))
 import Data.Either.Extra (mapLeft)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -39,6 +40,7 @@ import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude hiding (Alternative)
 import Garnix.Types
 import Garnix.YamlConfig qualified as YamlConfig
+import System.Directory (doesFileExist)
 import System.Metrics.Prometheus.Metric.Histogram qualified as Prometheus
 
 withFodChecker :: Reporter -> CommitInfo -> ProductPlan -> (Maybe FodChecker -> M a) -> M a
@@ -55,7 +57,16 @@ withFodChecker reporter commitInfo plan action = do
       promises <-
         swapMVar (fodChecker ^. #promises) Nothing
           <&> fromMaybe (error "impossible: should still be Just")
-      errors <- mapLeft join . collectErrors <$> (resolve =<< joinAll promises)
+      -- A check that THROWS (rather than returning Left) must still complete
+      -- the run — otherwise the "FOD checks" run sits Pending forever.
+      results <- try (resolve =<< joinAll promises)
+      errors :: Either [Text] () <- case results of
+        Right rs -> pure $ mapLeft (map snd . join) (collectErrors rs)
+        Left e -> do
+          let msg = "FOD checking failed with an internal error:\n" <> showDebug e
+          log Error msg
+          reportToSummary msg
+          pure $ Left [msg]
       skipped <- readMVar $ fodChecker ^. #totalSkipped
       verified <- readMVar $ fodChecker ^. #totalVerified
       case skipped of
@@ -68,7 +79,7 @@ withFodChecker reporter commitInfo plan action = do
         verified -> reportToSummary $ show verified <> " FODs were verified."
       case errors of
         Right () -> reportComplete (fodChecker ^. #runReporter) RunReportStatusSuccess
-        Left (errors :: [(Nix.DrvPath, Text)]) -> do
+        Left (errors :: [Text]) -> do
           reportToSummary $ show (length errors) <> " FOD checks failed."
           reportComplete (fodChecker ^. #runReporter) RunReportStatusFailure
   pure a
@@ -216,38 +227,56 @@ checkFod fodChecker drvPath system = do
 
 type NixBuildOutput = [Rec ("drvPath" .== Text .+ "outputs" .== Map.Map Text Text)]
 
--- Untested.
+-- | Rebuild a FOD, ignoring the existing output, so a lying hash surfaces.
+-- Upstream rebuilds on a remote builder from its fleet; a self-host box
+-- usually has no builder for its own system (or no /etc/nix/machines at
+-- all), so when none matches we rebuild locally — `nix build --rebuild`
+-- re-fetches the FOD and fails on hash mismatch either way.
 rebuildFod :: System -> Nix.DrvPath -> M (Either Text Text)
 rebuildFod = do
   curry $ mockable #rebuildFodMock $ \(system, drvPath) -> withBubbling $ \bubble -> do
-    contents <- liftIO $ T.readFile "/etc/nix/machines"
-    remoteBuilderUrl <- __pickRemoteBuilderUrlFromMachinesFile system contents
-    (bubble =<< copyClosure drvPath remoteBuilderUrl)
-      <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> remoteBuilderUrl)
-    (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- do
-      nixConfig <- view #userNixConfig
-      run
-        $ cmd "nix"
-        & addArgs
-          [ "build",
-            cs drvPath <> "^*",
-            "--no-link",
-            "--json",
-            "--rebuild",
-            "--store",
-            remoteBuilderUrl,
-            "--eval-store",
-            "auto"
-          ]
-        & modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords remoteBuilderSshArgs)
-        & addNixConfigEnvironment nixConfig
+    nixConfig <- view #userNixConfig
+    remoteBuilderUrl <- __pickRemoteBuilder system
+    (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- case remoteBuilderUrl of
+      Just url -> do
+        sshKey <- liftIO remoteBuilderSshKeyPath
+        (bubble =<< copyClosure sshKey drvPath url)
+          <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> url)
+        run
+          $ cmd "nix"
+          & addArgs
+            [ "build",
+              cs drvPath <> "^*",
+              "--no-link",
+              "--json",
+              "--rebuild",
+              "--store",
+              url,
+              "--eval-store",
+              "auto"
+            ]
+          & modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords (remoteBuilderSshArgs sshKey))
+          & addNixConfigEnvironment nixConfig
+      Nothing ->
+        run
+          $ cmd "nix"
+          & addArgs
+            ([ "build",
+               cs drvPath <> "^*",
+               "--no-link",
+               "--json",
+               "--rebuild"
+             ] ::
+               [Text]
+            )
+          & addNixConfigEnvironment nixConfig
     bubble $ case exitCode of
       ExitFailure _ -> Left stderr
       ExitSuccess -> Right stdout
 
 -- Untested.
-copyClosure :: Nix.DrvPath -> Text -> M (Either Text ())
-copyClosure drvPath remoteBuilderUrl = do
+copyClosure :: FilePath -> Nix.DrvPath -> Text -> M (Either Text ())
+copyClosure sshKey drvPath remoteBuilderUrl = do
   nixConfig <- view #userNixConfig
   (exitCode, StderrRaw (cs -> stderr)) <-
     Cradle.run
@@ -260,24 +289,40 @@ copyClosure drvPath remoteBuilderUrl = do
           cs drvPath <> "^*"
         ]
       & addNixConfigEnvironment nixConfig
-      & Cradle.modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords remoteBuilderSshArgs)
+      & Cradle.modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords (remoteBuilderSshArgs sshKey))
       & Cradle.silenceStderr
   case exitCode of
     ExitFailure _ -> pure $ Left stderr
     ExitSuccess -> pure $ Right ()
 
-remoteBuilderSshArgs :: [String]
-remoteBuilderSshArgs = ["-i", "/run/secrets/garnix_server_remote_builder_ssh_garnix"]
+remoteBuilderSshArgs :: FilePath -> [String]
+remoteBuilderSshArgs sshKey = ["-i", sshKey]
 
-__pickRemoteBuilderUrlFromMachinesFile :: System -> Text -> M Text
+-- | Upstream's sops layout installs a garnix-readable copy of the remote
+-- builder key under the `_garnix` suffix; the agenix self-host layout
+-- installs it under its plain name. Use whichever exists.
+remoteBuilderSshKeyPath :: IO FilePath
+remoteBuilderSshKeyPath = do
+  let upstream = "/run/secrets/garnix_server_remote_builder_ssh_garnix"
+  doesFileExist upstream <&> \case
+    True -> upstream
+    False -> "/run/secrets/garnix_server_remote_builder_ssh"
+
+-- | A remote builder for the system, if the host has a machines file that
+-- names one; 'Nothing' means rebuild locally.
+__pickRemoteBuilder :: System -> M (Maybe Text)
+__pickRemoteBuilder system =
+  liftIO (Safe.tryIO (T.readFile "/etc/nix/machines")) >>= \case
+    Left _noMachinesFile -> pure Nothing
+    Right contents -> __pickRemoteBuilderUrlFromMachinesFile system contents
+
+__pickRemoteBuilderUrlFromMachinesFile :: System -> Text -> M (Maybe Text)
 __pickRemoteBuilderUrlFromMachinesFile (replaceBuiltinSystem -> system) machinesFile =
   case __parseMachinesFile machinesFile of
     Left error -> throw $ OtherError $ "cannot parse /etc/nix/machines: " <> error
-    Right machines -> do
-      machinesForSystem <- case Map.lookup system machines of
-        Nothing -> throw $ OtherError $ "Cannot find remote builder for " <> system ^. systemTextIso
-        Just ms -> pure ms
-      randomElement machinesForSystem
+    Right machines -> case Map.lookup system machines of
+      Nothing -> pure Nothing
+      Just ms -> Just <$> randomElement ms
 
 replaceBuiltinSystem :: System -> System
 replaceBuiltinSystem = \case

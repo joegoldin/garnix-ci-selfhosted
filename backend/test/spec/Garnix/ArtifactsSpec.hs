@@ -191,7 +191,7 @@ spec = do
 
       it "only publishes successful package builds of the configured packages" $ do
         otherPackage <- testBuild (package .~ "other-pkg")
-        unsuccessful <- testBuild ((package .~ "artifact-pkg") . (status .~ Just Failure))
+        unsuccessful <- testBuild ((package .~ "artifact-pkg") . (status ?~ Failure))
         app <- testBuild ((package .~ "artifact-pkg") . (packageType .~ TypeApp))
         withFakeStore $ \_store uploadsRef _bytesRef -> do
           publishArtifacts artifactConfig [otherPackage, unsuccessful, app]
