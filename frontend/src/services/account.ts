@@ -8,7 +8,6 @@ type Usage = {
 };
 
 // This self-host fork has no billing: a "plan" only carries a display name.
-export type Plan = z.infer<typeof planSchema>;
 const planSchema = z.object({
   display_name: z.string(),
   description: z.optional(z.string()),

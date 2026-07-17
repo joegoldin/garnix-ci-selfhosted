@@ -29,14 +29,6 @@ export function toMillis(d: Duration): number {
   return d[SECONDS] * 1000;
 }
 
-export function add(a: Duration, b: Duration): Duration {
-  return { [SECONDS]: a[SECONDS] + b[SECONDS] };
-}
-
-export function subtract(a: Duration, b: Duration): Duration {
-  return { [SECONDS]: a[SECONDS] - b[SECONDS] };
-}
-
 export function double(d: Duration): Duration {
   return { [SECONDS]: d[SECONDS] * 2 };
 }

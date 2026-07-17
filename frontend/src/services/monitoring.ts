@@ -97,7 +97,6 @@ export type Monitoring = z.infer<typeof monitoringSchema>;
 export type MonitoringInstance = Monitoring["instance"];
 export type MonitoringHost = Monitoring["host"];
 export type MonitoringJobs = Monitoring["jobs"];
-export type MonitoringRecentBuild = MonitoringJobs["recentBuilds"][number];
 
 export const getMonitoring = async (): Promise<APIResult<Monitoring>> =>
   await fetchFromAPI(monitoringSchema, "GET", "monitoring");

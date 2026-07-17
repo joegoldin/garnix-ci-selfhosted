@@ -90,6 +90,3 @@ export const restartFailedCommit = async (
   commit: string,
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "POST", `commits/${commit}/restart-failed`);
-
-export const getReqUserUrl = (build: Build | CommitSummary) =>
-  `https://github.com/${build.reqUser}`;
