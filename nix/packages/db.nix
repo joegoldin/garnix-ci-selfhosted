@@ -26,6 +26,10 @@ writeShellScriptBin "db" ''
       echo "logging_collector = on" >> "$PGDATA/postgresql.conf"
       echo "log_statement = all" >> "$PGDATA/postgresql.conf"
       echo "listen_addresses = '''" >> "$PGDATA/postgresql.conf"
+      # postgresql-typed only speaks md5 auth (not scram), so store role
+      # passwords as md5. Must be set before the ALTER ROLE below hashes the
+      # garnix password.
+      echo "password_encryption = md5" >> "$PGDATA/postgresql.conf"
     fi
 
     ${postgres}/bin/pg_ctl stop || echo "Starting pg_ctl"
@@ -52,6 +56,15 @@ writeShellScriptBin "db" ''
       "$PGDATABASE" \
       -c "ALTER ROLE \"$PGUSER\" WITH LOGIN PASSWORD '$PGPASSWORD'" \
       -p $PGPORT || echo "Not adding password"
+
+    # Require a password for the garnix role. initdb defaults local connections
+    # to trust, which accepts any password and defeats getDBConnection's
+    # auth-failure handling (and hides real password bugs). Other roles keep
+    # trust so the passwordless bootstrap superuser and the monitoring role
+    # still connect.
+    printf 'local all %s md5\n%s\n' "$PGUSER" "$(cat "$PGDATA/pg_hba.conf")" > "$PGDATA/pg_hba.conf.tmp"
+    mv "$PGDATA/pg_hba.conf.tmp" "$PGDATA/pg_hba.conf"
+    ${postgres}/bin/pg_ctl reload
 
     export PATH=${postgres}/bin:$PATH
   }
