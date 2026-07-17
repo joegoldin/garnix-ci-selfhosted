@@ -173,6 +173,8 @@ truncateDBMNoInsert = do
         TRUNCATE
           users,
           builds,
+          artifacts,
+          artifact_objects,
           commits,
           servers,
           repo_owner_has_product,

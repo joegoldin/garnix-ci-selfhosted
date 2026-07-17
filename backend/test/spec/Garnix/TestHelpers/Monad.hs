@@ -292,6 +292,7 @@ withTestEnvironment tempDir action = do
                   opensearchPassword = "opensearch-api",
                   sshUserHostingKeys = [sshKey],
                   s3CacheEnv = error "s3CacheEnv: cache uploading should be mocked",
+                  artifactStore = Nothing,
                   action =
                     ActionEnv
                       { runnerHost = error "misconfigured-host",
