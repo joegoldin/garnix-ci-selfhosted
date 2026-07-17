@@ -74,6 +74,10 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
   picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
   [Server deployments](#server-deployments-self-host-microvm-hosting).
+- **Self-host action runner** — `garnix.yaml` `actions` run in a local
+  bubblewrap sandbox instead of upstream's runner fleet (`garnix.actionRunner`
+  + `services.garnixServer.actionHost`). Required setup if you use actions —
+  see [Actions](#actions-running-actions-on-a-self-host-runner).
 - **sops made optional** — bring your own secrets manager (agenix, sops, plain
   files); the backend reads `/run/secrets/<name>` paths or env vars.
 - Single-host adaptations: no Hetzner fleet required (`buildMachines` for
@@ -178,6 +182,7 @@ these with agenix/sops/whatever — **never** in the Nix store:
 | `garnix-jwt-key` | session JWTs |
 | `opensearch-garnix` | opensearch auth |
 | `repo-secrets-key`, `repo-secrets-key-pub` | age keypair for repo secrets |
+| `garnix_action_runner_ssh` | SSH key the backend uses to reach the action runner (only if you run `actions` — see [Actions](#actions-running-actions-on-a-self-host-runner)). **Must be mode 0400** — OpenSSH rejects a group-readable key. |
 
 With agenix, the shape is:
 
@@ -359,6 +364,56 @@ has no SSH key) — use `github:` refs; garnix injects its App token for those.
 If a **public** repo has **private** `github:` inputs, self-host mode allows it
 automatically and routes that repo's closures to the private (authenticated)
 bucket. Override per-repo on `/garnix-admin` → "Per-repo config".
+
+## Actions (running `actions` on a self-host runner)
+
+`garnix.yaml` `actions:` run a nix app as a CI step (deploy scripts,
+notifications, integration tests…). Unlike a build, an action's command is
+**executed on a separate "action runner"**: the backend `nix copy`s the action
+closure to `action-runner@<host>` and SSHes in to run it. Upstream points that
+at its own runner fleet, so on a self-host box **actions stay Pending forever
+until you stand up a local runner** (this is a required setup step if you use
+`actions`). The fork's `action-runner` module does that, isolating each action
+in a bubblewrap + slirp4netns sandbox on the garnix host itself.
+
+1. **Secret.** Provision an SSH keypair as `garnix_action_runner_ssh` (see the
+   secrets table). It **must be mode 0400** — OpenSSH refuses a group-readable
+   private key. The backend connects with the private key; the runner
+   authorizes its public key automatically (derived at boot), so no separate
+   pubkey secret is needed.
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C garnix-action-runner -f garnix-action-runner
+   # then: agenix -e garnix_action_runner_ssh.age < garnix-action-runner
+   ```
+2. **Enable the runner** and point the backend at it:
+   ```nix
+   imports = [ "${garnix-ci}/nix/modules/action-runner.nix" ];
+   garnix.actionRunner = {
+     enable = true;
+     # Derives + authorizes the pubkey of the key the backend connects with.
+     sshPrivateKeyPath = "/run/secrets/garnix_action_runner_ssh";
+   };
+   services.garnixServer.actionHost = "127.0.0.1";   # SSH the runner locally
+   # The key-derivation reads the installed secret — order it after your
+   # secrets are in place (agenix/sops/…):
+   systemd.services.garnix-action-runner-authorized-key.after = [ "agenix.service" ];
+   ```
+   The `action-runner` user is created for you, made a nix `trusted-user` (so
+   `nix copy` works), and its authorized key is derived from the private key at
+   boot. The backend reads the private key from `/run/secrets/garnix_action_runner_ssh`
+   by default (override with the `GARNIX_ACTION_RUNNER_SSH_KEY` env var).
+3. **Add an action** to a repo's `garnix.yaml` and push:
+   ```yaml
+   actions:
+     - run: deploy          # apps.<system>.deploy — the nix app to execute
+       on: push
+   ```
+
+Actions run as the unprivileged `action-runner` user, network-isolated via
+slirp4netns (NAT, no host loopback), with a read-only `/nix` and a fresh
+`/home`. `GARNIX_CI`, `GARNIX_BRANCH`, `GARNIX_COMMIT_SHA`, and the repo's
+action key (`GARNIX_ACTION_PRIVATE_KEY_FILE`) are available to the command; add
+`withRepoContents: true` to bind the checked-out repo at `/tmp/base`.
 
 ## Optional: Gitea as a second forge
 
