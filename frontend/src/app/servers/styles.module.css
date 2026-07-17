@@ -115,6 +115,28 @@
   color: var(--color-stone-800);
   white-space: nowrap;
   overflow-x: auto;
+  /* Thin, subtle horizontal scrollbar (Firefox) — the default chunky OS bar
+     looks out of place in a small inline code box. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-stone-300) transparent;
+}
+
+/* Thin, subtle horizontal scrollbar (WebKit/Blink). */
+.cmd::-webkit-scrollbar {
+  height: 6px;
+}
+
+.cmd::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cmd::-webkit-scrollbar-thumb {
+  background: var(--color-stone-300);
+  border-radius: 999px;
+}
+
+.cmd::-webkit-scrollbar-thumb:hover {
+  background: var(--color-stone-400);
 }
 
 .copyBtn {
