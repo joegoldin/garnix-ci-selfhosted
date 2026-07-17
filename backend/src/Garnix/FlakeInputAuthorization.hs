@@ -81,6 +81,11 @@ checkAuthorization flakeDir repoConfig commitInfo = do
 -- | GitHub-only: authorize a repo's private github: flake inputs (extracted from
 -- 'checkAuthorization' so non-GitHub forges skip it entirely).
 authorizeGithubPrivateInputs :: (HasCallStack) => RepoConfig -> CommitInfo -> RepoInfo -> [GithubFlakeInput] -> M NixConfig
+-- No github: inputs means there is nothing to authorize, so we neither need nor
+-- require the GitHub app installation. Public flakes — and the test suite's
+-- minimal local flakes — take this path instead of tripping over a missing
+-- installation auth.
+authorizeGithubPrivateInputs _ _ _ [] = pure $ NixConfig mempty
 authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
   iAuth <- case repoInfo' ^. installationAuth of
     Just a -> pure a
