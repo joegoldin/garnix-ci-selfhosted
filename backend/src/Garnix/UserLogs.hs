@@ -44,21 +44,28 @@ storeLogLine :: AdditionalMetadata -> OpenSearchId -> LogLine -> M ()
 storeLogLine metadata = curry $ mockable #storeLogLineMock $ \(openSearchId, logLine) -> do
   reportingPort <- view #buildLogsReportingPort
   forM_ reportingPort $ \reportingPort -> do
-    response <- withWreqOptions $ \options ->
-      Wreq.postWith
-        options
-        ("http://localhost:" <> (cs . show $ reportingPort))
-        (toJSON $ OpenSearchSerializedMessage openSearchId metadata logLine)
-    unless (statusIsSuccessful $ response ^. Wreq.responseStatus)
-      $ log Error
-      $ T.intercalate
-        " "
-        [ "[fluent-bit writer thread]",
-          "Received response with status code",
-          response ^. Wreq.responseStatus & show . statusCode,
-          "and body:",
-          response ^. Wreq.responseBody & cs
-        ]
+    -- Log shipping is best-effort: a down fluent-bit must not inject
+    -- exceptions into the reporting path (they end up in run output and can
+    -- fail otherwise-healthy runs). Complain to the journal and move on.
+    ( do
+        response <- withWreqOptions $ \options ->
+          Wreq.postWith
+            options
+            ("http://localhost:" <> (cs . show $ reportingPort))
+            (toJSON $ OpenSearchSerializedMessage openSearchId metadata logLine)
+        unless (statusIsSuccessful $ response ^. Wreq.responseStatus)
+          $ log Error
+          $ T.intercalate
+            " "
+            [ "[fluent-bit writer thread]",
+              "Received response with status code",
+              response ^. Wreq.responseStatus & show . statusCode,
+              "and body:",
+              response ^. Wreq.responseBody & cs
+            ]
+      )
+      `catchAny` \e ->
+        log Error $ "[fluent-bit writer thread] Could not ship log line (is fluent-bit up?): " <> show e
 
 toOpenSearchKey :: OpenSearchId -> String
 toOpenSearchKey (FromRun _) = "runId"
