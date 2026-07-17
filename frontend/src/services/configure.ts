@@ -15,6 +15,59 @@ const settingsSchema = z
         build_timeout_minutes: z.number(),
       }),
     ),
+    // Artifact settings; tolerate a backend that predates artifacts (absent
+    // fields fall back to the server-side defaults: 30 days, no keep-latest).
+    artifact_retention_days: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? 30),
+    artifact_keep_latest: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    artifact_repo_overrides: z
+      .array(
+        z.object({
+          repo_user: z.string(),
+          repo_name: z.string(),
+          retention_days: z
+            .number()
+            .nullish()
+            .transform((v) => v ?? null),
+          keep_latest: z
+            .boolean()
+            .nullish()
+            .transform((v) => v ?? null),
+        }),
+      )
+      .nullish()
+      .transform((v) => v ?? []),
+    artifact_usage: z
+      .array(
+        z.object({
+          repo_user: z.string(),
+          repo_name: z.string(),
+          total_size: z.number(),
+        }),
+      )
+      .nullish()
+      .transform((v) => v ?? []),
+    locked_artifact_builds: z
+      .array(
+        z.object({
+          build_id: z.string(),
+          repo_user: z.string(),
+          repo_name: z.string(),
+          branch: z
+            .string()
+            .nullish()
+            .transform((v) => v ?? null),
+          name: z.string(),
+          created_at: z.coerce.date(),
+        }),
+      )
+      .nullish()
+      .transform((v) => v ?? []),
   })
   .transform((s) => ({
     defaultBuildTimeoutMinutes: s.default_build_timeout_minutes,
@@ -23,10 +76,35 @@ const settingsSchema = z
       repoName: o.repo_name,
       buildTimeoutMinutes: o.build_timeout_minutes,
     })),
+    artifactRetentionDays: s.artifact_retention_days,
+    artifactKeepLatest: s.artifact_keep_latest,
+    artifactRepoOverrides: s.artifact_repo_overrides.map((o) => ({
+      repoUser: o.repo_user,
+      repoName: o.repo_name,
+      retentionDays: o.retention_days,
+      keepLatest: o.keep_latest,
+    })),
+    artifactUsage: s.artifact_usage.map((u) => ({
+      repoUser: u.repo_user,
+      repoName: u.repo_name,
+      totalSize: u.total_size,
+    })),
+    lockedArtifactBuilds: s.locked_artifact_builds.map((b) => ({
+      buildId: b.build_id,
+      repoUser: b.repo_user,
+      repoName: b.repo_name,
+      branch: b.branch,
+      name: b.name,
+      createdAt: b.created_at,
+    })),
   }));
 
 export type ConfigureSettings = z.infer<typeof settingsSchema>;
 export type RepoOverride = ConfigureSettings["repoOverrides"][number];
+export type ArtifactRepoOverride =
+  ConfigureSettings["artifactRepoOverrides"][number];
+export type LockedArtifactBuild =
+  ConfigureSettings["lockedArtifactBuilds"][number];
 
 export const getConfigureSettings = async (): Promise<
   APIResult<ConfigureSettings>
@@ -54,3 +132,43 @@ export const deleteRepoBuildTimeout = async (
   repo: string,
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "DELETE", `configure/repo/${owner}/${repo}`);
+
+export const setDefaultArtifactSettings = async (
+  retentionDays: number,
+  keepLatest: boolean,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(z.any(), "PUT", "configure/artifacts/default", {
+    body: JSON.stringify({
+      retention_days: retentionDays,
+      keep_latest: keepLatest,
+    }),
+  });
+
+// A null field means "inherit the global setting".
+export const setRepoArtifactSettings = async (
+  owner: string,
+  repo: string,
+  retentionDays: number | null,
+  keepLatest: boolean | null,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "PUT",
+    `configure/artifacts/repo/${owner}/${repo}`,
+    {
+      body: JSON.stringify({
+        retention_days: retentionDays,
+        keep_latest: keepLatest,
+      }),
+    },
+  );
+
+export const deleteRepoArtifactSettings = async (
+  owner: string,
+  repo: string,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "DELETE",
+    `configure/artifacts/repo/${owner}/${repo}`,
+  );

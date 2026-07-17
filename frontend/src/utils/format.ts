@@ -43,6 +43,17 @@ export const capitalizeWords = (str: string): string =>
     .map((word) => String(word).charAt(0).toUpperCase() + String(word).slice(1))
     .join(" ");
 
+export const formatBytes = (n: number): string => {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
 export const stripPrefix = (s: string, prefix: string) => {
   if (s.startsWith(prefix)) {
     return s.slice(prefix.length);

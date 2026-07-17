@@ -75,3 +75,127 @@
   display: flex;
   flex-direction: row-reverse;
 }
+
+.artifactList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-stone-300);
+}
+
+.artifact {
+  border-bottom: 1px solid var(--color-stone-200);
+}
+
+.artifact:last-child {
+  border-bottom: none;
+}
+
+.artifactRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.artifactName {
+  font-weight: 500;
+  color: var(--color-stone-800);
+}
+
+.artifactMeta {
+  color: var(--color-stone-500);
+  font-size: 13px;
+}
+
+.failedChip,
+.lockedChip {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.failedChip {
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+}
+
+.lockedChip {
+  color: var(--color-stone-600);
+  border: 1px solid var(--color-stone-300);
+  background: var(--color-stone-100);
+}
+
+.artifactActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.artifactBtn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-stone-300);
+  border-radius: 4px;
+  background: var(--color-white);
+  color: var(--color-stone-700);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.artifactBtn:hover {
+  background: var(--color-stone-100);
+}
+
+.artifactBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.artifactDownload {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.artifactFiles {
+  padding: 4px 14px 12px;
+  background: var(--color-stone-50);
+  border-top: 1px solid var(--color-stone-200);
+}
+
+.artifactError {
+  color: var(--color-error);
+}
+
+.artifactFileList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.artifactFileRow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.artifactFilePath {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.artifactFileSize {
+  margin-left: auto;
+  color: var(--color-stone-500);
+  font-size: 12px;
+  white-space: nowrap;
+}

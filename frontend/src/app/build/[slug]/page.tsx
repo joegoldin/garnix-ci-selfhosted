@@ -4,11 +4,13 @@ import Image from "next/image";
 import { useCallback } from "react";
 import React from "react";
 import { P, match } from "ts-pattern";
+import { z } from "zod";
 import { BuildLog } from "@/components/buildLog";
 import { Button } from "@/components/button";
 import { StatusIcon } from "@/components/statusIcon";
 import { Text } from "@/components/text";
-import { formatCommitSha, formatRunName } from "@/utils/format";
+import { Loading } from "@/components/loading";
+import { formatBytes, formatCommitSha, formatRunName } from "@/utils/format";
 import branchIcon from "@/components/icons/branch.svg";
 import commitIcon from "@/components/icons/commit.svg";
 import repoIcon from "@/components/icons/repo.svg";
@@ -25,9 +27,20 @@ import { forgeBranchUrl } from "@/utils/forge";
 import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
 import { formatDurationShort, diffTime, fromSecs } from "@/utils/duration";
-import { Err, Ok } from "@/services";
+import { APIResult, Err, Ok, fetchFromAPI } from "@/services";
 import { useForm } from "@/hooks/useForm";
 import { cancelBuild } from "@/services/build";
+import {
+  Artifact,
+  ArtifactManifest,
+  artifactFileUrl,
+  artifactLatestZipUrl,
+  artifactZipUrl,
+  getArtifactManifest,
+  getBuildArtifacts,
+  lockBuildArtifacts,
+  unlockBuildArtifacts,
+} from "@/services/artifacts";
 import { trackSubmit } from "@/utils/analytics";
 import styles from "./styles.module.css";
 
@@ -170,6 +183,12 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 </form>
               </div>
             ) : null}
+            {/* Keyed on status so artifacts refetch when the build finishes
+                (they are published right after a successful build). */}
+            <ArtifactsSection
+              key={`artifacts-${build.status}`}
+              buildId={params.slug}
+            />
             <div className={styles.section}>
               <Text type="h2" className={styles.h2}>
                 Logs{" "}
@@ -194,6 +213,185 @@ const Page = ({ params }: { params: { slug: string } }) => {
         ))
         .exhaustive()}
     </main>
+  );
+};
+
+// Locking is admin-only; mirror the garnix-admin page's whoami-based check.
+const whoamiSchema = z
+  .object({
+    username: z.string(),
+    email: z.string(),
+    is_admin: z.boolean(),
+  })
+  .nullable();
+
+const getWhoami = () => fetchFromAPI(whoamiSchema, "GET", "whoami");
+
+const ArtifactsSection = ({ buildId }: { buildId: string }) => {
+  const artifacts = useLoading(
+    useCallback(() => getBuildArtifacts(buildId), [buildId]),
+  );
+  const whoami = useLoading(getWhoami);
+  const isAdmin =
+    !whoami.loading && whoami.data.ok && whoami.data.data?.is_admin === true;
+  // No artifacts (or a backend without the feature) -> no section at all.
+  if (artifacts.loading || !artifacts.data.ok) return null;
+  if (artifacts.data.data.length === 0) return null;
+  return (
+    <div className={styles.section}>
+      <Text type="h2" className={styles.h2}>
+        Artifacts
+      </Text>
+      <ul className={styles.artifactList}>
+        {artifacts.data.data.map((artifact) => (
+          <ArtifactRow
+            key={artifact.id}
+            buildId={buildId}
+            artifact={artifact}
+            isAdmin={isAdmin}
+            onChanged={artifacts.reload}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const ArtifactRow = ({
+  buildId,
+  artifact,
+  isAdmin,
+  onChanged,
+}: {
+  buildId: string;
+  artifact: Artifact;
+  isAdmin: boolean;
+  onChanged: () => void;
+}) => {
+  const [expanded, setExpanded] = React.useState(false);
+  const [manifest, setManifest] =
+    React.useState<APIResult<ArtifactManifest> | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const failed = artifact.status === "failed";
+  const latestUrl = artifactLatestZipUrl(artifact);
+
+  const toggleFiles = () => {
+    setExpanded(!expanded);
+    // Fetch the manifest lazily, once, on first expansion.
+    if (manifest == null)
+      void getArtifactManifest(buildId, artifact.name).then(setManifest);
+  };
+
+  // Locking is build-level (it flips every artifact of the build).
+  const toggleLock = async () => {
+    setBusy(true);
+    await (artifact.locked
+      ? unlockBuildArtifacts(buildId)
+      : lockBuildArtifacts(buildId));
+    setBusy(false);
+    onChanged();
+  };
+
+  return (
+    <li className={styles.artifact}>
+      <div className={styles.artifactRow}>
+        <span className={styles.artifactName}>{artifact.name}</span>
+        {failed ? (
+          <span className={styles.failedChip}>publish failed</span>
+        ) : (
+          <>
+            <span className={styles.artifactMeta}>
+              {formatBytes(artifact.total_size)} · {artifact.file_count}{" "}
+              {artifact.file_count === 1 ? "file" : "files"}
+            </span>
+            {artifact.locked ? (
+              <span className={styles.lockedChip} title="Never reaped">
+                locked
+              </span>
+            ) : null}
+            <span className={styles.artifactActions}>
+              <button
+                type="button"
+                className={styles.artifactBtn}
+                onClick={toggleFiles}
+              >
+                {expanded ? "Hide files" : "Show files"}
+              </button>
+              {latestUrl != null ? (
+                <CopyLatestUrlButton url={latestUrl} />
+              ) : null}
+              {isAdmin ? (
+                <button
+                  type="button"
+                  className={styles.artifactBtn}
+                  onClick={() => void toggleLock()}
+                  disabled={busy}
+                  title="Locked artifacts are never reaped by retention"
+                >
+                  {artifact.locked ? "Unlock" : "Lock"}
+                </button>
+              ) : null}
+              <Link
+                href={artifactZipUrl(buildId, artifact.name)}
+                target="_blank"
+                className={styles.artifactDownload}
+              >
+                <DownloadIcon width={13} fill="currentColor" /> Download .zip
+              </Link>
+            </span>
+          </>
+        )}
+      </div>
+      {!failed && expanded ? (
+        <div className={styles.artifactFiles}>
+          {manifest == null ? (
+            <Loading />
+          ) : !manifest.ok ? (
+            <Text className={styles.artifactError}>
+              Failed to load the file list: {manifest.error.message}
+            </Text>
+          ) : (
+            <ul className={styles.artifactFileList}>
+              {manifest.data.files.map((file) => (
+                <li key={file.path} className={styles.artifactFileRow}>
+                  <Link
+                    href={artifactFileUrl(buildId, artifact.name, file.path)}
+                    target="_blank"
+                    title={`sha256: ${file.sha256}`}
+                    className={styles.artifactFilePath}
+                  >
+                    {file.path}
+                  </Link>
+                  <span className={styles.artifactFileSize}>
+                    {formatBytes(file.size)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </li>
+  );
+};
+
+// Copies the stable per-branch latest.zip URL (absolute, so it can be pasted
+// into scripts). Same copy pattern as the servers page's CopyableCommand.
+const CopyLatestUrlButton = ({ url }: { url: string }) => {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <button
+      type="button"
+      className={styles.artifactBtn}
+      title={`Copy the stable latest-artifact URL: ${url}`}
+      onClick={() => {
+        void navigator.clipboard?.writeText(`${window.location.origin}${url}`);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      {copied ? "Copied" : "Copy latest URL"}
+    </button>
   );
 };
 
