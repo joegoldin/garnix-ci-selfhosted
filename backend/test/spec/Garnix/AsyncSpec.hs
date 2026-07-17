@@ -38,16 +38,10 @@ spec = do
       result <- timeout (fromSeconds @Double 0.1) action
       result `shouldBe` Just ()
 
-    -- @skip-ci: spawns a real process, kills it, then asserts death via
-    -- `ps -p <pid>` returning exactly (ExitFailure 1, empty stderr). Reliable
-    -- in a normal shell, but racy under the CI action-runner's bubblewrap
-    -- sandbox (fresh --proc /proc + zombie-reaping timing under load), where
-    -- the killed pid can still be visible as a not-yet-reaped zombie. This
-    -- exercises OS process mechanics, not garnix logic.
-    it "kills processes in the thread @skip-ci" $ do
+    it "kills processes in the thread" $ do
       bashPath <- cs . dropWhileEnd isSpace <$> readProcess "which" ["bash"] ""
-      -- We start a long-lived process, and check that it's PID doesn't exist
-      -- past the timeout
+      -- We start a long-lived process, and check that its PID no longer exists
+      -- past the timeout.
       withScript
         [trimming|
           #! $bashPath
@@ -58,15 +52,9 @@ spec = do
           result <- timeout (fromSeconds @Double 0.01) $ run_ $ cmd (cs scriptFile) & addArgs [outFile]
           result `shouldBe` Nothing
           procId <- T.hGetContents hdl
-          result <-
-            run
-              $ cmd "ps"
-              & addArgs ["-p", strip procId]
-              & silenceStdout
-          result `shouldBe` (ExitFailure 1, StderrRaw "")
+          assertPidReaped procId
 
-    -- @skip-ci: same OS-process-reaping race as above; see that note.
-    it "kills even processes that ignore signals @skip-ci" $ do
+    it "kills even processes that ignore signals" $ do
       bashPath <- cs . dropWhileEnd isSpace <$> readProcess "which" ["bash"] ""
       withScript
         [trimming|
@@ -79,12 +67,28 @@ spec = do
           result <- timeout (fromSeconds @Double 0.1) $ run_ $ cmd (cs scriptFile) & addArgs [outFile]
           result `shouldBe` Nothing
           procId <- T.hGetContents hdl
-          result <-
-            run
-              $ cmd "ps"
-              & addArgs ["-p", strip procId]
-              & silenceStdout
-          result `shouldBe` (ExitFailure 1, StderrRaw "")
+          assertPidReaped procId
+
+-- | Assert that a process is gone, polling @ps -p \<pid\>@ until it reports the
+-- process no longer exists (non-zero exit). timeout kills the process, but the
+-- kernel's reaping of the resulting zombie is asynchronous, so a single check
+-- immediately after the kill races the reaper (flaky under load / in the CI
+-- sandbox). We give it up to ~10s and only care about the exit status — a
+-- missing pid exits non-zero regardless of any stderr the tool emits.
+assertPidReaped :: Text -> IO ()
+assertPidReaped procId = go (200 :: Int)
+  where
+    pidGone :: IO Bool
+    pidGone = do
+      (exitCode, StderrRaw _) <-
+        run $ cmd "ps" & addArgs ["-p", strip procId] & silenceStdout
+      pure $ exitCode /= ExitSuccess
+    go :: Int -> IO ()
+    go 0 = pidGone >>= (`shouldBe` True)
+    go n =
+      pidGone >>= \case
+        True -> pure ()
+        False -> threadDelay (fromSeconds @Double 0.05) >> go (n - 1)
 
 makeMilliCounter :: Int -> IO (IO (), IO Int)
 makeMilliCounter endAt = do
