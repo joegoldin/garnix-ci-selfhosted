@@ -73,8 +73,9 @@ const mainLinkGroup = (selfHostMode: boolean): Array<LinkProps> =>
     {
       icon: <DocumentationIcon className={styles.icon} />,
       label: "Documentation",
-      // A self-hosted instance has no `/docs` site; send docs to upstream.
-      href: selfHostMode ? "https://garnix.io/docs" : "/docs",
+      // Root-relative on purpose: upstream serves /docs natively and the
+      // self-host deployment serves its docs mirror at /docs on the app domain.
+      href: "/docs",
       openNewPage: true,
     },
   ]);

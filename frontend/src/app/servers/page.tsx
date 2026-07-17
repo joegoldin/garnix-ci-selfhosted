@@ -31,10 +31,8 @@ const Page = () => {
   const { sshHost, selfHostMode } = useConfig();
   const serversResult = useLoading(getRunningServers, { poll: fromSecs(5) });
   if (serversResult.loading) return null;
-  // A self-hosted instance has no /docs site; point docs at upstream.
-  const hostingDocs = selfHostMode
-    ? "https://garnix.io/docs/hosting/introduction"
-    : "/docs/hosting/introduction";
+  // Root-relative: both upstream and the self-host docs mirror serve /docs.
+  const hostingDocs = "/docs/hosting/introduction";
   return (
     <div className={styles.container}>
       <Text type="h1" className={styles.h1}>
