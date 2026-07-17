@@ -26,7 +26,8 @@ import { Link } from "@/components/link";
 import { forgeBranchUrl } from "@/utils/forge";
 import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
-import { formatDurationShort, diffTime, fromSecs } from "@/utils/duration";
+import { fromSecs } from "@/utils/duration";
+import { ElapsedTime } from "@/components/elapsedTime";
 import { APIResult, Err, Ok, fetchFromAPI } from "@/services";
 import { useForm } from "@/hooks/useForm";
 import { cancelBuild } from "@/services/build";
@@ -84,9 +85,13 @@ const createHeaderProps = (module: Build, giteaUrl: string) => {
     {
       icon: stopwatchIcon,
       label: "Total time",
-      value: module.endTime
-        ? formatDurationShort(diffTime(module.endTime, module.startTime))
-        : "-",
+      value: (
+        <ElapsedTime
+          start={module.startTime}
+          end={module.endTime}
+          running={module.status === "Running"}
+        />
+      ),
     },
     {
       icon: folderIcon,

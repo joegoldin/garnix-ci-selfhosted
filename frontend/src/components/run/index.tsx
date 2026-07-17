@@ -9,7 +9,7 @@ import repoIcon from "@/components/icons/repo.svg";
 import stopwatchIcon from "@/components/icons/stopwatch.svg";
 import statusIcon from "@/components/icons/status.svg";
 import { Link } from "@/components/link";
-import { formatDurationShort, diffTime } from "@/utils/duration";
+import { ElapsedTime } from "@/components/elapsedTime";
 import { Run } from "@/services/run";
 import { RunLog } from "../buildLog";
 import styles from "./styles.module.css";
@@ -36,9 +36,13 @@ const createHeaderProps = (module: Run) => {
     {
       icon: stopwatchIcon,
       label: "Total time",
-      value: module.endTime
-        ? formatDurationShort(diffTime(module.endTime, module.startTime))
-        : "-",
+      value: (
+        <ElapsedTime
+          start={module.startTime}
+          end={module.endTime}
+          running={module.status === "Running"}
+        />
+      ),
     },
     {
       icon: statusIcon,
