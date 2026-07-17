@@ -23,7 +23,7 @@ import Garnix.Duration
 import Garnix.Monad
 import Garnix.Monad.Async (resolve)
 import Garnix.Prelude
-import Garnix.TestHelpers.Monad (shouldBeM, withTestEnvironment)
+import Garnix.TestHelpers.Monad (defaultInstallationAuth, shouldBeM, withTestEnvironment)
 import Garnix.TestInstances ()
 import Garnix.Types hiding (head)
 import Garnix.Types qualified as G
@@ -87,7 +87,12 @@ defaultCommitInfo =
 defaultRepoInfo :: RepoInfo
 defaultRepoInfo =
   RepoInfo
-    { _repoInfoInstallationAuth = error "defaultEventInfo does not set installation auth",
+    { -- A constructed-but-inert installation auth. It must not be a bottom:
+      -- `Loggable RepoInfo` forces this field on every log line, so an `error`
+      -- here crashes any test that logs a default RepoInfo (i.e. every test that
+      -- runs a build/action). A real (mock-compatible) value also lets flake
+      -- input authorization run against the mocked GitHub interface.
+      _repoInfoInstallationAuth = Just defaultInstallationAuth,
       _repoInfoGhToken = GhToken "",
       _repoInfoGhRepoOwner = "owner",
       _repoInfoGhRepoName = "repo",

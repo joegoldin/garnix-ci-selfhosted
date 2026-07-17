@@ -21,6 +21,7 @@ module Garnix.TestHelpers.Monad
     withTestEnvironment,
     withDevSecrets,
     githubAppPk,
+    defaultInstallationAuth,
     suppressLogsWhenPassing,
     suppressLogs,
     withLogCapturing,
@@ -61,7 +62,7 @@ import Garnix.Prelude
 import Garnix.TestHelpers.GithubInterface.Deprecated qualified as Deprecated
 import Garnix.TestHelpers.ProvisionerMock (testProvisioner)
 import Garnix.Types hiding (pending)
-import GitHub.App.Auth (AppAuth (..))
+import GitHub.App.Auth (AppAuth (..), InstallationAuth, mkInstallationAuth)
 import GitHub.Data.Id (Id (..))
 import Network.HTTP.Client.TLS (newTlsManager)
 import Servant.Auth.Server (CookieSettings (..), defaultCookieSettings, defaultJWTSettings, fromSecret)
@@ -331,6 +332,19 @@ withTestEnvironment tempDir action = do
               60
               10
         )
+
+-- | A constructed-but-inert installation auth for use as the default in test
+-- fixtures. Building it does no network I/O (tokens are only fetched lazily on
+-- real API calls, which the test suite mocks), so it is safe to force purely.
+-- It exists so a default RepoInfo can carry a non-bottom auth value: code that
+-- passes it to the (mocked) GitHub interface just needs *some* InstallationAuth.
+defaultInstallationAuth :: InstallationAuth
+defaultInstallationAuth =
+  System.IO.Unsafe.unsafePerformIO
+    $ mkInstallationAuth
+      (AppAuth (Id 42) (fromRight (error "cannot read githubAppPk") $ readRsaPem $ cs githubAppPk))
+      (Id 1)
+{-# NOINLINE defaultInstallationAuth #-}
 
 githubAppPk :: String
 githubAppPk =
