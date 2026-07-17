@@ -78,6 +78,10 @@ NixOS machine. Everything below uses example values — substitute your own:
   bubblewrap sandbox instead of upstream's runner fleet (`garnix.actionRunner`
   + `services.garnixServer.actionHost`). Required setup if you use actions —
   see [Actions](#actions-running-actions-on-a-self-host-runner).
+- **Build artifacts** — `garnix.yaml` `artifacts:` publishes declared
+  packages' build outputs as downloadable artifacts (file browser + `all.zip`,
+  stable latest-URLs, content-addressed dedupe, retention/locking) — a GitHub
+  Actions artifacts replacement. See [Artifacts](#artifacts).
 - **sops made optional** — bring your own secrets manager (agenix, sops, plain
   files); the backend reads `/run/secrets/<name>` paths or env vars.
 - Single-host adaptations: no Hetzner fleet required (`buildMachines` for
@@ -183,6 +187,7 @@ these with agenix/sops/whatever — **never** in the Nix store:
 | `opensearch-garnix` | opensearch auth |
 | `repo-secrets-key`, `repo-secrets-key-pub` | age keypair for repo secrets |
 | `garnix_action_runner_ssh` | SSH key the backend uses to reach the action runner (only if you run `actions` — see [Actions](#actions-running-actions-on-a-self-host-runner)). **Must be mode 0400** — OpenSSH rejects a group-readable key. |
+| `s3-artifacts-public-access-key-id`, `s3-artifacts-public-secret-access-key`, `s3-artifacts-private-access-key-id`, `s3-artifacts-private-secret-access-key` | artifact buckets, one key pair each (only if you use `artifacts:` — see [Artifacts](#artifacts)) |
 
 With agenix, the shape is:
 
@@ -414,6 +419,108 @@ slirp4netns (NAT, no host loopback), with a read-only `/nix` and a fresh
 `/home`. `GARNIX_CI`, `GARNIX_BRANCH`, `GARNIX_COMMIT_SHA`, and the repo's
 action key (`GARNIX_ACTION_PRIVATE_KEY_FILE`) are available to the command; add
 `withRepoContents: true` to bind the checked-out repo at `/tmp/base`.
+
+## Artifacts
+
+`garnix.yaml` `artifacts:` publishes the build outputs of declared flake
+packages as downloadable artifacts — a replacement for GitHub Actions
+artifacts. Declared packages are **auto-included in builds**, so an
+`artifacts:` entry alone is enough:
+
+```yaml
+artifacts:
+  - package: web-skills-zips   # packages.<arch>.web-skills-zips
+    name: claude-skills        # optional; defaults to the package name
+```
+
+On every successful build of the package, garnix walks the output
+(dereferencing symlinks), uploads each file plus an `all.zip` and a
+`manifest.json`, and the build page shows a file browser with per-file
+downloads and a "Download .zip" link. Storage is **content-addressed** by the
+output's store hash: builds whose output didn't change upload nothing and
+share objects. Artifacts go to a public or private bucket by the same
+repo-publicity rules as the cache.
+
+**Setup:**
+
+1. Two more S3/B2 buckets (public-read + private), separate from the cache
+   buckets, with one key pair per bucket (again: B2 keys can't scope to two
+   buckets).
+2. Four secrets, readable by the garnix user (mode 0440; see the step-3 table):
+   `s3-artifacts-public-access-key-id`, `s3-artifacts-public-secret-access-key`,
+   `s3-artifacts-private-access-key-id`, `s3-artifacts-private-secret-access-key`.
+3. Point the backend at the buckets (the feature is off when unset):
+   ```nix
+   services.garnixServer.s3Artifacts = {
+     publicBucket = "example-garnix-artifacts-public";
+     privateBucket = "example-garnix-artifacts-private";
+     publicBaseUrl = "https://f000.backblazeb2.com/file/example-garnix-artifacts-public";
+   };
+   ```
+   Host/region reuse the `s3Cache` values (same S3 account).
+4. Bypass the SSO gate for downloads on the app vhost (next to the webhook
+   bypass). Scripts fetch with garnix access tokens the proxy knows nothing
+   about; the backend enforces session-or-token auth and repo access itself
+   (public artifacts are anonymous by design):
+   ```caddyfile
+   @artifacts path /api/artifacts/*
+   handle @artifacts { reverse_proxy 127.0.0.1:8321 }
+   ```
+
+**Stable "latest" URLs** resolve to the newest published artifact per
+(repo, branch, name):
+
+```
+https://garnix.example.com/api/artifacts/<owner>/<repo>/<branch>/<name>/latest.zip
+```
+
+(also `.../latest/manifest` and `.../latest/files/<path>`; per-build URLs live
+under `/api/artifacts/build/<buildId>/…`.) Public-repo artifacts download
+anonymously — they 302 to the public bucket. Private ones need a session or an
+access token with the `api` scope (Account → Access Tokens), passed as the
+basic-auth password with your username as the login (netrc-compatible, same as
+the cache — bare `Bearer` tokens aren't supported because tokens are stored
+hashed per user):
+
+```bash
+curl -L -u youruser:<access token> \
+  https://garnix.example.com/api/artifacts/youruser/myrepo/main/claude-skills/latest.zip \
+  -o out.zip
+```
+
+**API reference** (all under `/api/artifacts`; branch segments URL-encode
+slashes, e.g. `feature%2Ffoo`):
+
+| Method | Path | What |
+|---|---|---|
+| GET | `/repo/<owner>/<repo>[?branch=]` | list a repo's artifacts (JSON) |
+| GET | `/build/<buildId>` | list a build's artifacts (JSON) |
+| GET | `/build/<buildId>/<name>/all.zip` | 302 → whole artifact as a zip |
+| GET | `/build/<buildId>/<name>/manifest` | 302 → `manifest.json` (paths, sizes, sha256s, exec bits) |
+| GET | `/build/<buildId>/<name>/files/<path>` | 302 → a single file |
+| GET | `/<owner>/<repo>/<branch>/<name>/latest.zip` | newest published artifact, as a zip |
+| GET | `/<owner>/<repo>/<branch>/<name>/latest/manifest` | newest artifact's manifest |
+| GET | `/<owner>/<repo>/<branch>/<name>/latest/files/<path>` | a single file from the newest artifact |
+| POST | `/build/<buildId>/lock` | lock the build's artifacts (admin) |
+| DELETE | `/build/<buildId>/lock` | unlock (admin) |
+| DELETE | `/<artifactId>` | delete an artifact row (admin; objects GC'd later) |
+
+Retention settings live under `/api/configure`: the `GET` response carries
+`artifact_retention_days`, `artifact_keep_latest`, `artifact_repo_overrides`,
+`artifact_usage`, and `locked_artifact_builds`; write via
+`PUT /api/configure/artifacts/default` and
+`PUT`/`DELETE /api/configure/artifacts/repo/<owner>/<repo>`. The `garnix.yaml`
+schema (including `artifacts:`) is served machine-readable at
+`/api/config-schema` — the docs there are generated from the same codec that
+parses the file.
+
+**Retention.** Artifacts are reaped after a global default of **30 days**, set
+on the Configure page along with per-repo overrides. Two exemptions:
+**keep-latest** (default **off**; when on, the newest artifact per
+repo/branch/name is never reaped — global default + per-repo override) and
+per-build **locks** (toggled on the build page or the Configure page; a locked
+build's artifacts are never reaped). Objects are garbage-collected once no
+artifact row references them.
 
 ## Optional: Gitea as a second forge
 
