@@ -88,6 +88,7 @@ statusToText = \case
   Failure -> "Failure"
   Timeout -> "Timeout"
   Cancelled -> "Cancelled"
+  Skipped -> "Skipped"
 
 -- | GET a Prometheus text-exposition endpoint and parse it into a name->value
 -- map. On any failure (unreachable, non-200, parse) returns an empty map, so

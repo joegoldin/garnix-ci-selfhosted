@@ -403,6 +403,10 @@ data RunReportStatus
   | RunReportStatusFailure
   | RunReportStatusTimeout
   | RunReportStatusCancelled
+  | -- | Completed without a pass or a failure (GitHub's @skipped@ conclusion,
+    -- treated as success for dependent checks). Emitted e.g. by a FOD check
+    -- where nothing could be re-verified but nothing failed.
+    RunReportStatusSkipped
   deriving stock (Eq, Show)
 
 data GhRunReport = GhRunReport

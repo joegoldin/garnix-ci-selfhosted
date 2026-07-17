@@ -25,6 +25,9 @@ update reporter commitInfo = do
     mapToMetaCheckStatus = \case
       Nothing -> CheckPending
       Just Success -> CheckSuccess
+      -- Skipped is non-blocking (success for dependents), so it must not fail
+      -- the overall meta-check.
+      Just Skipped -> CheckSuccess
       Just Failure -> CheckFail
       Just Timeout -> CheckFail
       Just Cancelled -> CheckFail

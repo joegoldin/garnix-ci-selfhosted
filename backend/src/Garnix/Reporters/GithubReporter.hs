@@ -95,3 +95,4 @@ checkRunSummary runName = \case
   RunReportStatusFailure -> ReportSummary $ runName <> " failed"
   RunReportStatusTimeout -> ReportSummary $ runName <> " timed out"
   RunReportStatusCancelled -> ReportSummary $ runName <> " cancelled"
+  RunReportStatusSkipped -> ReportSummary $ runName <> " skipped"

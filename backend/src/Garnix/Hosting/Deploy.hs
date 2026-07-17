@@ -213,6 +213,8 @@ checkAllBuildsSucceeded plan = do
     let packageName = getPackageName $ build ^. package
     case build ^. status of
       Just Success -> pure ()
+      -- A skipped dependency is non-blocking (success for dependents).
+      Just Skipped -> pure ()
       Just Failure -> throw $ OtherError $ packageName <> " failed"
       Just Timeout -> throw $ OtherError $ packageName <> " timed out"
       Just Cancelled -> throw $ OtherError $ packageName <> " cancelled"

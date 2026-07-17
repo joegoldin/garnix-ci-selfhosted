@@ -22,6 +22,13 @@
     contrast(92%);
 }
 
+/* Skipped is non-blocking (like GitHub/Gitea's neutral `skipped`): a muted
+   grey dash rather than a pass or a fail. */
+.skipped {
+  filter: invert(74%) sepia(1%) saturate(0%) hue-rotate(194deg) brightness(82%)
+    contrast(92%);
+}
+
 .pending {
   animation-name: spin;
   animation-iteration-count: infinite;

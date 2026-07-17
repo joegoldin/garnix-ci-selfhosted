@@ -353,7 +353,18 @@ builds:
 closures) ignoring the cache so a lying hash surfaces in CI. Only a **hash
 mismatch** fails the run; FODs whose source can't be re-fetched (dead mirrors,
 CDNs blocking automation user-agents) are reported as skipped-with-warning,
-since a failed fetch proves nothing about the hash.
+since a failed fetch proves nothing about the hash. The run's conclusion is
+unambiguous: **any FOD failed → failed**; nothing verified and every FOD was
+unfetchable → **skipped** (a distinct grey conclusion, not a green pass);
+anything actually verified (or known-good from a prior build) → **success**.
+
+**Check conclusions map to the forge's native ones.** A run/check reports one of
+`success`, `failure`, `timed out`, `cancelled`, or `skipped`. On GitHub these
+become check-run conclusions (`success`/`failure`/`timed_out`/`cancelled`/`skipped`);
+on Gitea the equivalent commit statuses (`skipped` is a real Gitea state as of
+recent versions). `skipped` is non-blocking — treated as success for dependent
+checks and the overall commit — but shown distinctly in the UI (a grey dash)
+so an all-skipped check is never mistaken for a green pass.
 
 **Only the latest commit matters?** Set `cancelSupersededBuilds: true` in
 `garnix.yaml` and a new push to a branch cancels the still-queued/running
@@ -533,9 +544,11 @@ This is additive: leave `giteaUrl` unset and nothing changes.
 **What's supported (MVP):** push webhooks → build → **commit-status** reporting.
 Gitea has no check-runs API, so garnix posts commit statuses
 (`POST /api/v1/repos/{owner}/{repo}/statuses/{sha}`): one `pending` when a run
-starts, one terminal `success`/`failure`/`error` when it finishes, each linking
-to the garnix build page. Repo source is cloned from Gitea with the configured
-token; publicity/collaborators are read from Gitea's API.
+starts, one terminal `success`/`failure`/`error`/`skipped` when it finishes,
+each linking to the garnix build page. (`skipped` is a native Gitea commit-status
+state in recent versions and is non-blocking, mirroring GitHub's `skipped`
+conclusion.) Repo source is cloned from Gitea with the configured token;
+publicity/collaborators are read from Gitea's API.
 
 **Setup:**
 

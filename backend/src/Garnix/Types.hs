@@ -536,7 +536,7 @@ instance FromJSON BuildUpdate where parseJSON = ourParseJSON
 
 -- * Project
 
-data Status = Success | Failure | Timeout | Cancelled
+data Status = Success | Failure | Timeout | Cancelled | Skipped
   deriving stock (Eq, Ord, Show, Generic, Bounded, Enum)
   deriving anyclass (ToJSON, FromJSON)
 
@@ -546,6 +546,7 @@ instance Pretty Status where
     Failure -> "failure"
     Timeout -> "timeout"
     Cancelled -> "cancelled"
+    Skipped -> "skipped"
 
 instance PGType "build_status" where
   type PGVal "build_status" = Status
@@ -556,6 +557,7 @@ instance PGParameter "build_status" Status where
     Failure -> "failure"
     Timeout -> "timeout"
     Cancelled -> "cancelled"
+    Skipped -> "skipped"
 
 instance PGColumn "build_status" Status where
   pgDecode _ status = case status of
@@ -563,7 +565,8 @@ instance PGColumn "build_status" Status where
     "failure" -> Failure
     "timeout" -> Timeout
     "cancelled" -> Cancelled
-    e -> error $ "Impossible: expected 'success', 'failure', 'timeout' or 'cancelled', got: " <> cs e
+    "skipped" -> Skipped
+    e -> error $ "Impossible: expected 'success', 'failure', 'timeout', 'cancelled' or 'skipped', got: " <> cs e
 
 newtype Logs = Logs {getLogs :: Text}
   deriving stock (Eq, Show, Generic)

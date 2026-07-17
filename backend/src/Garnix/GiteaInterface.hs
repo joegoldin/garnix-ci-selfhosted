@@ -99,7 +99,7 @@ giteaGetRemote cfg (GhRepoOwner (GhLogin owner)) (GhRepoName repo) =
         <> repo
         <> ".git"
 
-data GiteaStatusState = GiteaPending | GiteaSuccess | GiteaError | GiteaFailure
+data GiteaStatusState = GiteaPending | GiteaSuccess | GiteaError | GiteaFailure | GiteaSkipped
   deriving stock (Eq, Show)
 
 giteaStateText :: GiteaStatusState -> Text
@@ -108,6 +108,7 @@ giteaStateText = \case
   GiteaSuccess -> "success"
   GiteaError -> "error"
   GiteaFailure -> "failure"
+  GiteaSkipped -> "skipped"
 
 data GiteaCommitStatus = GiteaCommitStatus
   { giteaStatusState :: GiteaStatusState,

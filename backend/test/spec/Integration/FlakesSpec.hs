@@ -265,6 +265,7 @@ testFlakeSpec dir fspec = do
               RunReportStatusFailure -> Just "failure"
               RunReportStatusTimeout -> Just "timeout"
               RunReportStatusCancelled -> Just "cancelled"
+              RunReportStatusSkipped -> Just "skipped"
         let output =
               RunOutput
                 { _runOutputTitle = title,

@@ -62,6 +62,7 @@ reportBuildResult runReporter build = do
         Just Failure -> RunReportStatusFailure
         Just Timeout -> RunReportStatusTimeout
         Just Cancelled -> RunReportStatusCancelled
+        Just Skipped -> RunReportStatusSkipped
   ignoringAllErrors $ reportComplete runReporter status'
 
 reportOnError :: RunReporter -> Build -> CommitInfo -> M a -> M a

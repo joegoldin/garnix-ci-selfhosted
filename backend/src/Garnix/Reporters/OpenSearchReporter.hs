@@ -31,6 +31,7 @@ openSearchReporter =
                         RunReportStatusFailure -> Just Failure
                         RunReportStatusTimeout -> Just Timeout
                         RunReportStatusCancelled -> Just Cancelled
+                        RunReportStatusSkipped -> Just Skipped
                   DB.setRunStatus (run ^. id) status,
                 ghRunId = Nothing
               }

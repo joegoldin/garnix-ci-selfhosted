@@ -7,6 +7,9 @@ const runStatusSchema = z
     z.literal("Success"),
     z.literal("Timeout"),
     z.literal("Cancelled"),
+    // Completed without a pass or a failure (GitHub's `skipped` conclusion) —
+    // e.g. a FOD check where nothing could be re-verified but nothing failed.
+    z.literal("Skipped"),
   ])
   .optional();
 

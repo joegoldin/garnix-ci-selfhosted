@@ -114,7 +114,9 @@ getSingleCommit user' commit = do
     addRunCounts runs summary =
       let count p = fromIntegral $ length $ filter p runs
        in summary
-            & succeeded %~ (+ count ((== Just Success) . _runStatus))
+            -- Skipped is non-blocking (success for dependents); fold it into
+            -- the succeeded tally so skipped runs are not dropped from counts.
+            & succeeded %~ (+ count (\r -> _runStatus r == Just Success || _runStatus r == Just Skipped))
             & failed %~ (+ count (\r -> _runStatus r == Just Failure || _runStatus r == Just Timeout))
             & cancelled %~ (+ count ((== Just Cancelled) . _runStatus))
             & running %~ (+ count (\r -> isNothing (_runStatus r) && isJust (_runRunStartedAt r)))

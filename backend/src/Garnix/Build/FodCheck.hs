@@ -87,11 +87,21 @@ withFodChecker reporter commitInfo plan action = do
         0 -> pure ()
         1 -> reportToSummary "1 FOD could not be re-verified (source could not be fetched) and was skipped."
         n -> reportToSummary $ show n <> " FODs could not be re-verified (source could not be fetched) and were skipped."
+      -- Unambiguous conclusion: any FOD check that failed makes the run a
+      -- failure; otherwise, if nothing was actually re-verified (nor known-good
+      -- from a previous build) and all we had were unverifiable sources, the
+      -- run is skipped rather than a green pass; anything else is a success.
       case errors of
-        Right () -> reportComplete (fodChecker ^. #runReporter) RunReportStatusSuccess
         Left (errors :: [Text]) -> do
           reportToSummary $ show (length errors) <> " FOD checks failed."
           reportComplete (fodChecker ^. #runReporter) RunReportStatusFailure
+        Right () -> do
+          let hadVerifiedFod = verified > 0 || skipped > 0
+          if unfetchable > 0 && not hadVerifiedFod
+            then do
+              reportToSummary "No FODs could be re-verified; marking this check as skipped."
+              reportComplete (fodChecker ^. #runReporter) RunReportStatusSkipped
+            else reportComplete (fodChecker ^. #runReporter) RunReportStatusSuccess
   either rethrow pure actionResult
 
 getFodChecker :: Reporter -> CommitInfo -> ProductPlan -> M (Maybe FodChecker)

@@ -47,6 +47,8 @@ toGiteaState = \case
   RunReportStatusFailure -> GiteaFailure
   RunReportStatusTimeout -> GiteaError
   RunReportStatusCancelled -> GiteaError
+  -- Gitea (like GitHub) has a dedicated non-blocking `skipped` commit status.
+  RunReportStatusSkipped -> GiteaSkipped
 
 statusPhrase :: RunReportStatus -> Text
 statusPhrase = \case
@@ -55,6 +57,7 @@ statusPhrase = \case
   RunReportStatusFailure -> "failed"
   RunReportStatusTimeout -> "timed out"
   RunReportStatusCancelled -> "cancelled"
+  RunReportStatusSkipped -> "skipped"
 
 -- | Absolute link into the garnix UI for this run (Gitea target_url must be
 -- absolute, unlike the relative URIs the GitHub reporter uses).

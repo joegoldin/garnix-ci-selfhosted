@@ -2,6 +2,7 @@ import Image from "next/image";
 import successIcon from "@/components/icons/success.svg";
 import failureIcon from "@/components/icons/failure.svg";
 import pendingIcon from "@/components/icons/pending.svg";
+import skippedIcon from "@/components/icons/dash.svg";
 import { BuildStatus } from "@/services/build";
 import styles from "./styles.module.css";
 
@@ -53,6 +54,15 @@ export const StatusIcon = ({ status }: Props) => {
         alt="cancelled"
         title="cancelled"
         className={`${styles.icon} ${styles.cancelled}`}
+      />
+    );
+  else if (status === "Skipped")
+    return (
+      <Image
+        src={skippedIcon}
+        alt="skipped"
+        title="skipped"
+        className={`${styles.icon} ${styles.skipped}`}
       />
     );
   else return null;

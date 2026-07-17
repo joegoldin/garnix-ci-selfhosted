@@ -226,6 +226,24 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       report ^. #logs `shouldBeM` "Checking fixed output derivations...\n1 FOD was verified."
       verifiedFodsShouldBe [fodDrvPath]
 
+    it "marks the run skipped when nothing could be re-verified" $ do
+      -- A FOD whose source can't be re-fetched (simulated 403) proves nothing
+      -- about its hash: it's neither a pass nor a failure. With no other FODs
+      -- verified, the whole check concludes skipped rather than a green pass.
+      fod <- mkFodFlake Nothing =<< mkRandomOutput
+      drvPath <- fst <$> testDerivation fod "fod"
+      report <-
+        withMock
+          #rebuildFodMock
+          (\(_ :: (System, Nix.DrvPath)) -> pure (Left "curl: (22) The requested URL returned error: 403" :: Either Text Text))
+          $ test drvPath
+      -- Skipped is non-blocking, so the test reporter still sees a "pass".
+      (report ^. #success) `shouldBeM` Just True
+      let logs = cs (report ^. #logs) :: String
+      logs `shouldContainM` "could not be re-verified (source could not be fetched) and was skipped"
+      logs `shouldContainM` "marking this check as skipped"
+      verifiedFodsShouldBe []
+
     it "fails for lying fods" $ do
       output <- mkRandomOutput
       validButMalicious <- mkFodFlake Nothing output

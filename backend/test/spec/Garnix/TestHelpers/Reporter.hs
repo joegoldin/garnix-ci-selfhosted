@@ -44,6 +44,8 @@ withTestReporter action = do
                           RunReportStatusFailure -> False
                           RunReportStatusTimeout -> False
                           RunReportStatusCancelled -> False
+                          -- Skipped is non-blocking (success for dependents).
+                          RunReportStatusSkipped -> True
                     addToReport (Just success) Nothing,
                   ghRunId = Nothing
                 }

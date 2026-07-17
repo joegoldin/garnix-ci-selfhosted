@@ -54,7 +54,8 @@ spec = do
     let testCases =
           [ (flip reportComplete RunReportStatusSuccess, "Success"),
             (flip reportComplete RunReportStatusFailure, "Failure"),
-            (flip reportComplete RunReportStatusCancelled, "Cancelled")
+            (flip reportComplete RunReportStatusCancelled, "Cancelled"),
+            (flip reportComplete RunReportStatusSkipped, "Skipped")
           ]
     forM_ testCases $ \(reportCompleteFn, status) -> do
       it ("allows marking runs with status '" <> cs status <> "'") $ withServer $ \server -> do

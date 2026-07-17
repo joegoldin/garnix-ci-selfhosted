@@ -386,6 +386,7 @@ fromRunReport (GhRunReport name commit url status' title summary logs') = do
           RunReportStatusFailure -> Just "failure"
           RunReportStatusTimeout -> Just "timed_out"
           RunReportStatusCancelled -> Just "cancelled"
+          RunReportStatusSkipped -> Just "skipped"
       }
 
 handleGithubRequestErrors :: (HasCallStack) => Text -> GhRepoOwner -> GhRepoName -> Either GH.Error a -> M a
