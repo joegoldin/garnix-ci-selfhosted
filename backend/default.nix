@@ -206,8 +206,6 @@ rec {
             [
               (pkgs.haskellPackages.ghc.withPackages (p: p.garnix.getBuildInputs.haskellBuildInputs))
               pkgs.haskellPackages.cabal-install
-              pkgs.yaml2json
-              pkgs.jq
             ]
           );
         text = ''
@@ -226,9 +224,12 @@ rec {
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name"
           git config --global init.defaultBranch main
-          WATCHDOG_GITHUB_ACCESS_TOKEN=$(sops --decrypt ${./../secrets/dev.yaml} | yaml2json | jq -r .watchdog_github_access_token)
-          mkdir -p ~/.config/nix
-          echo access-tokens = github.com="$WATCHDOG_GITHUB_ACCESS_TOKEN" > ~/.config/nix/nix.conf
+          # nixpkgs and other public flake inputs are fetched unauthenticated:
+          # we deliberately do NOT bake a github access token into the test env.
+          # secrets/dev.yaml is encrypted only to the committed dev key in a
+          # public repo, so any token placed there would be effectively public
+          # (and an expired one 401s every github fetch — worse than none). The
+          # tradeoff is GitHub's unauthenticated rate limit; acceptable for CI.
 
           cp -r ${./..} src
           chmod a+rwX -R src
