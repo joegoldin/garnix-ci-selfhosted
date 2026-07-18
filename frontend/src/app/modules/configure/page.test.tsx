@@ -346,7 +346,14 @@ beforeEach(() => {
 });
 
 const selectTestRepo = async () => {
-  const selectButton = await screen.findByText("Select");
+  // The repo list loads via a mocked fetch + several re-renders; under
+  // full-suite worker contention the default 1s find timeout is too tight
+  // (this heavy age-wasm test can run tens of seconds), so allow longer.
+  const selectButton = await screen.findByText(
+    "Select",
+    {},
+    { timeout: 15000 },
+  );
   await user.click(selectButton);
 };
 

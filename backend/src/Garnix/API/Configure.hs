@@ -342,7 +342,7 @@ configureAPI auth =
         pure NoContent,
       _configureAPIListRepos = do
         requireSelfHostConfig auth
-        map (\(o, r) -> RepoRefDto o r) <$> DB.getBuiltRepos
+        map (uncurry RepoRefDto) <$> DB.getBuiltRepos
     }
   where
     -- Keep values within the Int16 minute range the plan timeout fields use.
