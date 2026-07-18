@@ -199,16 +199,6 @@
   color: var(--color-stone-500);
 }
 
-/* Read-only wildcard hosting bases (nix-configured + verified connected). */
-.hostingBases {
-  margin: 4px 0 10px;
-}
-
-.hostingBasesLabel {
-  font-weight: 600;
-  font-size: 13px;
-}
-
 .code {
   font-family: monospace;
   font-size: 0.9em;
@@ -218,21 +208,17 @@
   padding: 0 3px;
 }
 
-.baseList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
+/* A read-only operator wildcard base (nix-configured) row in the domains list. */
+.badgeBase {
+  background-color: var(--color-stone-100);
+  color: var(--color-stone-600);
+  border: 1px solid var(--color-stone-300);
 }
 
-.baseChip {
-  font-family: monospace;
+.readonlyNote {
   font-size: 12px;
-  padding: 2px 9px;
-  border: 1px solid var(--color-stone-300);
-  border-radius: 999px;
-  background: var(--color-stone-100);
-  color: var(--color-stone-600);
+  font-style: italic;
+  color: var(--color-stone-500);
 }
 
 /* Scrollable list of built repos, each linking to its builds page. */

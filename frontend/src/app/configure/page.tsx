@@ -137,31 +137,11 @@ const Page = () => {
             Connected domains
           </Text>
           <Text className={styles.help}>
-            Registering a domain lets garnix host servers under it. Point its
-            DNS at the garnix host, then Verify to confirm it resolves here.
+            Servers can be hosted under these wildcard bases at{" "}
+            <code className={styles.code}>&lt;name&gt;.&lt;base&gt;</code>.
+            Operator bases (nix-configured) are read-only; register your own
+            below, point its DNS at the garnix host, then Verify.
           </Text>
-          {hostingBases.length > 0 && (
-            <div className={styles.hostingBases}>
-              <Text className={styles.hostingBasesLabel}>
-                Wildcard hosting bases
-              </Text>
-              <Text className={styles.help}>
-                Servers are reachable at{" "}
-                <code className={styles.code}>&lt;name&gt;.&lt;base&gt;</code>{" "}
-                under these — the operator&apos;s nix-configured bases plus any
-                verified connected domain. A server&apos;s{" "}
-                <code className={styles.code}>domains</code> under one of them
-                needs no per-server DNS.
-              </Text>
-              <div className={styles.baseList}>
-                {hostingBases.map((b) => (
-                  <span key={b} className={styles.baseChip}>
-                    {b}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
           {domains.loading ? (
             <Loading />
           ) : !domains.data.ok ? (
@@ -169,6 +149,7 @@ const Page = () => {
           ) : (
             <ConnectedDomainsSettings
               domains={domains.data.data}
+              hostingBases={hostingBases}
               reload={domains.reload}
             />
           )}
@@ -334,13 +315,21 @@ const BuildTimeoutSettings = ({
 
 const ConnectedDomainsSettings = ({
   domains,
+  hostingBases,
   reload,
 }: {
   domains: Array<ConnectedDomain>;
+  hostingBases: Array<string>;
   reload: () => void;
 }) => {
   const [newDomain, setNewDomain] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  // Operator wildcard bases (default hosting domain + nix extraHostingDomains)
+  // shown read-only. Exclude any that are also in the editable registry so a
+  // verified connected domain isn't listed twice.
+  const operatorBases = hostingBases.filter(
+    (b) => !domains.some((d) => d.domain === b),
+  );
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -377,10 +366,21 @@ const ConnectedDomainsSettings = ({
         </Button>
       </div>
 
-      {domains.length === 0 ? (
+      {domains.length === 0 && operatorBases.length === 0 ? (
         <Text className={styles.help}>No connected domains yet.</Text>
       ) : (
         <ul className={styles.overrideList}>
+          {operatorBases.map((b) => (
+            <li key={`base-${b}`} className={styles.overrideRow}>
+              <span className={styles.overrideRepo}>{b}</span>
+              <span className={`${styles.badge} ${styles.badgeBase}`}>
+                wildcard base
+              </span>
+              <span className={styles.overrideActions}>
+                <span className={styles.readonlyNote}>nix-configured</span>
+              </span>
+            </li>
+          ))}
           {domains.map((d) => (
             <li key={d.id} className={styles.overrideRow}>
               <span className={styles.overrideRepo}>{d.domain}</span>
