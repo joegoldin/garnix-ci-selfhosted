@@ -74,6 +74,13 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
   picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
   [Server deployments](#server-deployments-self-host-microvm-hosting).
+- **Custom & vanity domains** — `garnix.yaml` `servers[].domains:` lets a
+  hosted server answer on extra hostnames; operator wildcard bases
+  (`services.garnixServer.extraHostingDomains`) and admin-registered
+  connected domains (Configure page, DNS-points-here verify) both add more
+  wildcard-covered bases, and the Servers-page **(i)** menu shows the exact
+  DNS record for anything else. See
+  [Custom & vanity domains](#custom--vanity-domains).
 - **Self-host action runner** — `garnix.yaml` `actions` run in a local
   bubblewrap sandbox instead of upstream's runner fleet (`garnix.actionRunner`
   + `services.garnixServer.actionHost`). Required setup if you use actions —
@@ -833,6 +840,51 @@ via Traefik (on-demand TLS issues for them automatically). `tcp` ports get a
 public host port via DNAT (`tcpExposePortBase + id*20 + i`); the host:port is
 shown on the Servers page. Set `services.garnixServer.sshHost` and the
 provisioner's `exposePortRange` (firewall) for the DNAT methods.
+
+### Custom & vanity domains
+
+`garnix.yaml` `servers[]` entries take an optional `domains:` list — extra
+hostnames a deployed server answers on, alongside its default
+`<pkg>.<branch>.<repo>.<owner>.<hostingDomain>` address:
+
+```yaml
+servers:
+  - configuration: myServer
+    deployment: { branch: main }
+    domains:
+      - myapp.example.dev      # vanity, under a known hosting base
+      - app.example.com      # bare custom domain
+```
+
+Each declared name is checked against the known **hosting bases** — the
+default `hostingDomain`, any operator `extraHostingDomains`, and any verified
+**connected domain** (below). A name under a base is wildcard-covered: garnix
+adds a `Host(...)` router and an on-demand-TLS allow-entry, no DNS action
+needed. A name under **no** base is a bare custom domain — point it at garnix
+yourself with an `A` record to the host's IP or a `CNAME` to a garnix domain
+(the (i) menu below tells you which).
+
+**Operator wildcard bases.** `services.garnixServer.extraHostingDomains` (a
+list of strings) adds vanity bases beyond the default `hostingDomain`, e.g.
+`[ "example.dev" "example.app" ]` — each needs its own manual wildcard DNS record,
+`*.<domain>` → the host, same as `hostingDomain`'s. Also set
+`services.garnixServer.hostingPublicIp` to the host's public IP so the (i)
+menu can render exact `A`-record instructions for bare custom domains;
+without it, the menu only offers the CNAME-to-a-garnix-domain option (fine
+for subdomains — apex domains need the IP).
+
+**Connected domains (Configure page, admin-only).** Register a domain
+without touching nix: add it, point its DNS at garnix (`A`, `CNAME`, or a
+wildcard record, as appropriate), then click **Verify**. Verification is a
+**DNS-points-here** check — an A/wildcard lookup confirming the domain
+already resolves to the host — not a TXT token or ownership challenge. Once
+verified, the domain joins the known bases above, so any `servers[].domains`
+entry under it becomes wildcard-covered with no further DNS changes.
+
+**Servers page (i) menu.** Each running server's controls include an **(i)**
+button listing its declared domains and, per domain, the exact record to set
+(`A` → the hosting IP, or `CNAME` → the default base) plus a live "resolves
+here yet?" status, using the same DNS-points-here check as Verify.
 
 ### Monitoring
 
