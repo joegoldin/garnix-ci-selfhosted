@@ -65,6 +65,10 @@
   margin-top: 24px;
 }
 
+.chartBlock {
+  width: 100%;
+}
+
 .chartHeader {
   display: flex;
   justify-content: space-between;

@@ -17,7 +17,6 @@ const serverStatsSampleSchema = z.object({
   mem_total_kb: z.number(),
   sampled_at: z.coerce.date(),
 });
-export type ServerStatsSample = z.infer<typeof serverStatsSampleSchema>;
 
 const runningServerSchema = z.object({
   id: z.string(),
