@@ -284,7 +284,7 @@ spec = do
         void $ createSimpleServer user ((ipv4Addr .~ "11.111.111.1") . (ipv6Addr .~ "::"))
         hosts <- getHostsForTraefik
         case hosts of
-          HostList [_] _ _ _ -> pure ()
+          HostList [_] _ _ _ _ -> pure ()
           h -> liftIO $ expectationFailure $ "Expected exactly one host. Got: " <> cs (show h)
         pure $ defaultGolden "HostSpec/adds-hosts-when-a-new-server-is-deployed" $ cs $ encodePretty hosts
 
@@ -295,7 +295,7 @@ spec = do
         markServerDead initial
         finalHosts <- getHostsForTraefik
         case finalHosts of
-          HostList [_] _ _ _ -> pure ()
+          HostList [_] _ _ _ _ -> pure ()
           h -> liftIO $ expectationFailure $ "Expected exactly one host. Got: " <> cs (show h)
         pure $ defaultGolden "HostSpec/reflects-the-latest-deployed-versions" $ cs $ encodePretty finalHosts
 
@@ -306,7 +306,7 @@ spec = do
         void $ createServer (GhRepoOwner $ GhLogin "owner") (GhRepoName "repo") (Branch "feat") Nothing (PackageName "psql") Nothing user ((ipv4Addr .~ "11.111.111.3") . (ipv6Addr .~ "::"))
         hosts <- getHostsForTraefik
         case hosts of
-          HostList [_, _, _] _ _ _ -> pure ()
+          HostList [_, _, _] _ _ _ _ -> pure ()
           h -> liftIO $ expectationFailure $ "Expected exactly three hosts. Got: " <> cs (show h)
         pure $ defaultGolden "HostSpec/supports-exposing-more-than-one-configuration-per-repo" $ cs $ encodePretty hosts
 
@@ -315,7 +315,7 @@ spec = do
         void $ createServer (GhRepoOwner $ GhLogin "owner") (GhRepoName "repo") (Branch "main") (Just 42) (PackageName "nginx") Nothing user ((ipv4Addr .~ "11.111.111.1") . (ipv6Addr .~ "::"))
         hosts <- getHostsForTraefik
         case hosts of
-          HostList [_] _ _ _ -> pure ()
+          HostList [_] _ _ _ _ -> pure ()
           h -> liftIO $ expectationFailure $ "Expected exactly one host. Got: " <> cs (show h)
         pure $ defaultGolden "HostSpec/serves-configurations-for-pull-request-servers" $ cs $ encodePretty hosts
 
@@ -324,7 +324,7 @@ spec = do
         void $ createServer (GhRepoOwner $ GhLogin "owner") (GhRepoName "repo") (Branch "sh/my-cool-feature") (Just 42) (PackageName "nginx") Nothing user ((ipv4Addr .~ "11.111.111.1") . (ipv6Addr .~ "::"))
         hosts <- getHostsForTraefik
         case hosts of
-          HostList [_] _ _ _ -> pure ()
+          HostList [_] _ _ _ _ -> pure ()
           h -> liftIO $ expectationFailure $ "Expected exactly one host. Got: " <> cs (show h)
         pure $ defaultGolden "HostSpec/serves-pull-request-configurations-when-the-branch-name-is-not-a-valid-subdomain" $ cs $ encodePretty hosts
 
