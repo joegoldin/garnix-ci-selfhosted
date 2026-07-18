@@ -126,6 +126,18 @@ in
             When null, the upstream default (garnix.me) is used.
           '';
         };
+        extraHostingDomains = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          example = [ "example.dev" ];
+          description = "Extra wildcard base domains the operator owns; servers can be hosted at <name>.<domain>. Each needs a manual wildcard *.<domain> -> host DNS record. Sets GARNIX_EXTRA_HOSTING_DOMAINS.";
+        };
+        hostingPublicIp = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "203.0.113.10";
+          description = "Public IP of the garnix host, shown in A-record instructions for bare custom domains. Sets GARNIX_HOSTING_PUBLIC_IP.";
+        };
         metricsScrapeUrl = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -504,6 +516,12 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.hostingDomain != null) [
           "GARNIX_HOSTING_DOMAIN=${config.services.garnixServer.hostingDomain}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.extraHostingDomains != [ ]) [
+          "GARNIX_EXTRA_HOSTING_DOMAINS=${lib.concatStringsSep "," config.services.garnixServer.extraHostingDomains}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.hostingPublicIp != null) [
+          "GARNIX_HOSTING_PUBLIC_IP=${config.services.garnixServer.hostingPublicIp}"
         ]
         ++ lib.optionals (config.services.garnixServer.provisionerSocket != null) [
           "GARNIX_PROVISIONER_SOCKET=${config.services.garnixServer.provisionerSocket}"

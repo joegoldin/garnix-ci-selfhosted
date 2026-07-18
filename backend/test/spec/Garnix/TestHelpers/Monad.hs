@@ -313,6 +313,8 @@ withTestEnvironment tempDir action = do
                   featureFlagConfig,
                   fodCheckPool,
                   hostingDomain = "garnix.me",
+                  extraHostingDomains = [],
+                  hostingPublicIp = Nothing,
                   metricsScrapeUrl = "http://127.0.0.1:8323/metrics",
                   nodeExporterUrl = "http://127.0.0.1:9100/metrics",
                   sshHost = "",

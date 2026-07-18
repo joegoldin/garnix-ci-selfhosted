@@ -272,6 +272,9 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
   hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
+  extraHostingDomains' <-
+    maybe [] (filter (not . T.null) . T.splitOn "," . cs) <$> lookupEnv "GARNIX_EXTRA_HOSTING_DOMAINS"
+  hostingPublicIp' <- fmap cs <$> lookupEnv "GARNIX_HOSTING_PUBLIC_IP"
   -- The garnix Prometheus endpoint (serveMetrics -> prometheusApp []) serves at
   -- the ROOT path, not /metrics — so the default scrape URL has no /metrics.
   metricsScrapeUrl' <- maybe "http://127.0.0.1:8323/" cs <$> lookupEnv "GARNIX_METRICS_SCRAPE_URL"
@@ -400,6 +403,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               manager = mgr,
               baseUrl = cs burl,
               hostingDomain = hostingDomain',
+              extraHostingDomains = extraHostingDomains',
+              hostingPublicIp = hostingPublicIp',
               metricsScrapeUrl = metricsScrapeUrl',
               nodeExporterUrl = nodeExporterUrl',
               sshHost = sshHost',

@@ -86,6 +86,12 @@ data Env = Env
     -- | Base domain under which deployed servers are exposed (upstream:
     -- "garnix.me"). Overridden via GARNIX_HOSTING_DOMAIN for self-hosting.
     hostingDomain :: Text,
+    -- | Extra wildcard base domains the operator owns (GARNIX_EXTRA_HOSTING_DOMAINS,
+    -- comma-separated). A server domain under any of these is wildcard-routed.
+    extraHostingDomains :: [Text],
+    -- | Public IP of the garnix host, for A-record instructions in the Servers
+    -- (i) menu (GARNIX_HOSTING_PUBLIC_IP). Nothing => show CNAME instructions only.
+    hostingPublicIp :: Maybe Text,
     -- | URL of garnix's own Prometheus metrics (self-host monitoring page).
     metricsScrapeUrl :: Text,
     -- | URL of the host node-exporter metrics (self-host monitoring page).
