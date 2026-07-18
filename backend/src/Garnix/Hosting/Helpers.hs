@@ -4,6 +4,7 @@ module Garnix.Hosting.Helpers
   )
 where
 
+import Control.Monad (mfilter)
 import Data.Aeson qualified as Aeson
 import Data.Maybe (mapMaybe)
 import Database.PostgreSQL.Typed (pgSQL)
@@ -45,9 +46,10 @@ data RunningServer = RunningServer
     -- (CPU %, memory used/total). 'Nothing' until the guest reports; the
     -- Servers-page row renders it compactly and the Monitor page draws history.
     _runningServerStats :: Maybe ServerStatsSample,
-    -- | Declared extra hostnames (servers.domains) this server answers on; the
-    -- Servers-page (i) menu renders the DNS records to set for each.
-    _runningServerDomains :: [Text]
+    -- | Declared extra hostnames (servers.domains) this server answers on, when
+    -- it declares any; the Servers-page (i) menu renders the DNS records to set
+    -- for each. 'Nothing' (omitted from JSON, like 'exposed'/'stats') when none.
+    _runningServerDomains :: Maybe [Text]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -75,7 +77,7 @@ getRunningAndRecentServersForOwners owners = do
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (fromMaybe [] (lookup id domainsAssoc))
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (mfilter (not . null) (lookup id domainsAssoc))
     )
     <$> DB.pgQuery
       [pgSQL|
