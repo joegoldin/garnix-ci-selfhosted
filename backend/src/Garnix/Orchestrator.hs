@@ -6,6 +6,8 @@ module Garnix.Orchestrator
     handleRerun,
     restartBuild,
     restartCommit,
+    listRepoBranches,
+    triggerBranchBuild,
     RerunEvent (..),
   )
 where
@@ -16,6 +18,7 @@ import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withInternalCacheToken)
 import Garnix.DB qualified as DB
 import Garnix.GiteaInterface (requireGiteaConfig)
+import Garnix.GithubInterface (listBranchesGithub)
 import Garnix.Hosting.Deploy (rolloutNewServerVersion)
 import Garnix.Monad
 import Garnix.Monad.Async (emptyPromise, resolve, spawn)
@@ -160,3 +163,72 @@ assertIsAllowedToBuild owner repo = do
   isDenied <- DB.isDenylisted owner repo
   when isDenied $ do
     throw IsDeniedAccess
+
+-- | Branches offered by the manual "Trigger Builds" picker, forge-aware:
+--
+--   * GitHub: all branches, live from the GitHub API (so you can trigger a
+--     branch that has never been built).
+--   * Gitea: the distinct branches garnix has already seen for this repo
+--     (there is no Gitea branch-list API wired up), newest first.
+listRepoBranches :: (HasCallStack) => GhRepoOwner -> GhRepoName -> M [Branch]
+listRepoBranches owner repo = do
+  commits <- DB.getCommitsByOwnerAndRepo owner repo
+  case repoForgeFromCommits commits of
+    ForgeGithub -> do
+      (_, token) <- githubInstallationAuth owner repo
+      listBranchesGithub token owner repo
+    ForgeGitea -> pure . nub . catMaybes $ map (^. branch) commits
+
+-- | Manually trigger a build for the latest commit on a branch, forge-aware:
+--
+--   * GitHub: resolve the branch's live HEAD and run a fresh eval for it.
+--   * Gitea: re-run the latest commit garnix already has for that branch
+--     (reusing the restart path); errors if the branch was never built.
+--
+-- Returns the commit that was (re)built. The caller must already have checked
+-- access; 'publicity' is threaded into the GitHub CommitInfo.
+triggerBranchBuild :: (HasCallStack) => GhLogin -> RepoPublicity -> GhRepoOwner -> GhRepoName -> Branch -> M CommitHash
+triggerBranchBuild reqUser' publicity owner repo targetBranch = do
+  assertIsAllowedToBuild owner repo
+  commits <- DB.getCommitsByOwnerAndRepo owner repo
+  case repoForgeFromCommits commits of
+    ForgeGithub -> do
+      (iAuth, token) <- githubInstallationAuth owner repo
+      commit <- getHeadCommit token owner repo targetBranch
+      let repoInfo' = RepoInfo ForgeGithub (Just iAuth) token owner repo
+          commitInfo =
+            CommitInfo
+              { _commitInfoReqUser = reqUser',
+                _commitInfoRepoPublicity = publicity,
+                _commitInfoRepoInfo = repoInfo',
+                _commitInfoBranch = Just targetBranch,
+                _commitInfoPrFromFork = Nothing,
+                _commitInfoCommit = commit
+              }
+          reporter = openSearchReporter <> mkGithubReporter repoInfo' commit
+      void $ handleCommit reporter True commitInfo
+      pure commit
+    ForgeGitea -> do
+      builds <- DB.getLatestBuildsForBranch owner repo targetBranch
+      case builds of
+        [] -> throw . OtherError $ "No prior build to re-trigger for Gitea branch " <> cs targetBranch
+        (b : _) -> do
+          (commitInfo, reporter) <- commitInfoForBuild reqUser' b
+          void $ handleCommit reporter True commitInfo
+          pure (b ^. gitCommit)
+
+repoForgeFromCommits :: [CommitSummary] -> Forge
+repoForgeFromCommits commits = case commits of
+  (c : _) -> c ^. forge
+  [] -> ForgeGithub
+
+-- | GitHub installation auth + access token for a repo, or a clear error if
+-- the garnix App is not installed on it.
+githubInstallationAuth :: (HasCallStack) => GhRepoOwner -> GhRepoName -> M (GH.InstallationAuth, GhToken)
+githubInstallationAuth owner repo = do
+  installationId <-
+    getGarnixInstallationId owner repo
+      >>= maybe (throw . OtherError $ "No GitHub App installation for " <> show owner <> "/" <> show repo) pure
+  iAuth <- getInstallation (Id $ fromInteger installationId)
+  token <- getAccessToken iAuth
+  pure (iAuth, token)

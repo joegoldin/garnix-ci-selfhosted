@@ -1,6 +1,7 @@
 module Garnix.GithubInterface
   ( realGithubInterface,
     fromRunReport,
+    listBranchesGithub,
     -- exported for testing
     _retryWhen,
     _retryGithubRequest,
@@ -237,6 +238,25 @@ getHeadCommitForBranch (GhToken token) owner repo branch = do
       let context = show owner <> "/" <> show repo <> "/" <> show branch
       log Error $ "_githubInterfaceGetHeadCommit failed for '" <> context <> "': Could not find 'commit.sha'."
       throw . OtherError $ "Could not get the HEAD commit for " <> context
+
+-- | List a repo's branch names (up to 100 — no pagination; a repo with more
+-- branches than that is not a realistic self-host case). Used by the manual
+-- "Trigger Builds" flow to populate the branch picker for GitHub repos.
+listBranchesGithub :: GhToken -> GhRepoOwner -> GhRepoName -> M [Branch]
+listBranchesGithub (GhToken token) owner repo = do
+  let auth = GH.OAuth (cs token)
+      request =
+        GH.query
+          [ "repos",
+            cs . getGhLogin . getGhRepoOwner $ owner,
+            cs . getGhRepoName $ repo,
+            "branches"
+          ]
+          [("per_page", Just "100")]
+  v <-
+    executeRequest @Aeson.Value auth request
+      >>= handleGithubRequestErrors "listBranches" owner repo
+  pure $ v ^.. _Array . each . key "name" . _String . to Branch
 
 openGithubPullRequestInternal :: GhRepoOwner -> GhRepoName -> PullRequest -> M PullRequestResult
 openGithubPullRequestInternal ghOwner@(GhRepoOwner (GhLogin owner)) ghRepo@(GhRepoName repo) pr = do

@@ -377,6 +377,15 @@ whole commit is re-run) and **Cancel all** (stops every queued/running build)
 — both with confirmation. Cancelled builds render as an orange ✗, distinct
 from red failures.
 
+**Triggering a branch build from the UI:** a repo's builds page has a **Trigger
+Builds** button (next to _View on GitHub_) that opens a branch picker and runs a
+fresh eval against the chosen branch's latest commit — handy for a first build,
+or to re-run without pushing. Forge-aware: **GitHub** repos list every branch
+live and the newest commit is resolved server-side; **Gitea** repos list the
+branches garnix has already seen and re-run the latest commit it has for that
+branch (there's no Gitea branch-list API wired up yet). Access is gated the same
+as viewing the repo.
+
 **Private flake inputs:** `git+ssh://` inputs can never work in CI (the sandbox
 has no SSH key) — use `github:` refs; garnix injects its App token for those.
 If a **public** repo has **private** `github:` inputs, self-host mode allows it

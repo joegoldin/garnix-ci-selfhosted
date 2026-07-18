@@ -8,9 +8,11 @@ import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
 import { getCommitsForRepo } from "@/services/commit";
 import { forgeRepoUrl } from "@/utils/forge";
+import { TriggerBuildsModal } from "./triggerBuildsModal";
 
 const Page = ({ params }: { params: { owner: string; repo: string } }) => {
   const { giteaUrl } = useConfig();
+  const [triggerOpen, setTriggerOpen] = React.useState(false);
   const loadCommits = React.useCallback(
     () => getCommitsForRepo(params.owner, params.repo),
     [params.owner, params.repo],
@@ -28,14 +30,24 @@ const Page = ({ params }: { params: { owner: string; repo: string } }) => {
       <CommitList
         for={params}
         headerRight={
-          <Button
-            href={forgeRepoUrl(forge, giteaUrl, params.owner, params.repo)}
-            target="_blank"
-          >
-            View on {isGitea ? "Gitea" : "GitHub"} →
-          </Button>
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <Button onClick={() => setTriggerOpen(true)}>Trigger Builds</Button>
+            <Button
+              href={forgeRepoUrl(forge, giteaUrl, params.owner, params.repo)}
+              target="_blank"
+            >
+              View on {isGitea ? "Gitea" : "GitHub"} →
+            </Button>
+          </div>
         }
       />
+      {triggerOpen && (
+        <TriggerBuildsModal
+          owner={params.owner}
+          repo={params.repo}
+          onRequestClose={() => setTriggerOpen(false)}
+        />
+      )}
     </WithSidebar>
   );
 };

@@ -15,7 +15,9 @@ data CommitAPI route = CommitAPI
     _commitAPIgetCommitsForUser :: route :- Get '[JSON] ListCommits,
     _commitAPIgetSingleCommit :: route :- Capture "commit" CommitHash :> Get '[JSON] GetCommit,
     _commitAPIcancelCommit :: route :- Capture "commit" CommitHash :> "cancel" :> Post '[JSON] NoContent,
-    _commitAPIrestartFailed :: route :- Capture "commit" CommitHash :> "restart-failed" :> Post '[JSON] NoContent
+    _commitAPIrestartFailed :: route :- Capture "commit" CommitHash :> "restart-failed" :> Post '[JSON] NoContent,
+    _commitAPIlistBranches :: route :- "repo" :> Capture "owner" GhRepoOwner :> Capture "repo" GhRepoName :> "branches" :> Get '[JSON] ListBranches,
+    _commitAPItriggerBranch :: route :- "repo" :> Capture "owner" GhRepoOwner :> Capture "repo" GhRepoName :> "trigger" :> ReqBody '[JSON] TriggerBranchReq :> Post '[JSON] TriggerBranchResp
   }
   deriving (Generic)
 
@@ -26,7 +28,9 @@ commitAPI (Authenticated ((^. #user) -> user')) =
       _commitAPIgetCommitsForUser = getCommitsForUser user',
       _commitAPIgetSingleCommit = getSingleCommit (Just user'),
       _commitAPIcancelCommit = cancelCommit user',
-      _commitAPIrestartFailed = restartFailedCommit user'
+      _commitAPIrestartFailed = restartFailedCommit user',
+      _commitAPIlistBranches = listBranchesForRepo (Just user'),
+      _commitAPItriggerBranch = triggerBranchForRepo user'
     }
 commitAPI _ =
   CommitAPI
@@ -34,7 +38,9 @@ commitAPI _ =
       _commitAPIgetCommitsForUser = throw Unauthorized,
       _commitAPIgetSingleCommit = getSingleCommit Nothing,
       _commitAPIcancelCommit = \_ -> throw Unauthorized,
-      _commitAPIrestartFailed = \_ -> throw Unauthorized
+      _commitAPIrestartFailed = \_ -> throw Unauthorized,
+      _commitAPIlistBranches = \_ _ -> throw Unauthorized,
+      _commitAPItriggerBranch = \_ _ _ -> throw Unauthorized
     }
 
 data ListCommits = ListCommits
@@ -55,6 +61,32 @@ data GetCommit = GetCommit
   deriving (Eq, Show, Generic)
 
 instance ToJSON GetCommit where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+newtype ListBranches = ListBranches
+  { _listBranchesBranches :: [Branch]
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON ListBranches where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+newtype TriggerBranchReq = TriggerBranchReq
+  { _triggerBranchReqBranch :: Branch
+  }
+  deriving (Eq, Show, Generic)
+
+instance FromJSON TriggerBranchReq where
+  parseJSON = ourParseJSON
+
+newtype TriggerBranchResp = TriggerBranchResp
+  { _triggerBranchRespCommit :: CommitHash
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON TriggerBranchResp where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 
@@ -182,3 +214,24 @@ restartFailedCommit user commit = do
       ([], overallBuild : _) -> forkM $ Orchestrator.restartCommit restarter overallBuild
       _ -> forM_ failedPackageBuilds $ \b -> forkM $ Orchestrator.restartBuild restarter b
   pure NoContent
+
+-- | Branches available to manually trigger a build on, for the repo page's
+-- "Trigger Builds" picker. Gated on repo view-access (same as the page itself);
+-- forge-aware branch source lives in the orchestrator.
+listBranchesForRepo :: (HasCallStack) => Maybe User -> GhRepoOwner -> GhRepoName -> M ListBranches
+listBranchesForRepo user owner repo = do
+  repoPublicity <- getRepoPublicityForForge owner repo
+  hasAccess <- hasAccessToRepo user repoPublicity owner repo
+  when (not hasAccess) $ throw NoSuchRepo {_owner = owner, _name = repo}
+  ListBranches <$> Orchestrator.listRepoBranches owner repo
+
+-- | Manually trigger a build for a branch's latest commit (fresh eval on
+-- GitHub; re-run the latest known commit on Gitea). Same access gate as viewing
+-- the repo. Returns the commit that was (re)built so the UI can link to it.
+triggerBranchForRepo :: (HasCallStack) => User -> GhRepoOwner -> GhRepoName -> TriggerBranchReq -> M TriggerBranchResp
+triggerBranchForRepo user owner repo req = do
+  repoPublicity <- getRepoPublicityForForge owner repo
+  hasAccess <- hasAccessToRepo (Just user) repoPublicity owner repo
+  when (not hasAccess) $ throw NoSuchRepo {_owner = owner, _name = repo}
+  commit <- Orchestrator.triggerBranchBuild (user ^. githubLogin) repoPublicity owner repo (_triggerBranchReqBranch req)
+  pure $ TriggerBranchResp commit

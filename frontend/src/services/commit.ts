@@ -90,3 +90,33 @@ export const restartFailedCommit = async (
   commit: string,
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "POST", `commits/${commit}/restart-failed`);
+
+// Branches available to manually trigger a build on. GitHub repos list all
+// branches live; Gitea repos list only the branches garnix has already seen.
+export const getBranches = async (
+  repoOwner: string,
+  repoName: string,
+): Promise<APIResult<Array<string>>> => {
+  const response = await fetchFromAPI(
+    z.object({ branches: z.array(z.string()) }),
+    "GET",
+    `commits/repo/${repoOwner}/${repoName}/branches`,
+  );
+  if (!response.ok) return response;
+  return Ok(response.data.branches);
+};
+
+// Triggers a build for the branch's latest commit (a fresh eval on GitHub, or a
+// re-run of the latest known commit on Gitea). Returns the commit that will be
+// built so the caller can navigate to it.
+export const triggerBuild = async (
+  repoOwner: string,
+  repoName: string,
+  branch: string,
+): Promise<APIResult<{ commit: string }>> =>
+  await fetchFromAPI(
+    z.object({ commit: z.string() }),
+    "POST",
+    `commits/repo/${repoOwner}/${repoName}/trigger`,
+    { body: JSON.stringify({ branch }) },
+  );
