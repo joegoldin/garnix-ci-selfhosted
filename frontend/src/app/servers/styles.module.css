@@ -115,14 +115,21 @@
 
 /* Small round (i) button that opens the DNS-help modal for a server. */
 .infoBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   padding: 0;
   border: 1px solid var(--color-stone-300);
-  border-radius: 999px;
+  border-radius: 50%;
   background: var(--color-white);
-  color: var(--color-stone-600);
-  font-size: 11px;
+  color: var(--color-stone-500);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 12px;
+  font-weight: 700;
   font-style: italic;
   line-height: 1;
   cursor: pointer;
