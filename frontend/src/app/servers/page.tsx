@@ -19,6 +19,7 @@ import { AppPage } from "@/utils/appPage";
 import { useConfig } from "@/store/configContext";
 import styles from "./styles.module.css";
 import { ServerFilters, useFilters } from "./filters";
+import { DomainsModal } from "./domainsModal";
 
 const statusToColor: Record<RunningServer["status"], string> = {
   Online: "green",
@@ -65,7 +66,9 @@ const Page = () => {
 };
 
 // A copyable one-line shell command (ssh invocation), with a method label.
-const CopyableCommand = ({
+// Exported for reuse by domainsModal, which shows copyable DNS records with
+// the same label + code + copy-button layout.
+export const CopyableCommand = ({
   label,
   command,
 }: {
@@ -146,39 +149,62 @@ const ConnectCell = ({
     server.url.replace(/^https:\/\//, `https://${name}.`);
   const hasAny =
     !!ip || (sshPort != null && !!sshHost) || httpPorts.length > 0 || tcpPorts.length > 0;
-  if (!hasAny) return <span className={styles.muted}>—</span>;
+  const [showDomainsModal, setShowDomainsModal] = React.useState(false);
   return (
     <div className={styles.connect}>
-      {ip ? (
-        <div className={styles.cmdGroup}>
-          <CopyableCommand label="Tailscale" command={`ssh ${sshUser}@${ip}`} />
-          {sshHost ? (
-            <CopyableCommand
-              label="ProxyJump"
-              command={`ssh -J ${sshHost} ${sshUser}@${ip}`}
-            />
+      <div className={styles.connectHeader}>
+        <button
+          type="button"
+          className={styles.infoBtn}
+          title="DNS setup for this server's domains"
+          aria-label="DNS setup for this server's domains"
+          onClick={() => setShowDomainsModal(true)}
+        >
+          i
+        </button>
+      </div>
+      {hasAny ? (
+        <>
+          {ip ? (
+            <div className={styles.cmdGroup}>
+              <CopyableCommand label="Tailscale" command={`ssh ${sshUser}@${ip}`} />
+              {sshHost ? (
+                <CopyableCommand
+                  label="ProxyJump"
+                  command={`ssh -J ${sshHost} ${sshUser}@${ip}`}
+                />
+              ) : null}
+              {sshPort != null && sshHost ? (
+                <CopyableCommand
+                  label="Port-forward"
+                  command={`ssh -p ${sshPort} ${sshUser}@${sshHost}`}
+                />
+              ) : null}
+            </div>
           ) : null}
-          {sshPort != null && sshHost ? (
-            <CopyableCommand
-              label="Port-forward"
-              command={`ssh -p ${sshPort} ${sshUser}@${sshHost}`}
-            />
+          {httpPorts.length > 0 || tcpPorts.length > 0 ? (
+            <div className={styles.portList}>
+              {httpPorts.map((p) => (
+                <Link key={`h-${p.name}`} href={portUrl(p.name)} className={styles.portChip}>
+                  {p.name} ↗
+                </Link>
+              ))}
+              {tcpPorts.map((p) => (
+                <span key={`t-${p.name}`} className={styles.portChip}>
+                  {p.name} · {sshHost || ip}:{p.host}
+                </span>
+              ))}
+            </div>
           ) : null}
-        </div>
-      ) : null}
-      {httpPorts.length > 0 || tcpPorts.length > 0 ? (
-        <div className={styles.portList}>
-          {httpPorts.map((p) => (
-            <Link key={`h-${p.name}`} href={portUrl(p.name)} className={styles.portChip}>
-              {p.name} ↗
-            </Link>
-          ))}
-          {tcpPorts.map((p) => (
-            <span key={`t-${p.name}`} className={styles.portChip}>
-              {p.name} · {sshHost || ip}:{p.host}
-            </span>
-          ))}
-        </div>
+        </>
+      ) : (
+        <span className={styles.muted}>—</span>
+      )}
+      {showDomainsModal ? (
+        <DomainsModal
+          server={server}
+          onRequestClose={() => setShowDomainsModal(false)}
+        />
       ) : null}
     </div>
   );

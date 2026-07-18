@@ -1,0 +1,30 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0 12px;
+}
+
+.fieldLabel {
+  font-size: 13px;
+  color: var(--color-stone-500);
+}
+
+.select {
+  padding: 8px 10px;
+  border: 1px solid var(--color-stone-300);
+  background: var(--color-stone-100);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.covered {
+  color: var(--color-stone-700);
+}
+
+.record {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}

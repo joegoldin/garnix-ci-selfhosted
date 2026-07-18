@@ -15,6 +15,9 @@ type ConfigContextType = {
   giteaUrl: string;
   selfHostMode: boolean;
   sshHost: string;
+  hostingPublicIp: string | null;
+  hostingDomain: string;
+  hostingBases: string[];
 };
 
 const defaultValue = {
@@ -23,6 +26,9 @@ const defaultValue = {
   giteaUrl: "",
   selfHostMode: false,
   sshHost: "",
+  hostingPublicIp: null,
+  hostingDomain: "",
+  hostingBases: [],
 };
 
 const ConfigContext = createContext<ConfigContextType>(defaultValue);
@@ -33,6 +39,9 @@ export const ConfigProvider = ({ children }: PropsWithChildren) => {
   const [giteaUrl, setGiteaUrl] = useState("");
   const [selfHostMode, setSelfHostMode] = useState(false);
   const [sshHost, setSshHost] = useState("");
+  const [hostingPublicIp, setHostingPublicIp] = useState<string | null>(null);
+  const [hostingDomain, setHostingDomain] = useState("");
+  const [hostingBases, setHostingBases] = useState<string[]>([]);
   useEffect(() => {
     void (async () => {
       const config = await getConfig();
@@ -42,11 +51,32 @@ export const ConfigProvider = ({ children }: PropsWithChildren) => {
       setGiteaUrl(config.data.giteaUrl);
       setSelfHostMode(config.data.selfHostMode);
       setSshHost(config.data.sshHost);
+      setHostingPublicIp(config.data.hostingPublicIp);
+      setHostingDomain(config.data.hostingDomain);
+      setHostingBases(config.data.hostingBases);
     })();
-  }, [setGithubAppName, setCacheUrl, setGiteaUrl, setSelfHostMode, setSshHost]);
+  }, [
+    setGithubAppName,
+    setCacheUrl,
+    setGiteaUrl,
+    setSelfHostMode,
+    setSshHost,
+    setHostingPublicIp,
+    setHostingDomain,
+    setHostingBases,
+  ]);
   return (
     <ConfigContext.Provider
-      value={{ githubAppName, cacheUrl, giteaUrl, selfHostMode, sshHost }}
+      value={{
+        githubAppName,
+        cacheUrl,
+        giteaUrl,
+        selfHostMode,
+        sshHost,
+        hostingPublicIp,
+        hostingDomain,
+        hostingBases,
+      }}
     >
       {children}
     </ConfigContext.Provider>

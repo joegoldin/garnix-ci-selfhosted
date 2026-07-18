@@ -8,6 +8,9 @@ export const getConfig = async (): Promise<
     giteaUrl: string;
     selfHostMode: boolean;
     sshHost: string;
+    hostingPublicIp: string | null;
+    hostingDomain: string;
+    hostingBases: string[];
   }>
 > => {
   const response = await fetchFromAPI(
@@ -25,6 +28,24 @@ export const getConfig = async (): Promise<
         .string()
         .optional()
         .transform((v) => v ?? ""),
+      // Public IP of the garnix host, for A-record instructions in the Servers
+      // (i) DNS-help modal; null/absent when unset (CNAME instructions instead).
+      hosting_public_ip: z
+        .string()
+        .nullable()
+        .optional()
+        .transform((v) => v ?? null),
+      // Default hosting base domain (the CNAME target for bare custom domains).
+      hosting_domain: z
+        .string()
+        .optional()
+        .transform((v) => v ?? ""),
+      // All base domains under which a subdomain is wildcard-covered (default +
+      // operator extras + verified connected domains).
+      hosting_bases: z
+        .array(z.string())
+        .optional()
+        .transform((v) => v ?? []),
     }),
     "GET",
     "config",
@@ -36,5 +57,8 @@ export const getConfig = async (): Promise<
     giteaUrl: response.data.gitea_url,
     selfHostMode: response.data.self_host_mode,
     sshHost: response.data.ssh_host,
+    hostingPublicIp: response.data.hosting_public_ip,
+    hostingDomain: response.data.hosting_domain,
+    hostingBases: response.data.hosting_bases,
   });
 };
