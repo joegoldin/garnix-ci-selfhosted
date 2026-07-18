@@ -14,15 +14,20 @@ import { RepoPicker } from "@/app/modules/configure/moduleInputs/repoPicker";
 import {
   ArtifactRepoOverride,
   ConfigureSettings,
+  ConnectedDomain,
   LockedArtifactBuild,
   RepoOverride,
+  addConnectedDomain,
+  deleteConnectedDomain,
   deleteRepoArtifactSettings,
   deleteRepoBuildTimeout,
   getConfigureSettings,
+  getConnectedDomains,
   setDefaultArtifactSettings,
   setDefaultBuildTimeout,
   setRepoArtifactSettings,
   setRepoBuildTimeout,
+  verifyConnectedDomain,
 } from "@/services/configure";
 import {
   artifactLatestZipUrl,
@@ -46,6 +51,7 @@ const minutesToHours = (m: number | null): string =>
 const Page = () => {
   const { githubAppName, giteaUrl, selfHostMode } = useConfig();
   const settings = useLoading(getConfigureSettings);
+  const domains = useLoading(getConnectedDomains);
   return (
     <div className={styles.container}>
       <Text type="h1" className={styles.h1}>
@@ -118,6 +124,28 @@ const Page = () => {
             <ArtifactSettings
               settings={settings.data.data}
               reload={settings.reload}
+            />
+          )}
+        </div>
+      )}
+
+      {selfHostMode && (
+        <div className={styles.section}>
+          <Text type="h2" className={styles.h2}>
+            Connected domains
+          </Text>
+          <Text className={styles.help}>
+            Registering a domain lets garnix host servers under it. Point its
+            DNS at the garnix host, then Verify to confirm it resolves here.
+          </Text>
+          {domains.loading ? (
+            <Loading />
+          ) : !domains.data.ok ? (
+            <Text className={styles.error}>{domains.data.error.message}</Text>
+          ) : (
+            <ConnectedDomainsSettings
+              domains={domains.data.data}
+              reload={domains.reload}
             />
           )}
         </div>
@@ -237,6 +265,89 @@ const BuildTimeoutSettings = ({
                 <Button
                   style="warning"
                   onClick={() => removeOverride(o)}
+                  loading={busy}
+                >
+                  Delete
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+const ConnectedDomainsSettings = ({
+  domains,
+  reload,
+}: {
+  domains: Array<ConnectedDomain>;
+  reload: () => void;
+}) => {
+  const [newDomain, setNewDomain] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    await fn();
+    setBusy(false);
+    reload();
+  };
+
+  const add = () => {
+    const domain = newDomain.trim();
+    if (domain === "") return;
+    return run(async () => {
+      await addConnectedDomain(domain);
+      setNewDomain("");
+    });
+  };
+  const verify = (d: ConnectedDomain) =>
+    run(() => verifyConnectedDomain(d.id));
+  const remove = (d: ConnectedDomain) =>
+    run(() => deleteConnectedDomain(d.id));
+
+  return (
+    <div className={styles.timeout}>
+      <div className={styles.addRow}>
+        <input
+          className={styles.domainInput}
+          type="text"
+          placeholder="example.com"
+          value={newDomain}
+          onChange={(e) => setNewDomain(e.target.value)}
+        />
+        <Button onClick={add} loading={busy}>
+          Add
+        </Button>
+      </div>
+
+      {domains.length === 0 ? (
+        <Text className={styles.help}>No connected domains yet.</Text>
+      ) : (
+        <ul className={styles.overrideList}>
+          {domains.map((d) => (
+            <li key={d.id} className={styles.overrideRow}>
+              <span className={styles.overrideRepo}>{d.domain}</span>
+              <span
+                className={`${styles.badge} ${
+                  d.verified ? styles.badgeVerified : styles.badgeUnverified
+                }`}
+              >
+                {d.verified ? "resolves here" : "not verified"}
+              </span>
+              <span className={styles.overrideActions}>
+                <Button
+                  style="secondary"
+                  onClick={() => verify(d)}
+                  loading={busy}
+                >
+                  Verify
+                </Button>
+                <Button
+                  style="warning"
+                  onClick={() => remove(d)}
                   loading={busy}
                 >
                   Delete

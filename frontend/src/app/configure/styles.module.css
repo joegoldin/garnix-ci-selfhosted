@@ -170,3 +170,31 @@
 .copyBtn:hover {
   background: var(--color-stone-100);
 }
+
+.domainInput {
+  flex: 1;
+  min-width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-stone-300);
+  background-color: var(--color-white);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.badge {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.badgeVerified {
+  background-color: color-mix(in srgb, var(--color-success) 15%, white);
+  color: var(--color-success);
+}
+
+.badgeUnverified {
+  background-color: var(--color-stone-100);
+  color: var(--color-stone-500);
+}

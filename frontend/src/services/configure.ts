@@ -172,3 +172,42 @@ export const deleteRepoArtifactSettings = async (
     "DELETE",
     `configure/artifacts/repo/${owner}/${repo}`,
   );
+
+const connectedDomainSchema = z.object({
+  id: z.number(),
+  domain: z.string(),
+  is_wildcard: z.boolean(),
+  verified: z.boolean(),
+});
+
+export type ConnectedDomain = z.infer<typeof connectedDomainSchema>;
+
+export const getConnectedDomains = async (): Promise<
+  APIResult<Array<ConnectedDomain>>
+> =>
+  await fetchFromAPI(
+    z.array(connectedDomainSchema),
+    "GET",
+    "configure/domains",
+  );
+
+export const addConnectedDomain = async (
+  domain: string,
+): Promise<APIResult<ConnectedDomain>> =>
+  await fetchFromAPI(connectedDomainSchema, "POST", "configure/domains", {
+    body: JSON.stringify({ domain }),
+  });
+
+export const verifyConnectedDomain = async (
+  id: number,
+): Promise<APIResult<ConnectedDomain>> =>
+  await fetchFromAPI(
+    connectedDomainSchema,
+    "POST",
+    `configure/domains/${id}/verify`,
+  );
+
+export const deleteConnectedDomain = async (
+  id: number,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(z.any(), "DELETE", `configure/domains/${id}`);
