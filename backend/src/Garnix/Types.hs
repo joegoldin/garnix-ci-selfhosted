@@ -1628,7 +1628,16 @@ data FrontendConfig = FrontendConfig
     _frontendConfigSelfHostMode :: Bool,
     -- | External SSH host for reaching deployed servers' DNAT'd ports
     -- (GARNIX_SSH_HOST, e.g. erdtree's tailscale name). "" when unset.
-    _frontendConfigSshHost :: Text
+    _frontendConfigSshHost :: Text,
+    -- | Public IP of the garnix host, for A-record instructions in the Servers
+    -- (i) menu. Nothing => only CNAME instructions are shown.
+    _frontendConfigHostingPublicIp :: Maybe Text,
+    -- | Default hosting base domain (the CNAME target for bare custom domains).
+    _frontendConfigHostingDomain :: Text,
+    -- | All base domains under which a subdomain is wildcard-covered (default +
+    -- operator extras + verified connected), so the UI can classify a server's
+    -- declared domains as covered vs bare-custom.
+    _frontendConfigHostingBases :: [Text]
   }
   deriving stock (Eq, Show, Generic)
 

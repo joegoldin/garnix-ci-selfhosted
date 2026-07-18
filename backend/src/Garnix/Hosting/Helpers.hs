@@ -44,7 +44,10 @@ data RunningServer = RunningServer
     -- | The latest resource sample pushed by this server's guest reporter
     -- (CPU %, memory used/total). 'Nothing' until the guest reports; the
     -- Servers-page row renders it compactly and the Monitor page draws history.
-    _runningServerStats :: Maybe ServerStatsSample
+    _runningServerStats :: Maybe ServerStatsSample,
+    -- | Declared extra hostnames (servers.domains) this server answers on; the
+    -- Servers-page (i) menu renders the DNS records to set for each.
+    _runningServerDomains :: [Text]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -56,6 +59,7 @@ getRunningAndRecentServersForOwners owners = do
   domain <- view #hostingDomain
   exposures <- DB.getServerExposures
   stats <- DB.getLatestServerStats
+  domainsAssoc <- DB.getServerDomains
   let mkUrl typ repoName repoUser packageName =
         "https://"
           <> getPackageName packageName
@@ -71,7 +75,7 @@ getRunningAndRecentServersForOwners owners = do
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats)
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (fromMaybe [] (lookup id domainsAssoc))
     )
     <$> DB.pgQuery
       [pgSQL|

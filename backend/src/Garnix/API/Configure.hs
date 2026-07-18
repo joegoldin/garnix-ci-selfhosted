@@ -17,6 +17,8 @@ module Garnix.API.Configure
     LockedArtifactBuildDto (..),
     SetArtifactDefaultsDto (..),
     SetArtifactRepoDto (..),
+    ConnectedDomainDto (..),
+    AddDomainDto (..),
   )
 where
 
@@ -24,6 +26,7 @@ import Control.Lens
 import Garnix.API.Admin (requireAdmin)
 import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts qualified as Artifacts
+import Garnix.Dns (resolvesToHostingIp)
 import Garnix.Entitlements (defaultBuildTimeoutMinutes)
 import Garnix.Monad
 import Garnix.Prelude
@@ -72,7 +75,15 @@ data ConfigureAPI route = ConfigureAPI
           :> "repo"
           :> Capture "owner" GhRepoOwner
           :> Capture "repo" GhRepoName
-          :> Delete '[JSON] NoContent
+          :> Delete '[JSON] NoContent,
+    _configureAPIListDomains ::
+      route :- "domains" :> Get '[JSON] [ConnectedDomainDto],
+    _configureAPIAddDomain ::
+      route :- "domains" :> ReqBody '[JSON] AddDomainDto :> Post '[JSON] ConnectedDomainDto,
+    _configureAPIVerifyDomain ::
+      route :- "domains" :> Capture "id" Int64 :> "verify" :> Post '[JSON] ConnectedDomainDto,
+    _configureAPIDeleteDomain ::
+      route :- "domains" :> Capture "id" Int64 :> Delete '[JSON] NoContent
   }
   deriving (Generic)
 
@@ -203,6 +214,26 @@ instance ToJSON SetArtifactRepoDto where
 instance FromJSON SetArtifactRepoDto where
   parseJSON = ourParseJSON
 
+-- | A registered connected domain (operator-owned base or single custom host)
+-- and whether its DNS-points-here verification has passed.
+data ConnectedDomainDto = ConnectedDomainDto
+  { _connectedDomainDtoId :: Int64,
+    _connectedDomainDtoDomain :: Text,
+    _connectedDomainDtoIsWildcard :: Bool,
+    _connectedDomainDtoVerified :: Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON ConnectedDomainDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+newtype AddDomainDto = AddDomainDto {_addDomainDtoDomain :: Text}
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON AddDomainDto where
+  parseJSON = ourParseJSON
+
 configureAPI :: AuthResult AuthJwtPayload -> ConfigureAPI (AsServerT M)
 configureAPI auth =
   ConfigureAPI
@@ -269,6 +300,31 @@ configureAPI auth =
       _configureAPIDeleteArtifactRepo = \owner repo -> do
         requireSelfHostConfig auth
         Artifacts.deleteRepoArtifactSettings owner repo
+        pure NoContent,
+      _configureAPIListDomains = do
+        requireSelfHostConfig auth
+        rows <- DB.getConnectedDomains
+        pure [ConnectedDomainDto cid d w (isJust v) | (cid, d, w, v) <- rows],
+      _configureAPIAddDomain = \dto -> do
+        requireSelfHostConfig auth
+        let d = _addDomainDtoDomain dto
+        cid <- DB.addConnectedDomain d True
+        pure $ ConnectedDomainDto cid d True False,
+      _configureAPIVerifyDomain = \cid -> do
+        requireSelfHostConfig auth
+        rows <- DB.getConnectedDomains
+        case find (\(i, _, _, _) -> i == cid) rows of
+          Nothing -> throw $ OtherError "No such connected domain"
+          Just (_, d, w, v) -> do
+            -- A wildcard base can't have an A record on the apex label alone;
+            -- probe a label under it. A single custom host is checked directly.
+            let probe = if w then "garnix-verify." <> d else d
+            ok <- resolvesToHostingIp probe
+            when ok $ DB.markConnectedDomainVerified cid
+            pure $ ConnectedDomainDto cid d w (ok || isJust v),
+      _configureAPIDeleteDomain = \cid -> do
+        requireSelfHostConfig auth
+        DB.deleteConnectedDomain cid
         pure NoContent
     }
   where

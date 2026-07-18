@@ -22,6 +22,7 @@ import Garnix.API.Keys
 import Garnix.API.Modules
 import Garnix.API.Runs (RunAPI, runAPI)
 import Garnix.DB qualified as DB
+import Garnix.Hosting.Domains qualified as Domains
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
@@ -122,7 +123,10 @@ getConfig = do
   giteaUrl <- maybe "" _giteaConfigBaseUrl <$> view #giteaConfig
   selfHost <- view #selfHostMode
   sshHost <- view #sshHost
-  pure $ FrontendConfig {_frontendConfigGithubAppName = ghAppName, _frontendConfigCacheUrl = cacheUrl, _frontendConfigGiteaUrl = giteaUrl, _frontendConfigSelfHostMode = selfHost, _frontendConfigSshHost = sshHost}
+  hostingIp <- view #hostingPublicIp
+  hostingDomain' <- view #hostingDomain
+  hostingBases <- Domains.knownBaseDomains
+  pure $ FrontendConfig {_frontendConfigGithubAppName = ghAppName, _frontendConfigCacheUrl = cacheUrl, _frontendConfigGiteaUrl = giteaUrl, _frontendConfigSelfHostMode = selfHost, _frontendConfigSshHost = sshHost, _frontendConfigHostingPublicIp = hostingIp, _frontendConfigHostingDomain = hostingDomain', _frontendConfigHostingBases = hostingBases}
 
 waitlistAPI :: Email -> M ()
 waitlistAPI email = do
