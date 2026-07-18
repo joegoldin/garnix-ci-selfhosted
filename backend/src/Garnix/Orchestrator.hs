@@ -12,6 +12,7 @@ module Garnix.Orchestrator
   )
 where
 
+import Data.Time (defaultTimeLocale, formatTime)
 import Garnix.Async (Promise)
 import Garnix.Build (buildFlake, rerunBuild)
 import Garnix.Build.Checkout qualified as Build.Checkout
@@ -181,41 +182,37 @@ listRepoBranches owner repo = do
 
 -- | Manually trigger a build for the latest commit on a branch, forge-aware:
 --
---   * GitHub: resolve the branch's live HEAD and run a fresh eval for it.
---   * Gitea: re-run the latest commit garnix already has for that branch
---     (reusing the restart path); errors if the branch was never built.
---
--- Returns the commit that was (re)built. The caller must already have checked
--- access; 'publicity' is threaded into the GitHub CommitInfo.
+-- The build is a *fresh* one identified by a synthetic @manual-<timestamp>@
+-- commit, so re-triggering an already-built branch produces a new, distinct
+-- build/commit page instead of reopening the old commit. The checkout resolves
+-- a @manual-@ commit to the branch's HEAD (see 'Garnix.Build.Checkout'), so it
+-- builds the branch's current tip on both GitHub and Gitea. It reports to garnix
+-- (OpenSearch) only — not the forge — because the built ref is a synthetic id,
+-- not a real commit. Returns the synthetic @manual-<timestamp>@ id.
 triggerBranchBuild :: (HasCallStack) => GhLogin -> RepoPublicity -> GhRepoOwner -> GhRepoName -> Branch -> M CommitHash
 triggerBranchBuild reqUser' publicity owner repo targetBranch = do
   assertIsAllowedToBuild owner repo
   commits <- DB.getCommitsByOwnerAndRepo owner repo
-  case repoForgeFromCommits commits of
+  now <- liftIO getCurrentTime
+  let manualCommit = CommitHash $ cs $ formatTime defaultTimeLocale "manual-%Y%m%d-%H%M%S" now
+  repoInfo' <- case repoForgeFromCommits commits of
     ForgeGithub -> do
       (iAuth, token) <- githubInstallationAuth owner repo
-      commit <- getHeadCommit token owner repo targetBranch
-      let repoInfo' = RepoInfo ForgeGithub (Just iAuth) token owner repo
-          commitInfo =
-            CommitInfo
-              { _commitInfoReqUser = reqUser',
-                _commitInfoRepoPublicity = publicity,
-                _commitInfoRepoInfo = repoInfo',
-                _commitInfoBranch = Just targetBranch,
-                _commitInfoPrFromFork = Nothing,
-                _commitInfoCommit = commit
-              }
-          reporter = openSearchReporter <> mkGithubReporter repoInfo' commit
-      void $ handleCommit reporter True commitInfo
-      pure commit
+      pure $ RepoInfo ForgeGithub (Just iAuth) token owner repo
     ForgeGitea -> do
-      builds <- DB.getLatestBuildsForBranch owner repo targetBranch
-      case builds of
-        [] -> throw . OtherError $ "No prior build to re-trigger for Gitea branch " <> cs targetBranch
-        (b : _) -> do
-          (commitInfo, reporter) <- commitInfoForBuild reqUser' b
-          void $ handleCommit reporter True commitInfo
-          pure (b ^. gitCommit)
+      cfg <- requireGiteaConfig
+      pure $ RepoInfo ForgeGitea Nothing (GhToken (_giteaConfigApiToken cfg)) owner repo
+  let commitInfo =
+        CommitInfo
+          { _commitInfoReqUser = reqUser',
+            _commitInfoRepoPublicity = publicity,
+            _commitInfoRepoInfo = repoInfo',
+            _commitInfoBranch = Just targetBranch,
+            _commitInfoPrFromFork = Nothing,
+            _commitInfoCommit = manualCommit
+          }
+  void $ handleCommit openSearchReporter True commitInfo
+  pure manualCommit
 
 repoForgeFromCommits :: [CommitSummary] -> Forge
 repoForgeFromCommits commits = case commits of
