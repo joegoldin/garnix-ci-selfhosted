@@ -1858,6 +1858,19 @@ data CommitInfo = CommitInfo
   }
   deriving stock (Show)
 
+-- | The real forge ref for a build's contents/checkout operations. Normally the
+-- commit itself; but a manually-triggered build (see
+-- 'Garnix.Orchestrator.triggerBranchBuild') carries a synthetic
+-- @manual-<timestamp>@ commit id, which is not a real ref on the forge — so its
+-- contents-API and @git checkout@ must use the branch HEAD instead.
+effectiveForgeRef :: CommitInfo -> CommitHash
+effectiveForgeRef ci =
+  case _commitInfoBranch ci of
+    Just b
+      | "manual-" `T.isPrefixOf` getCommitHash (_commitInfoCommit ci) ->
+          CommitHash (getBranch b)
+    _ -> _commitInfoCommit ci
+
 data RepoInfo = RepoInfo
   { -- | Which forge this repo is on. GitHub-constructed 'RepoInfo's use
     -- 'ForgeGithub'; the Gitea webhook path uses 'ForgeGitea'.

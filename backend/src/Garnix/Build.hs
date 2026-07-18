@@ -65,7 +65,7 @@ doesRepoFileExistForge commitInfo path =
         cfg
         (commitInfo ^. repoInfo . ghRepoOwner)
         (commitInfo ^. repoInfo . ghRepoName)
-        (commitInfo ^. commit)
+        (effectiveForgeRef commitInfo)
         path
 
 buildFlake :: (HasCallStack) => Reporter -> CommitInfo -> M (Promise ())

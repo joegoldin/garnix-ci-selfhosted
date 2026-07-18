@@ -126,7 +126,7 @@ realGithubInterface =
       _githubInterfaceDoesRepoFileExist = \commitInfo path -> do
         let GhRepoOwner (GhLogin owner') = commitInfo ^. repoInfo . ghRepoOwner
             GhRepoName repoName' = commitInfo ^. repoInfo . ghRepoName
-            CommitHash commit' = commitInfo ^. commit
+            CommitHash commit' = effectiveForgeRef commitInfo
             url =
               "https://api.github.com/repos"
                 </> cs owner'

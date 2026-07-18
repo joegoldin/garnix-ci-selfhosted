@@ -11,7 +11,6 @@ where
 
 import Control.Lens qualified as Lens
 import Control.Lens.Regex.Text qualified as Regex
-import Data.Text qualified as T
 import Garnix.Build.Helpers qualified as Internal
 import Garnix.FlakeInputAuthorization (checkAuthorization)
 import Garnix.GiteaInterface (giteaGetRemote, requireGiteaConfig)
@@ -28,7 +27,7 @@ withCheckout commitInfo action = do
   remote <- getRemoteForForge commitInfo
   inRunsDirectory . Internal.withPrivateNixXdgCache $ do
     timingAs #gitCloneTime $ void $ Deprecated.runProc "git" ["clone", "--filter=tree:0", realRemoteUrl remote, "."] []
-    void $ Deprecated.runProc "git" ["checkout", checkoutTarget commitInfo] []
+    void $ Deprecated.runProc "git" ["checkout", getCommitHash (effectiveForgeRef commitInfo)] []
     cleanRemote remote
     action
   where
@@ -36,17 +35,6 @@ withCheckout commitInfo action = do
     inRunsDirectory action = do
       tmp <- safeSystemTempDirectory "garnix-runs"
       local (#workingDir .~ tmp) action
-
--- | What ref to @git checkout@. Normally the commit sha; but a manually
--- triggered build (see 'Garnix.Orchestrator.triggerBranchBuild') carries a
--- synthetic @manual-<timestamp>@ commit id, so check out the branch's HEAD
--- instead — the clone is a full clone, so the branch ref is present.
-checkoutTarget :: CommitInfo -> Text
-checkoutTarget commitInfo =
-  let sha = getCommitHash (commitInfo ^. commit)
-   in if "manual-" `T.isPrefixOf` sha
-        then maybe sha getBranch (commitInfo ^. branch)
-        else sha
 
 -- | Clone URL, dispatched by forge: GitHub uses the app-token @github.com@ URL,
 -- Gitea a tokenized URL against the configured instance.
