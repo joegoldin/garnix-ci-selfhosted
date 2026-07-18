@@ -77,7 +77,7 @@ import Garnix.Sandbox
 -- Hide ServerToSpinUp's ssh field selectors: they collide with this module's
 -- makeFields lenses of the same name (ServerSection), which we export instead.
 -- YamlConfig doesn't use ServerToSpinUp.
-import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, exposeSSH)
+import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, domains, exposeSSH)
 import System.Directory (doesFileExist)
 
 getConfigFromFlake :: (HasCallStack) => M (Maybe GarnixConfig)

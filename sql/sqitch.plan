@@ -12,3 +12,5 @@ rename-hetzner-id-to-provisioner-id 2026-07-16T19:30:00Z joegoldin <joe@joegold.
 add-artifacts 2026-07-17T08:00:00Z joegoldin <joe@joegold.in> # Build artifacts: artifacts + artifact_objects tables, retention settings
 add-build-status-skipped 2026-07-17T19:00:00Z joegoldin <joe@joegold.in> # Add 'skipped' to build_status enum (GitHub/Gitea skipped conclusion; all-skipped FOD checks)
 add-server-stats 2026-07-17T20:00:00Z joegoldin <joe@joegold.in> # Per-server resource stats: server_stats table (guest-pushed CPU/RAM samples, rolling window)
+add-server-domains 2026-07-18T10:00:00Z joegoldin <joe@joegold.in> # servers.domains: extra declared hostnames per hosted server
+add-connected-domains 2026-07-18T10:05:00Z joegoldin <joe@joegold.in> # connected_domains: operator-registered hosting domains (DNS-points-here verified)

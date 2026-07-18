@@ -33,6 +33,7 @@ import Garnix.Prelude
 import Garnix.Reporters.Utils (withRunReporter)
 import Garnix.Request
 import Garnix.Types
+import Garnix.Hosting.Domains qualified as Domains
 import Garnix.YamlConfig
 import Network.Wreq qualified as Wreq
 import System.Process qualified as Proc
@@ -141,10 +142,12 @@ getDeployPlan reporter commitInfo deploymentType = do
                       authorizeDeployerGithubKeys = _serverSectionAuthorizeDeployerGithubKeys section,
                       authorizedSSHKeys = _serverSectionAuthorizedSSHKeys section,
                       httpPorts,
-                      tcpPorts
+                      tcpPorts,
+                      domains = _serverSectionDomains section
                     }
               Nothing -> throw $ OtherError "impossible: wantedPackagesMap should contain all deployable packages"
           )
+    Domains.validateServerDomains (concatMap (^. #domains) toSpinUp)
     let plan = DeployPlan toSpinDown toSpinUp toRedeploy
     unless (null toSpinUp) $ do
       checkDeployPlan (commitInfo ^. repoInfo) deploymentType plan

@@ -1619,6 +1619,50 @@ getServerExposures = do
       |]
   pure [(sid, v) | (sid, mt :: Maybe Text) <- rows, t <- toList mt, Just v <- [Aeson.decode (cs t)]]
 
+-- | Declared extra hostnames (servers.domains) of all live servers, keyed by
+-- ServerId. Read back as text and decoded (jsonb has no PGColumn instance).
+getServerDomains :: M [(ServerId, [Text])]
+getServerDomains = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT servers.id, servers.domains::text
+        FROM servers
+        WHERE servers.ended_at IS NULL
+      |]
+  pure [(sid, ds) | (sid, t :: Text) <- rows, Just ds <- [Aeson.decode (cs t)]]
+
+-- | All declared hostnames across live servers, flattened — for collision
+-- checks when a deploy declares new domains.
+getAllDeclaredServerDomains :: M [Text]
+getAllDeclaredServerDomains = concatMap snd <$> getServerDomains
+
+-- * Connected domains (operator-registered hosting domains; DNS-points-here verified)
+
+getConnectedDomains :: M [(Int64, Text, Bool, Maybe UTCTime)]
+getConnectedDomains =
+  pgQuery [pgSQL|SELECT id, domain, is_wildcard, verified_at FROM connected_domains ORDER BY domain|]
+
+getVerifiedConnectedDomains :: M [Text]
+getVerifiedConnectedDomains =
+  pgQuery [pgSQL|SELECT domain FROM connected_domains WHERE verified_at IS NOT NULL|]
+
+addConnectedDomain :: Text -> Bool -> M Int64
+addConnectedDomain domain isWildcard = do
+  rows <-
+    pgQuery
+      [pgSQL|INSERT INTO connected_domains (domain, is_wildcard) VALUES (${domain}, ${isWildcard}) RETURNING id|]
+  case rows of
+    (cid : _) -> pure cid
+    [] -> throw $ OtherError "addConnectedDomain: insert returned no id"
+
+deleteConnectedDomain :: Int64 -> M ()
+deleteConnectedDomain cid = void $ pgExec [pgSQL|DELETE FROM connected_domains WHERE id = ${cid}|]
+
+markConnectedDomainVerified :: Int64 -> M ()
+markConnectedDomainVerified cid =
+  void $ pgExec [pgSQL|UPDATE connected_domains SET verified_at = now() WHERE id = ${cid}|]
+
 -- * Server pool
 
 newServerInPool :: ServerTier -> M PreprovisionedServerId
@@ -1735,6 +1779,7 @@ claimServerDB serverToSpinUp pullRequest =
     newServer provisionerId ipv4 ipv6 tier = do
       let buildId = serverToSpinUp ^. #build . id
       let domainIsPrimary = serverToSpinUp ^. #domainIsPrimary
+      let domainsEncoded = cs (Aeson.encode (serverToSpinUp ^. #domains)) :: Text
       changes <-
         pgQueryPrism
           _ServerInfo
@@ -1750,6 +1795,7 @@ claimServerDB serverToSpinUp pullRequest =
               , ipv6
               , server_tier
               , is_primary
+              , domains
               )
             VALUES
               ( DEFAULT
@@ -1762,6 +1808,7 @@ claimServerDB serverToSpinUp pullRequest =
               , ${ipv6}
               , ${tier}
               , ${domainIsPrimary}
+              , ${domainsEncoded}::text::jsonb
               )
             RETURNING
               id,

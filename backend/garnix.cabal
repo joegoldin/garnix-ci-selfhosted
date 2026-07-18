@@ -86,6 +86,7 @@ library
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
       Garnix.Hosting.Deploy
+      Garnix.Hosting.Domains
       Garnix.Hosting.Helpers
       Garnix.Hosting.ServerPool
       Garnix.Hosting.ServerPool.Types
@@ -865,6 +866,7 @@ test-suite spec
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
       Garnix.Hosting.Deploy
+      Garnix.Hosting.Domains
       Garnix.Hosting.Helpers
       Garnix.Hosting.ServerPool
       Garnix.Hosting.ServerPool.Types

@@ -1596,7 +1596,9 @@ data ServerToSpinUp = ServerToSpinUp
     -- | garnix.yaml servers[].ports of type http: (name, guest port).
     httpPorts :: [(Text, Int)],
     -- | garnix.yaml servers[].ports of type tcp: (name, guest port).
-    tcpPorts :: [(Text, Int)]
+    tcpPorts :: [(Text, Int)],
+    -- | garnix.yaml servers[].domains: extra hostnames the server answers on.
+    domains :: [Text]
   }
   deriving stock (Show, Eq, Generic)
 

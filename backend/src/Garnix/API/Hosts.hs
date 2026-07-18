@@ -70,7 +70,10 @@ data HostList = HostList
     hostDomain :: Text,
     -- | Per-server extra http ports (name, guest port), by server id, from
     -- garnix.yaml servers[].ports; each becomes <name>.<server-domain>.
-    hostExtraHttpPorts :: [(ServerId, [(Text, Int)])]
+    hostExtraHttpPorts :: [(ServerId, [(Text, Int)])],
+    -- | Per-server declared extra hostnames (garnix.yaml servers[].domains /
+    -- the Configure registry), by server id; each becomes a Host(<fqdn>) router.
+    hostDeclaredDomains :: [(ServerId, [Text])]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -84,7 +87,7 @@ parseHttpPorts v =
   ]
 
 instance ToJSON HostList where
-  toJSON (HostList hosts baseUrl domain extraHttpPorts) =
+  toJSON (HostList hosts baseUrl domain extraHttpPorts declaredDomains) =
     let routerMapPair serviceDomain ruleDomain =
           ( ruleDomain,
             [aesonQQ| {
@@ -94,7 +97,20 @@ instance ToJSON HostList where
               }
             |]
           )
+        -- A router whose rule is the full FQDN verbatim (a declared vanity /
+        -- custom domain), not suffixed with the hosting domain. The service is
+        -- the guest's own service (already in httpServices below).
+        fqdnRouterPair serviceDomain fqdn =
+          ( fqdn,
+            [aesonQQ| {
+              service: #{serviceDomain},
+              rule: #{"Host(`" <> fqdn <> "`)"},
+              middlewares: ["heartbeatmiddleware"]
+              }
+            |]
+          )
         portsFor h = fromMaybe [] (lookup (_hostServerId h) extraHttpPorts)
+        domainsFor h = fromMaybe [] (lookup (_hostServerId h) declaredDomains)
         -- <name>.<pkg>.<branch>.<repo>.<owner> for an extra http port.
         portDomain h name = name <> "." <> hostToDomainName h
 
@@ -105,6 +121,7 @@ instance ToJSON HostList where
                   [routerMapPair (hostToDomainName h) (hostToDomainName h)]
                     <> (if h ^. isPrimary then [routerMapPair (hostToDomainName h) (hostToPrimaryDomainName h)] else [])
                     <> [routerMapPair (portDomain h name) (portDomain h name) | (name, _) <- portsFor h]
+                    <> [fqdnRouterPair (hostToDomainName h) d | d <- domainsFor h]
               )
               hosts
         serviceForUrl url =
@@ -147,6 +164,7 @@ getHostsForTraefik = do
   baseUrl <- view #baseUrl
   domain <- view #hostingDomain
   extraHttpPorts <- map (second parseHttpPorts) <$> DB.getServerExposures
+  declaredDomains <- DB.getServerDomains
   hosts <-
     DB.getAllRunningHosts
       <&> filter
@@ -156,7 +174,7 @@ getHostsForTraefik = do
               && (isValidSubdomainString (host ^. branch . to getBranch) || isJust (host ^. pullRequest))
               && isValidSubdomainString (host ^. packageName . to getPackageName)
         )
-  pure $ HostList hosts baseUrl domain extraHttpPorts
+  pure $ HostList hosts baseUrl domain extraHttpPorts declaredDomains
 
 postHostsHeartbeat :: [Text] -> M NoContent
 postHostsHeartbeat hosts = NoContent <$ DB.upsertHeartbeat hosts
@@ -255,8 +273,10 @@ getDomainsForOnDemandResolver :: M OnDemandResolverDomainNames
 getDomainsForOnDemandResolver = do
   domain <- view #hostingDomain
   extraHttpPorts <- map (second parseHttpPorts) <$> DB.getServerExposures
+  declaredDomains <- DB.getServerDomains
   runningHosts <- DB.getAllRunningHosts
   let portsFor h = fromMaybe [] (lookup (_hostServerId h) extraHttpPorts)
+      domainsFor h = fromMaybe [] (lookup (_hostServerId h) declaredDomains)
   pure
     $ OnDemandResolverDomainNames
       { domains =
@@ -265,6 +285,7 @@ getDomainsForOnDemandResolver = do
                 [hostToDomainName host <> "." <> domain]
                   <> (if host ^. isPrimary then [hostToPrimaryDomainName host <> "." <> domain] else [])
                   <> [name <> "." <> hostToDomainName host <> "." <> domain | (name, _) <- portsFor host]
+                  <> domainsFor host
             )
             runningHosts
       }
