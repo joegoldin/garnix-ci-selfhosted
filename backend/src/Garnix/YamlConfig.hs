@@ -29,6 +29,7 @@ module Garnix.YamlConfig
     authorizeDeployerGithubKeys,
     authorizedSSHKeys,
     ports,
+    domains,
     _garnixConfigActions,
     actions,
     asAttributeMatcher,
@@ -279,7 +280,8 @@ data ServerSection = ServerSection
     _serverSectionExposeSSH :: Bool,
     _serverSectionAuthorizeDeployerGithubKeys :: Bool,
     _serverSectionAuthorizedSSHKeys :: [Text],
-    _serverSectionPorts :: [ServerPort]
+    _serverSectionPorts :: [ServerPort],
+    _serverSectionDomains :: [Text]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -319,6 +321,11 @@ instance HasCodec ServerSection where
         []
         "Extra ports to expose. http -> <name>.<server-domain>; tcp -> host:port."
       .= _serverSectionPorts
+      <*> optionalFieldWithDefault
+        "domains"
+        []
+        "Extra hostnames this server should also answer on (full FQDNs). A name under a configured base domain (the default apps domain or an operator/connected base) is wildcard-covered — no DNS action. Any other name is a bare custom domain and needs an A/CNAME record pointing at the garnix host (see the Servers page (i) menu). Each must be declared here (or in the Configure page) to be routed and get a cert."
+      .= _serverSectionDomains
 
 data DeploySection
   = OnPullRequest {tier :: ServerTier}

@@ -279,6 +279,13 @@
                                 ],
                                 "type": "object"
                             },
+                            "domains": {
+                                "$comment": "Extra hostnames this server should also answer on (full FQDNs). A name under a configured base domain (the default apps domain or an operator/connected base) is wildcard-covered — no DNS action. Any other name is a bare custom domain and needs an A/CNAME record pointing at the garnix host (see the Servers page (i) menu). Each must be declared here (or in the Configure page) to be routed and get a cert.",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
                             "exposeSSH": {
                                 "$comment": "Open a public DNAT port on the garnix host forwarding to the guest's SSH (:22). Network reachability only; declare your login users in the guest config, or authorize the garnix user via authorizeDeployerGithubKeys/authorizedSSHKeys.",
                                 "type": "boolean"

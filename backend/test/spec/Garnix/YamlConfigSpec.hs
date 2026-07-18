@@ -197,7 +197,7 @@ spec = do
                           branch: master
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] []]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] []]
         roundtripTest actual
 
       it "parses and serializes 'on-pull-request' deployment type of the 'servers'" $ do
@@ -212,7 +212,7 @@ spec = do
                           type: on-pull-request
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x1) Nothing False False [] []]
+        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x1) Nothing False False [] [] []]
         roundtripTest actual
 
       it "parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -229,7 +229,7 @@ spec = do
                           machine: i4x8
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing False False [] []]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing False False [] [] []]
         roundtripTest actual
 
       it "return a nice error message when failing to parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -262,7 +262,7 @@ spec = do
                           isPrimary: true
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 True) Nothing False False [] []]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 True) Nothing False False [] [] []]
         roundtripTest actual
 
     context "artifacts section" $ do
@@ -443,7 +443,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] []]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] []]
 
       it "ignores the garnix.yaml file if there is a flake.nix garnix.config" $ GH.withFakeGithubInterface $ \ghState -> do
         let flake =
@@ -475,7 +475,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake $ Just yaml) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] []]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] []]
 
     context "modules section" $ do
       it "sets the publish field for the default section to false" $ do
