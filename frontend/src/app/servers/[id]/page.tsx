@@ -158,15 +158,16 @@ const MonitorContent = ({ history }: { history: ServerStatsHistory }) => {
   );
 };
 
-const Page = ({ params }: { params: { id: string } }) => {
+const Page = ({ params }: { params: Record<string, string> }) => {
+  const id = params.id!;
   const stats = useLoading(
-    useCallback(() => getServerStats(params.id), [params.id]),
+    useCallback(() => getServerStats(id), [id]),
     { poll: fromSecs(5) },
   );
   const serverResult = useLoading(getRunningServers, { poll: fromSecs(10) });
   const server =
     !serverResult.loading && serverResult.data.ok
-      ? serverResult.data.data.find((s) => s.id === params.id) ?? null
+      ? serverResult.data.data.find((s) => s.id === id) ?? null
       : null;
   return (
     <div className={styles.container}>
