@@ -770,6 +770,18 @@ getCommitsByOwnerAndRepo repoOwner repoName = do
         LIMIT 100
       |]
 
+-- | Every (owner, repo) garnix has built for, most-recently-active first. Backs
+-- the Configure page's repo list (quick links to each repo's builds page).
+getBuiltRepos :: M [(GhRepoOwner, GhRepoName)]
+getBuiltRepos =
+  pgQuery
+    [pgSQL|!
+      SELECT repo_user, repo_name
+      FROM builds
+      GROUP BY repo_user, repo_name
+      ORDER BY max(start_time) DESC
+    |]
+
 getCommit :: GhRepoOwner -> GhRepoName -> CommitHash -> M (Maybe Commit)
 getCommit owner name commit =
   pgQueryPrism

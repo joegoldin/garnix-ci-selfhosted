@@ -211,3 +211,10 @@ export const deleteConnectedDomain = async (
   id: number,
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "DELETE", `configure/domains/${id}`);
+
+const repoRefSchema = z.object({ owner: z.string(), repo: z.string() });
+export type RepoRef = z.infer<typeof repoRefSchema>;
+
+// Every repo garnix has built for, for the Configure page's quick-links list.
+export const getBuiltRepos = async (): Promise<APIResult<Array<RepoRef>>> =>
+  await fetchFromAPI(z.array(repoRefSchema), "GET", "configure/repos");

@@ -19,6 +19,7 @@ module Garnix.API.Configure
     SetArtifactRepoDto (..),
     ConnectedDomainDto (..),
     AddDomainDto (..),
+    RepoRefDto (..),
   )
 where
 
@@ -83,7 +84,9 @@ data ConfigureAPI route = ConfigureAPI
     _configureAPIVerifyDomain ::
       route :- "domains" :> Capture "id" Int64 :> "verify" :> Post '[JSON] ConnectedDomainDto,
     _configureAPIDeleteDomain ::
-      route :- "domains" :> Capture "id" Int64 :> Delete '[JSON] NoContent
+      route :- "domains" :> Capture "id" Int64 :> Delete '[JSON] NoContent,
+    _configureAPIListRepos ::
+      route :- "repos" :> Get '[JSON] [RepoRefDto]
   }
   deriving (Generic)
 
@@ -234,6 +237,17 @@ newtype AddDomainDto = AddDomainDto {_addDomainDtoDomain :: Text}
 instance FromJSON AddDomainDto where
   parseJSON = ourParseJSON
 
+-- | A repo garnix has built for, for the Configure page's quick-links list.
+data RepoRefDto = RepoRefDto
+  { _repoRefDtoOwner :: GhRepoOwner,
+    _repoRefDtoRepo :: GhRepoName
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON RepoRefDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
 configureAPI :: AuthResult AuthJwtPayload -> ConfigureAPI (AsServerT M)
 configureAPI auth =
   ConfigureAPI
@@ -325,7 +339,10 @@ configureAPI auth =
       _configureAPIDeleteDomain = \cid -> do
         requireSelfHostConfig auth
         DB.deleteConnectedDomain cid
-        pure NoContent
+        pure NoContent,
+      _configureAPIListRepos = do
+        requireSelfHostConfig auth
+        map (\(o, r) -> RepoRefDto o r) <$> DB.getBuiltRepos
     }
   where
     -- Keep values within the Int16 minute range the plan timeout fields use.

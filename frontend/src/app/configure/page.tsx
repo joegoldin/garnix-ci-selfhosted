@@ -21,6 +21,7 @@ import {
   deleteConnectedDomain,
   deleteRepoArtifactSettings,
   deleteRepoBuildTimeout,
+  getBuiltRepos,
   getConfigureSettings,
   getConnectedDomains,
   setDefaultArtifactSettings,
@@ -49,9 +50,10 @@ const minutesToHours = (m: number | null): string =>
   m == null ? "" : String(+(m / 60).toFixed(2));
 
 const Page = () => {
-  const { githubAppName, giteaUrl, selfHostMode } = useConfig();
+  const { githubAppName, giteaUrl, selfHostMode, hostingBases } = useConfig();
   const settings = useLoading(getConfigureSettings);
   const domains = useLoading(getConnectedDomains);
+  const repos = useLoading(getBuiltRepos);
   return (
     <div className={styles.container}>
       <Text type="h1" className={styles.h1}>
@@ -138,6 +140,28 @@ const Page = () => {
             Registering a domain lets garnix host servers under it. Point its
             DNS at the garnix host, then Verify to confirm it resolves here.
           </Text>
+          {hostingBases.length > 0 && (
+            <div className={styles.hostingBases}>
+              <Text className={styles.hostingBasesLabel}>
+                Wildcard hosting bases
+              </Text>
+              <Text className={styles.help}>
+                Servers are reachable at{" "}
+                <code className={styles.code}>&lt;name&gt;.&lt;base&gt;</code>{" "}
+                under these — the operator&apos;s nix-configured bases plus any
+                verified connected domain. A server&apos;s{" "}
+                <code className={styles.code}>domains</code> under one of them
+                needs no per-server DNS.
+              </Text>
+              <div className={styles.baseList}>
+                {hostingBases.map((b) => (
+                  <span key={b} className={styles.baseChip}>
+                    {b}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           {domains.loading ? (
             <Loading />
           ) : !domains.data.ok ? (
@@ -147,6 +171,36 @@ const Page = () => {
               domains={domains.data.data}
               reload={domains.reload}
             />
+          )}
+        </div>
+      )}
+
+      {selfHostMode && (
+        <div className={styles.section}>
+          <Text type="h2" className={styles.h2}>
+            Repositories
+          </Text>
+          <Text className={styles.help}>
+            Every repository garnix has built for — jump to a repo&apos;s builds.
+          </Text>
+          {repos.loading ? (
+            <Loading />
+          ) : !repos.data.ok ? (
+            <Text className={styles.error}>{repos.data.error.message}</Text>
+          ) : repos.data.data.length === 0 ? (
+            <Text className={styles.help}>No repositories built yet.</Text>
+          ) : (
+            <div className={styles.repoList}>
+              {repos.data.data.map((r) => (
+                <Link
+                  key={`${r.owner}/${r.repo}`}
+                  href={`/repo/${r.owner}/${r.repo}`}
+                  className={styles.repoRow}
+                >
+                  {r.owner}/{r.repo}
+                </Link>
+              ))}
+            </div>
           )}
         </div>
       )}
