@@ -182,6 +182,7 @@ truncateDBMNoInsert = do
           artifact_objects,
           commits,
           servers,
+          server_stats,
           installations,
           heartbeat,
           access_tokens,

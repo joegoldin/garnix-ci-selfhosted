@@ -50,14 +50,36 @@
   text-align: center;
 }
 
-/* Per-row action buttons (Visit / Delete / Logs): stack them with even
-   spacing instead of forcing `display: inline` on the flex Button, which
-   overlapped them vertically. */
+/* Per-row action buttons (Visit / Delete / Logs / Monitor): a 2×2 grid.
+   Buttons keep their own styling; the container just lays them out two per
+   row, each filling its cell so the block stays tidy. */
 .rowActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  justify-items: stretch;
+}
+
+/* Compact CPU/RAM cell on the Servers row. */
+.resources {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  align-items: flex-end;
+  gap: 4px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.resourceLine {
+  color: var(--color-stone-800);
+}
+
+.resourceLabel {
+  display: inline-block;
+  width: 34px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-stone-500);
 }
 
 .error {

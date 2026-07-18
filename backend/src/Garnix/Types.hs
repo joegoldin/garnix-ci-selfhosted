@@ -1703,6 +1703,43 @@ data Host = Host
   }
   deriving stock (Eq, Show, Generic)
 
+-- | A single resource-usage sample for a deployed server, pushed by the
+-- guest's stats reporter (see provisioner/guest-profile.nix). CPU is a
+-- utilisation percentage (0-100) computed from /proc/stat deltas; memory is
+-- MemTotal and MemTotal-MemAvailable from /proc/meminfo, in kibibytes.
+data ServerStatsSample = ServerStatsSample
+  { _serverStatsSampleCpuPct :: Double,
+    _serverStatsSampleMemUsedKb :: Int64,
+    _serverStatsSampleMemTotalKb :: Int64,
+    _serverStatsSampleSampledAt :: UTCTime
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON ServerStatsSample where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+-- | An inbound stats push from a deployed guest (POST /api/hosts/stats). The
+-- guest is unauthenticated (like the heartbeat) and identifies itself by its
+-- provisioner id — injected into the guest at create time by the provisioner
+-- (garnix.guest.provisionerId), which the backend maps to the live server row
+-- via servers.provisioner_id. JSON keys are snake_case: provisioner_id,
+-- cpu_pct, mem_used_kb, mem_total_kb.
+data HostStatsReport = HostStatsReport
+  { _hostStatsReportProvisionerId :: ProvisionedServerId,
+    _hostStatsReportCpuPct :: Double,
+    _hostStatsReportMemUsedKb :: Int64,
+    _hostStatsReportMemTotalKb :: Int64
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON HostStatsReport where
+  parseJSON = ourParseJSON
+
+instance ToJSON HostStatsReport where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
 newtype Candidate a = Candidate {promoteCandidate :: a}
 
 -- * opensearch

@@ -1888,6 +1888,91 @@ getAllRunningHosts = do
       AND servers.ended_at IS NULL
     |]
 
+-- | How many recent resource samples we retain per server (a small rolling
+-- window). The guest reporter pushes roughly every 20s, so ~60 samples is
+-- about 20 minutes of history for the Monitor page's sparkline.
+serverStatsWindow :: Int64
+serverStatsWindow = 60
+
+-- | Store a resource sample pushed by a deployed guest (POST /api/hosts/stats).
+-- The guest identifies itself by its provisioner id; we map that to the live
+-- (not-ended) server row and drop the sample when there is no match — the guest
+-- may still be in the preprovisioned pool, or its server may have been deleted
+-- (best-effort, like the heartbeat). After inserting we prune the server's
+-- samples back to the most recent 'serverStatsWindow' so the table stays a
+-- small per-server ring.
+upsertServerStats :: HostStatsReport -> M ()
+upsertServerStats report = do
+  let provisionerId = _hostStatsReportProvisionerId report
+      cpuPct = _hostStatsReportCpuPct report
+      memUsedKb = _hostStatsReportMemUsedKb report
+      memTotalKb = _hostStatsReportMemTotalKb report
+  serverIds <-
+    pgQuery
+      [pgSQL|!
+        SELECT id FROM servers
+        WHERE provisioner_id = ${provisionerId}
+        AND ended_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      |]
+  forM_ (serverIds :: [ServerId]) $ \serverId -> do
+    void
+      $ pgExec
+        [pgSQL|
+          INSERT INTO server_stats (server_id, cpu_pct, mem_used_kb, mem_total_kb)
+          VALUES (${serverId}, ${cpuPct}, ${memUsedKb}, ${memTotalKb})
+        |]
+    void
+      $ pgExec
+        [pgSQL|
+          DELETE FROM server_stats
+          WHERE server_id = ${serverId}
+          AND id NOT IN (
+            SELECT id FROM server_stats
+            WHERE server_id = ${serverId}
+            ORDER BY sampled_at DESC, id DESC
+            LIMIT ${serverStatsWindow}
+          )
+        |]
+
+-- | The rolling window of samples for one server, oldest-first (so the Monitor
+-- page can plot them left-to-right). Capped at 'serverStatsWindow'.
+getServerStatsHistory :: ServerId -> M [ServerStatsSample]
+getServerStatsHistory serverId = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT cpu_pct, mem_used_kb, mem_total_kb, sampled_at
+        FROM server_stats
+        WHERE server_id = ${serverId}
+        ORDER BY sampled_at DESC, id DESC
+        LIMIT ${serverStatsWindow}
+      |]
+  pure
+    $ reverse
+      [ ServerStatsSample cpuPct memUsedKb memTotalKb sampledAt
+      | (cpuPct, memUsedKb, memTotalKb, sampledAt) <- rows
+      ]
+
+-- | The latest sample per server, as an assoc list keyed by ServerId (which
+-- has no Ord instance). Consumers join this against RunningServer by server id
+-- to render the current CPU/RAM in the Servers-page row.
+getLatestServerStats :: M [(ServerId, ServerStatsSample)]
+getLatestServerStats = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT DISTINCT ON (server_id)
+          server_id, cpu_pct, mem_used_kb, mem_total_kb, sampled_at
+        FROM server_stats
+        ORDER BY server_id, sampled_at DESC, id DESC
+      |]
+  pure
+    [ (serverId, ServerStatsSample cpuPct memUsedKb memTotalKb sampledAt)
+    | (serverId, cpuPct, memUsedKb, memTotalKb, sampledAt) <- rows
+    ]
+
 getRunningServersOf :: RepoInfo -> DeploymentType -> M [ServerInfo]
 getRunningServersOf repoInfo deploymentType = do
   pgQueryPrism _ServerInfo $ case deploymentType of

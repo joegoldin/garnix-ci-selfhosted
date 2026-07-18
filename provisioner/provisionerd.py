@@ -40,6 +40,10 @@ NIXPKGS_FLAKE = os.environ["PROVISIONER_NIXPKGS"]
 MICROVM_FLAKE = os.environ["PROVISIONER_MICROVM"]
 GUEST_PROFILE = os.environ["PROVISIONER_GUEST_PROFILE"]
 SSH_PUBKEY_FILE = os.environ["PROVISIONER_SSH_PUBKEY_FILE"]
+# Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats). Empty
+# by default; when set, guests push their CPU/RAM there every ~20s. Injected
+# into each guest's config so the reporter knows where to POST.
+STATS_URL = os.environ.get("PROVISIONER_STATS_URL", "")
 
 DNSMASQ_HOSTS = os.path.join(STATE_DIR, "dnsmasq-hosts")
 SPECS_DIR = os.path.join(STATE_DIR, "specs")
@@ -131,6 +135,8 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
     {{ type = "bridge"; id = {nix_str(f"gx{vm_id}")}; mac = {nix_str(vm_mac(vm_id))}; bridge = {nix_str(BRIDGE)}; }}
   ];
   garnix.guest.sshPublicKey = {nix_str(pubkey)};
+  garnix.guest.statsReportUrl = {nix_str(STATS_URL)};
+  garnix.guest.provisionerId = {vm_id};
 }}
 """
         )

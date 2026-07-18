@@ -40,7 +40,11 @@ data RunningServer = RunningServer
     _runningServerUrl :: Text,
     -- | Raw servers.exposed blob ({ssh_port, tcp, http}) when the server has
     -- exposed SSH/ports; the frontend builds ssh commands + port links from it.
-    _runningServerExposed :: Maybe Aeson.Value
+    _runningServerExposed :: Maybe Aeson.Value,
+    -- | The latest resource sample pushed by this server's guest reporter
+    -- (CPU %, memory used/total). 'Nothing' until the guest reports; the
+    -- Servers-page row renders it compactly and the Monitor page draws history.
+    _runningServerStats :: Maybe ServerStatsSample
   }
   deriving stock (Eq, Show, Generic)
 
@@ -51,6 +55,7 @@ getRunningAndRecentServersForOwners :: [GhRepoOwner] -> M [RunningServer]
 getRunningAndRecentServersForOwners owners = do
   domain <- view #hostingDomain
   exposures <- DB.getServerExposures
+  stats <- DB.getLatestServerStats
   let mkUrl typ repoName repoUser packageName =
         "https://"
           <> getPackageName packageName
@@ -66,7 +71,7 @@ getRunningAndRecentServersForOwners owners = do
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures)
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats)
     )
     <$> DB.pgQuery
       [pgSQL|

@@ -486,6 +486,61 @@ spec = do
           Nothing -> pure ()
           Just _ -> liftIO $ expectationFailure "Server was not deleted"
 
+    beforeM_ truncateDBM $ describe "server stats" $ do
+      it "exposes the latest pushed sample on /api/hosts" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user identity
+        let pid = server ^. provisionedServerId
+        void $ postHostsStats (HostStatsReport pid 10.0 100 200)
+        void $ postHostsStats (HostStatsReport pid 42.5 150 200)
+        result <- assert200 $ testServer.get "/api/hosts"
+        liftIO $ do
+          result ^?! responseBody . nth 0 . key "stats" . key "cpu_pct" . _Double `shouldBe` 42.5
+          result ^?! responseBody . nth 0 . key "stats" . key "mem_used_kb" . _Integer `shouldBe` 150
+          result ^?! responseBody . nth 0 . key "stats" . key "mem_total_kb" . _Integer `shouldBe` 200
+
+      it "keeps latest samples separate per server" $ withServer $ \testServer -> do
+        user <- testServer.login
+        serverA <- createSimpleServer user identity
+        serverB <- createSimpleServer user (provisionedServerId .~ ProvisionedServerId 2)
+        void $ postHostsStats (HostStatsReport (serverA ^. provisionedServerId) 11.0 100 200)
+        void $ postHostsStats (HostStatsReport (serverB ^. provisionedServerId) 22.0 300 400)
+        latest <- DB.getLatestServerStats
+        liftIO $ do
+          (_serverStatsSampleCpuPct <$> lookup (serverA ^. id) latest) `shouldBe` Just 11.0
+          (_serverStatsSampleCpuPct <$> lookup (serverB ^. id) latest) `shouldBe` Just 22.0
+
+      it "drops samples for an unknown provisioner id" $ withServer $ \testServer -> do
+        _user <- testServer.login
+        void $ postHostsStats (HostStatsReport (ProvisionedServerId 999) 5.0 10 20)
+        latest <- DB.getLatestServerStats
+        liftIO $ latest `shouldBe` []
+
+      it "caps the rolling window and serves history via /api/hosts/<id>/stats" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user identity
+        let pid = server ^. provisionedServerId
+        forM_ [1 .. 65 :: Int] $ \i ->
+          void $ postHostsStats (HostStatsReport pid (fromIntegral i) (fromIntegral i) 200)
+        let sid = getHashId (getServerId (server ^. id))
+        result <- assert200 $ testServer.get (cs ("/api/hosts/" <> sid <> "/stats"))
+        liftIO $ do
+          -- pruned to the window (serverStatsWindow = 60)
+          length (result ^.. responseBody . key "samples" . _Array . traverse) `shouldBe` 60
+          -- current = most recent (cpu 65)
+          result ^?! responseBody . key "current" . key "cpu_pct" . _Double `shouldBe` 65.0
+          -- samples are oldest-first, so the oldest retained is the 6th (cpu 6)
+          result ^?! responseBody . key "samples" . nth 0 . key "cpu_pct" . _Double `shouldBe` 6.0
+
+      it "requires auth on the per-server stats endpoint" $ withServer $ \testServer -> do
+        result <- testServer.get "/api/hosts/vBV73Z9e/stats"
+        result `shouldHaveStatusCode` 401
+
+      it "404s for a server the user cannot see" $ withServer $ \testServer -> do
+        _user <- testServer.login
+        result <- testServer.get "/api/hosts/vBV73Z9e/stats"
+        result `shouldHaveStatusCode` 404
+
 createSimpleServer :: User -> (ServerInfo -> ServerInfo) -> M ServerInfo
 createSimpleServer user =
   createServer

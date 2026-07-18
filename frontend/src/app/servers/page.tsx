@@ -101,6 +101,31 @@ const InternalIpCell = ({ server }: { server: RunningServer }) =>
     <span className={styles.muted}>—</span>
   );
 
+// KiB -> GiB, one decimal (matches the compact table style).
+const kbToGiB = (kb: number): string => (kb / 1024 / 1024).toFixed(1);
+
+// Compact CPU% / RAM cell fed by the latest pushed sample.
+const ResourcesCell = ({ stats }: { stats: RunningServer["stats"] }) => {
+  if (!stats) return <span className={styles.muted}>—</span>;
+  const memPct =
+    stats.mem_total_kb > 0
+      ? Math.round((stats.mem_used_kb / stats.mem_total_kb) * 100)
+      : 0;
+  return (
+    <div className={styles.resources}>
+      <span className={styles.resourceLine}>
+        <span className={styles.resourceLabel}>CPU</span>
+        {stats.cpu_pct.toFixed(1)}%
+      </span>
+      <span className={styles.resourceLine}>
+        <span className={styles.resourceLabel}>RAM</span>
+        {kbToGiB(stats.mem_used_kb)} / {kbToGiB(stats.mem_total_kb)} GiB ({memPct}
+        %)
+      </span>
+    </div>
+  );
+};
+
 // The Connect cell: the SSH methods and any exposed http/tcp ports.
 const ConnectCell = ({
   server,
@@ -199,6 +224,7 @@ const ServersTable = (props: {
             <th>Deploy Type</th>
             <th>Build</th>
             <th>Status</th>
+            <th>Resources</th>
             <th>Internal IP</th>
             <th>Connect</th>
             <th>Created</th>
@@ -245,6 +271,9 @@ const ServersTable = (props: {
                   {server.status}
                 </td>
                 <td>
+                  <ResourcesCell stats={server.stats} />
+                </td>
+                <td>
                   <InternalIpCell server={server} />
                 </td>
                 <td>
@@ -280,6 +309,7 @@ const ServersTable = (props: {
                   >
                     Logs
                   </Button>
+                  <Button href={`/servers/${server.id}`}>Monitor</Button>
                 </td>
               </tr>
             );

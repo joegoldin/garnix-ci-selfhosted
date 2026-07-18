@@ -11,3 +11,4 @@ drop-billing-and-plans 2026-07-16T19:00:00Z joegoldin <joe@joegold.in> # Self-ho
 rename-hetzner-id-to-provisioner-id 2026-07-16T19:30:00Z joegoldin <joe@joegold.in> # Local-provisioner only: rename hetzner_id -> provisioner_id
 add-artifacts 2026-07-17T08:00:00Z joegoldin <joe@joegold.in> # Build artifacts: artifacts + artifact_objects tables, retention settings
 add-build-status-skipped 2026-07-17T19:00:00Z joegoldin <joe@joegold.in> # Add 'skipped' to build_status enum (GitHub/Gitea skipped conclusion; all-skipped FOD checks)
+add-server-stats 2026-07-17T20:00:00Z joegoldin <joe@joegold.in> # Per-server resource stats: server_stats table (guest-pushed CPU/RAM samples, rolling window)

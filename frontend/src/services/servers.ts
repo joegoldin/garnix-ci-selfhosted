@@ -9,6 +9,16 @@ const haskellUnionVariantWithContents = <
   contents: Contents,
 ) => z.object({ tag: z.literal(tag), contents });
 
+// A resource sample pushed by a deployed server's guest reporter. CPU is a
+// utilisation percentage (0-100); memory is in kibibytes.
+const serverStatsSampleSchema = z.object({
+  cpu_pct: z.number(),
+  mem_used_kb: z.number(),
+  mem_total_kb: z.number(),
+  sampled_at: z.coerce.date(),
+});
+export type ServerStatsSample = z.infer<typeof serverStatsSampleSchema>;
+
 const runningServerSchema = z.object({
   id: z.string(),
   status: z.union([
@@ -60,8 +70,18 @@ const runningServerSchema = z.object({
     })
     .nullish()
     .transform((v) => v ?? null),
+  // Latest resource sample from the server's guest reporter; null until the
+  // guest has reported (or the reporter isn't configured).
+  stats: serverStatsSampleSchema.nullish().transform((v) => v ?? null),
 });
 export type RunningServer = z.infer<typeof runningServerSchema>;
+
+// Current sample + a short rolling window, for the per-server Monitor page.
+const serverStatsHistorySchema = z.object({
+  current: serverStatsSampleSchema.nullish().transform((v) => v ?? null),
+  samples: z.array(serverStatsSampleSchema),
+});
+export type ServerStatsHistory = z.infer<typeof serverStatsHistorySchema>;
 
 export async function getRunningServers(): Promise<
   APIResult<Array<RunningServer>>
@@ -71,4 +91,10 @@ export async function getRunningServers(): Promise<
 
 export async function deleteServer(id: string): Promise<APIResult<null>> {
   return await fetchFromAPI(z.null(), "DELETE", `hosts/${id}`);
+}
+
+export async function getServerStats(
+  id: string,
+): Promise<APIResult<ServerStatsHistory>> {
+  return await fetchFromAPI(serverStatsHistorySchema, "GET", `hosts/${id}/stats`);
 }

@@ -68,6 +68,19 @@ in
       example = "path:/nix/store/...-source";
       description = "Flakeref the per-VM flakes pin microvm.nix to (same shape as nixpkgsFlake).";
     };
+    statsReportUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "https://garnix.example.com/api/hosts/stats";
+      description = ''
+        Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats),
+        injected into every guest so its reporter can push CPU/RAM samples
+        (see guest-profile.nix). Guests reach it over the public API domain via
+        the bridge gateway's NAT — the same path they already use for
+        /api/keys/*, so the Caddy gate must expose /api/hosts/stats ungated.
+        Empty (default) disables the per-guest reporter.
+      '';
+    };
     backendGroup = lib.mkOption {
       type = lib.types.str;
       default = "garnix";
@@ -224,6 +237,7 @@ in
         PROVISIONER_UPLINK = cfg.uplinkInterface;
         PROVISIONER_SSH_PORT_BASE = toString cfg.sshExposePortBase;
         PROVISIONER_TCP_PORT_BASE = toString cfg.tcpExposePortBase;
+        PROVISIONER_STATS_URL = cfg.statsReportUrl;
       };
       serviceConfig = {
         # Derive the guest-facing public key from the hosting private key so
