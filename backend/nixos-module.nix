@@ -251,6 +251,18 @@ in
           default = 0;
           description = "max-jobs for local builds in production mode (0 = never build locally, farm everything to buildMachines)";
         };
+        maxConcurrentBuilds = lib.mkOption {
+          type = lib.types.int;
+          default = 16;
+          description = ''
+            Concurrent-build cap. Every package still fans out and registers as a
+            pending check immediately; this bounds how many actually eval+build at
+            once (the rest queue, staying pending, and flip to running when a slot
+            frees — round-robin fair by repo owner). Bounds guest fan-out and the
+            log-shipping load on fluent-bit during big multi-commit pushes. Sets
+            GARNIX_MAX_CONCURRENT_BUILDS.
+          '';
+        };
         enableNginx = lib.mkOption {
           type = lib.types.bool;
           default = true;
@@ -376,6 +388,14 @@ in
             Tag = tag;
             listen = "::1";
             port = buildLogsFluentBitPort;
+            # The backend ships each build-log line as its own POST. During a big
+            # multi-commit push dozens of builds ship concurrently; fluent-bit's
+            # default accept backlog (128) saturates and the backend's POSTs time
+            # out (silently dropped — shipping is best-effort). Give the listener
+            # a deeper accept queue and its own thread so it keeps draining
+            # connections while the OpenSearch output flushes.
+            "net.backlog" = 1024;
+            Threaded = "On";
           };
           output = {
             Name = "opensearch";
@@ -468,6 +488,7 @@ in
           "S3_CACHE_PUBLIC_BASE_URL=${config.services.garnixServer.s3Cache.publicBaseUrl}"
           "S3_CACHE_PRIVATE_BUCKET=${config.services.garnixServer.s3Cache.privateBucket}"
           "GARNIX_MODULES_ORG=${config.services.garnixServer.modulesOrg}"
+          "GARNIX_MAX_CONCURRENT_BUILDS=${toString config.services.garnixServer.maxConcurrentBuilds}"
         ]
         ++ lib.optionals config.services.garnixServer.selfHostMode [
           "GARNIX_SELF_HOST_MODE=1"

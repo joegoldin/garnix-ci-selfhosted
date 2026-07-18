@@ -120,6 +120,10 @@ data Env = Env
     opensearchQueryUrl :: String,
     opensearchPassword :: ByteString,
     nixEvalPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
+    -- | Concurrent-build cap. All builds still fan out and register as
+    -- pending; this bounds how many actually eval+build at once (the rest
+    -- wait their turn in the queue). Env-tunable via GARNIX_MAX_CONCURRENT_BUILDS.
+    buildPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
     s3UploadPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
     mocks :: Maybe EnvMocks,
     emptyDir :: FilePath,

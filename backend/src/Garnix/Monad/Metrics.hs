@@ -37,6 +37,11 @@ data Metrics = Metrics
     fodCheckBatchSize :: Histogram,
     fodCheckQueueLen :: Gauge,
     fodCheckQueueWaitTime :: Histogram,
+    -- | Concurrent-build cap: how many builds are queued waiting for a slot.
+    buildQueueLen :: Gauge,
+    buildQueueWaitTime :: Histogram,
+    -- | Log lines dropped because shipping to fluent-bit failed (best-effort).
+    logShipFailures :: Counter,
     registry :: Registry
   }
   deriving (Generic)
@@ -190,6 +195,22 @@ registerMetrics = do
       "garnix_server_fod_check_queue_wait_time"
       mempty
       [0.2, 0.5, 1, 5, 10, 30, 60, 120, 360, 600, 900, 1500, 3000, 10000]
+      registry
+  buildQueueLen <-
+    registerGauge
+      "garnix_server_build_queue_len"
+      mempty
+      registry
+  buildQueueWaitTime <-
+    registerHistogram
+      "garnix_server_build_queue_wait_time"
+      mempty
+      [0.2, 0.5, 1, 5, 10, 30, 60, 120, 360, 600, 900, 1500, 3000, 10000]
+      registry
+  logShipFailures <-
+    registerCounter
+      "garnix_server_log_ship_failures_total"
+      mempty
       registry
   pure $ Metrics {..}
 

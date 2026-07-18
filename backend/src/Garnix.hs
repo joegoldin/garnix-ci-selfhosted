@@ -356,8 +356,16 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               10
         )
   metrics <- registerMetrics
-  nixEvalPool <- Garnix.Monad.Pool.newPool 50 metrics #evalQueueWaitTime #evalQueueLen
+  nixEvalPool <- Garnix.Monad.Pool.newPool 32 metrics #evalQueueWaitTime #evalQueueLen
   s3UploadPool <- Garnix.Monad.Pool.newPool 100 metrics #s3QueueWaitTime #s3QueueLen
+  -- Concurrent-build cap. Every build still fans out and registers as pending;
+  -- only this many eval+build at once (the rest queue). Bounds guest fan-out
+  -- and the log-shipping load on fluent-bit during big multi-commit pushes.
+  maxConcurrentBuilds <-
+    lookupEnv "GARNIX_MAX_CONCURRENT_BUILDS" >>= \case
+      Just s | Just n <- readMaybe s, n > 0 -> pure n
+      _ -> pure 16
+  buildPool <- Garnix.Monad.Pool.newPool maxConcurrentBuilds metrics #buildQueueWaitTime #buildQueueLen
   Cradle.StdoutTrimmed hostname <- Cradle.run $ Cradle.cmd "hostname"
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
@@ -416,6 +424,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
                     timeoutDuration = fromHours @Int 2
                   },
               nixEvalPool = nixEvalPool,
+              buildPool = buildPool,
               s3UploadPool = s3UploadPool,
               mocks = mocks,
               spanCtx = [],

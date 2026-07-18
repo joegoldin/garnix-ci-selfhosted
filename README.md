@@ -947,6 +947,29 @@ systemd.services.nix-daemon.serviceConfig = {
 services.garnixServer.maxLocalJobs = 8;
 ```
 
+### Concurrency & log-shipping under load
+
+A single push fans out one build per package / `nixosConfiguration`; several
+pushes in quick succession — or bumping a shared flake input that rebuilds
+everything — can mean dozens of concurrent guest builds all streaming logs at
+once. Two knobs keep that from swamping the box or the log pipeline:
+
+- **`services.garnixServer.maxConcurrentBuilds`** (default `16`) caps how many
+  builds *run* at once. Every build is still created and reported as a pending
+  check immediately — the cap only queues the actual eval+build (round-robin
+  fair by repo owner), so nothing is dropped, work just paces itself. Evals are
+  separately capped at 32. Sets `GARNIX_MAX_CONCURRENT_BUILDS`.
+- Build logs ship best-effort from the server to a local fluent-bit HTTP input,
+  then to OpenSearch. Under a heavy wave fluent-bit's default 128-slot accept
+  backlog can saturate and silently drop lines (an empty **Logs** panel on a
+  *finished* build is the tell). The input now runs `Threaded` with a 1024-deep
+  `net.backlog`, and drops are counted in `garnix_server_log_ship_failures_total`
+  (plus a rate-limited journal warning) instead of vanishing.
+
+Pressure is visible in Prometheus: `garnix_server_build_queue_len` /
+`garnix_server_build_queue_wait_time` (builds waiting for a slot),
+`garnix_server_eval_queue_len`, and `garnix_server_log_ship_failures_total`.
+
 ## Step 12 — Backups
 
 Postgres (builds/users/config + the cache index) is the state that matters;
@@ -978,6 +1001,7 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | White page, `/_next` 404s | proxy must serve `/_next/*` from the frontend package |
 | `getInstalledOrgs … 401` | expired 8h user token — re-login; disable token expiry on the App |
 | Jobs stuck "Pending" forever | orphaned by a `garnixServer` restart (deploy) mid-build; cancel them |
+| **Logs** panel empty on a *finished* build | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog |
 | `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |
 | nix build: `can't find source for <new file>` | new files must be `git add`ed before a git-flake build sees them |
 | 401s from your private substituter inside builds | set `buildNetRcFile` (the sandbox can't read the host's root-only netrc) |

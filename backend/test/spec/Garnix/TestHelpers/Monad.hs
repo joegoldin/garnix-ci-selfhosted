@@ -252,6 +252,7 @@ withTestEnvironment tempDir action = do
       sshKey <- canonicalizePath "ssh-key-for-tests"
       metrics <- registerMetrics
       nixEvalPool <- Garnix.Monad.Pool.newPool 120 metrics #evalQueueWaitTime #evalQueueLen
+      buildPool <- Garnix.Monad.Pool.newPool 120 metrics #buildQueueWaitTime #buildQueueLen
       s3UploadPool <- Garnix.Monad.Pool.newPool 80 metrics #s3QueueWaitTime #s3QueueLen
       mocks <- envMocks testFeatures
       Just emptyDir' <- lookupEnv "EMPTY_DIR"
@@ -301,6 +302,7 @@ withTestEnvironment tempDir action = do
                         timeoutDuration = fromMinutes 5
                       },
                   nixEvalPool = nixEvalPool,
+                  buildPool = buildPool,
                   s3UploadPool = s3UploadPool,
                   mocks,
                   spanCtx = [],

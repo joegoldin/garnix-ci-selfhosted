@@ -19,11 +19,27 @@ import Data.Time
 import Data.Time.Format.ISO8601
 import Garnix.BuildLogs.Types (LogLine (LogLine))
 import Garnix.Monad
+import Garnix.Monad.Metrics (incrementEvent)
 import Garnix.Prelude
 import Garnix.Types hiding (branch, commit, repoName, repoOwner, statusCode)
 import Garnix.Types qualified
 import Network.HTTP.Types (Status (statusCode), statusIsSuccessful)
 import Network.Wreq qualified as Wreq
+import System.IO.Unsafe (unsafePerformIO)
+
+-- Rate-limit the log-ship failure warning to at most once per 10s. A burst of
+-- dropped lines (e.g. a big multi-commit push overwhelming fluent-bit) would
+-- otherwise flood the journal with one line each; the logShipFailures metric
+-- carries the real rate.
+{-# NOINLINE logShipWarningLast #-}
+logShipWarningLast :: MVar UTCTime
+logShipWarningLast = unsafePerformIO $ newMVar (UTCTime (ModifiedJulianDay 0) 0)
+
+throttleLogShipWarning :: IO Bool
+throttleLogShipWarning = do
+  now <- getCurrentTime
+  modifyMVar logShipWarningLast $ \lastAt ->
+    pure $ if diffUTCTime now lastAt > 10 then (now, True) else (lastAt, False)
 
 storeRunLogLine :: Run -> LogLine -> M ()
 storeRunLogLine run = storeLogLine (fromRun run) (FromRun $ run ^. id)
@@ -64,8 +80,17 @@ storeLogLine metadata = curry $ mockable #storeLogLineMock $ \(openSearchId, log
               response ^. Wreq.responseBody & cs
             ]
       )
-      `catchAny` \e ->
-        log Error $ "[fluent-bit writer thread] Could not ship log line (is fluent-bit up?): " <> show e
+      `catchAny` \e -> do
+        -- Shipping is best-effort. Surface the true drop rate as a metric
+        -- (Prometheus / the monitoring page) and rate-limit the journal line so
+        -- a mass build wave (dozens of concurrent builds all shipping) can't
+        -- flood the log with one Error per dropped line.
+        incrementEvent #logShipFailures
+        shouldLog <- liftIO throttleLogShipWarning
+        when shouldLog
+          $ log Warning
+          $ "[fluent-bit writer thread] Dropping build-log line(s) — fluent-bit down or not keeping up (rate-limited; see garnix_server_log_ship_failures_total): "
+          <> show e
 
 toOpenSearchKey :: OpenSearchId -> String
 toOpenSearchKey (FromRun _) = "runId"

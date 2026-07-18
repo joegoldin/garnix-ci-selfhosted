@@ -19,6 +19,7 @@ import Garnix.Duration
 import Garnix.Monad
 import Garnix.Monad.Concurrency
 import Garnix.Monad.Metrics
+import Garnix.Monad.Pool (withPoolM)
 import Garnix.Monad.SubProcess
 import Garnix.Nix.Types (DrvPath)
 import Garnix.NixConfig (addNixConfigEnvironment)
@@ -33,14 +34,20 @@ doBuild fodChecker runReporter buildKind flakeDir repoConfig plan initialBuild =
   attr <- localAttr flakeDir (attribute initialBuild)
   withMessage ("Running build for " <> attr) $ do
     withSpan (initialBuild ^. id, initialBuild ^. packageType, initialBuild ^. system, initialBuild ^. package) $ do
-      -- Catch both IO exceptions and M errors
-      ( runBuild
-          `catchError` \_ -> do
+      -- Concurrent-build cap: the build is already registered as pending (in
+      -- setupBuilds, before this promise was spawned), so waiting here just
+      -- keeps it pending until a slot frees — it flips to running on its first
+      -- log line. FairQSem is round-robin fair by repo owner. A failed build
+      -- still releases its slot (withPoolM brackets acquire/release).
+      withPoolM buildPool (initialBuild ^. repoUser) $ do
+        -- Catch both IO exceptions and M errors
+        ( runBuild
+            `catchError` \_ -> do
+              returnFailedBuild
+          )
+          `catch` \e -> do
+            log Warning $ "An exception occurred while building the package: " <> show (e :: SomeException)
             returnFailedBuild
-        )
-        `catch` \e -> do
-          log Warning $ "An exception occurred while building the package: " <> show (e :: SomeException)
-          returnFailedBuild
   where
     returnFailedBuild :: M Build
     returnFailedBuild = do
