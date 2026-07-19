@@ -55,8 +55,10 @@ let
       # If the repo was rsynced in (withRepoContents), bind it read-write at
       # /tmp/base and run there; otherwise run from a scratch home.
       REPO_BIND=()
+      ACTION_CWD=/home/action-runner
       if [[ -n "''${ACTION_REPO_DIR:-}" && -d "''${ACTION_REPO_DIR:-}" ]]; then
         REPO_BIND=(--bind "$ACTION_REPO_DIR" /tmp/base)
+        ACTION_CWD=/tmp/base
       fi
 
       # For actions that opt into a GitHub token (garnix.yaml `githubToken`), the
@@ -120,8 +122,11 @@ let
            --tmpfs /tmp \
            --die-with-parent \
            --tmpfs /home/action-runner \
-           --chdir /home/action-runner \
+           --chdir "$ACTION_CWD" \
            --setenv HOME /home/action-runner \
+           `# Deterministic output ordering (ls collation etc.) regardless` \
+           `# of the host locale.` \
+           --setenv LC_ALL C.UTF-8 \
            --bind "$TEMP_SECRET" "$TEMP_SECRET" \
            --bind "$SIGNAL" /syncfile \
            --bind "$PIDFILE" /pidfile \

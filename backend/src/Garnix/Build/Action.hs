@@ -239,12 +239,9 @@ runAction runReporter actionConfig path actionPrivateKey environmentVars = do
         Right k -> pure k
   proc <- runSshOnActionRunner actionConfig (Nix.getAppExecPath path) privKey environmentVars
   exitCode <- runWithRunReporter runReporter proc
-  when
-    ( exitCode
-        == Cradle.ExitFailure 124
-        && actionConfig
-        ^. sandboxType == SharedResources
-    )
+  -- The self-host runner wraps every sandbox type in coreutils `timeout`
+  -- (exit 124), so report a timeout regardless of sandbox type.
+  when (exitCode == Cradle.ExitFailure 124)
     $ do
       throw ActionExecutionTimeout
   when
@@ -283,7 +280,9 @@ copyRepoToActionRunner = do
     <> show sshErr
   (rsyncExitCode, Cradle.StderrRaw rsyncErr) <-
     Cradle.run $ Cradle.cmd "rsync"
-      & Cradle.addArgs ["-a", "-e", "ssh -p " <> port <> " -i " <> sshKey, cs (repo <> "/"), "action-runner@[" <> ip <> "]:" <> tempDir]
+      -- Same host-key stance as sshArgsFor: a fresh runner host (every CI
+      -- run boots a new VM) fails strict host-key verification otherwise.
+      & Cradle.addArgs ["-a", "-e", "ssh -p " <> port <> " -i " <> sshKey <> " -oBatchMode=yes -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null", cs (repo <> "/"), "action-runner@[" <> ip <> "]:" <> tempDir]
   unless (rsyncExitCode == Cradle.ExitSuccess)
     $ throw
     $ OtherError

@@ -95,7 +95,9 @@ spec = do
               _ -> error "Expectected gauge metric"
       metrics <- view #metrics
       pool <- newPool 3 metrics #evalQueueWaitTime #evalQueueLen
-      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` (-3)
+      -- The gauge is the number of waiters (0 while slots are free) — it no
+      -- longer reports free slots as a negative count.
+      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` 0
       mvar <- liftIO newEmptyMVar
       replicateM_ 5
         $ spawn
@@ -108,11 +110,11 @@ spec = do
       liftIO $ putMVar mvar ()
       waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` 0
       liftIO $ putMVar mvar ()
-      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` (-1)
+      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` 0
       liftIO $ putMVar mvar ()
-      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` (-2)
+      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` 0
       liftIO $ putMVar mvar ()
-      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` (-3)
+      waitFor (fromSeconds 10) $ getCurrentGaugeCount `shouldReturnM` 0
 
 type ConcurrencyGauge = MVar (Int, Int)
 

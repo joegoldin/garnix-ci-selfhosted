@@ -16,6 +16,10 @@
         # The spec helper runs `bin/run-action-runner2-vm`, whose name derives
         # from the hostname.
         networking.hostName = "action-runner2";
+        # Without a timezone NixOS creates no /etc/localtime, the sandbox
+        # symlinks a dangling path, and tz-dependent actions fail
+        # ("Cannot determine local time zone" — the perl DateTime spec).
+        time.timeZone = "UTC";
         garnix.actionRunner = {
           enable = true;
           # Public key of backend/dev-action-runner-ssh-key (dev/test only).
@@ -24,8 +28,11 @@
           ];
         };
         services.openssh.enable = true;
-        # ActionSpec's readiness probe runs `curl --fail google.com` inside.
-        environment.systemPackages = [ pkgs.curl ];
+        # curl: ActionSpec's readiness probe runs `curl --fail google.com`
+        # inside. rsync: copyRepoToActionRunner rsyncs the repo into the
+        # runner over ssh (withRepoContents actions), which needs the
+        # server-side rsync binary.
+        environment.systemPackages = [ pkgs.curl pkgs.rsync ];
         virtualisation = {
           cores = 2;
           memorySize = 4096;
