@@ -54,6 +54,13 @@ export const formatBytes = (n: number): string => {
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 };
 
+export const formatDateTime = (date: Date | null): string => {
+  if (!date) return "-";
+  const day = date.toLocaleDateString(undefined, { dateStyle: "short" });
+  const time = date.toLocaleTimeString(undefined, { hourCycle: "h24" });
+  return `${day} ${time}`;
+};
+
 export const stripPrefix = (s: string, prefix: string) => {
   if (s.startsWith(prefix)) {
     return s.slice(prefix.length);

@@ -11,6 +11,7 @@ module Garnix.API.Artifacts
   ( ArtifactsAPI (..),
     artifactsAPI,
     ArtifactDto (..),
+    ArtifactCommitCount (..),
     Get302,
     authorizeArtifact,
     artifactZipKey,
@@ -50,6 +51,20 @@ data ArtifactsAPI route = ArtifactsAPI
       route
         :- "build"
           :> Capture "buildId" BuildId
+          :> Get '[JSON] [ArtifactDto],
+    _artifactsAPICommitCounts ::
+      route
+        :- "repo"
+          :> Capture "owner" GhRepoOwner
+          :> Capture "repo" GhRepoName
+          :> "commit-counts"
+          :> Get '[JSON] [ArtifactCommitCount],
+    _artifactsAPIListCommit ::
+      route
+        :- "commit"
+          :> Capture "owner" GhRepoOwner
+          :> Capture "repo" GhRepoName
+          :> Capture "commit" CommitHash
           :> Get '[JSON] [ArtifactDto],
     _artifactsAPIZipByBuild ::
       route
@@ -143,6 +158,19 @@ instance ToJSON ArtifactDto where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 
+-- | A commit's published-artifact count, for the repo build-list page's
+-- per-row badge. Serializes with snake_case keys via 'ourToJSON' (@commit@,
+-- @count@).
+data ArtifactCommitCount = ArtifactCommitCount
+  { _artifactCommitCountCommit :: CommitHash,
+    _artifactCommitCountCount :: Int64
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON ArtifactCommitCount where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
 toArtifactDto :: ArtifactDtoRow -> ArtifactDto
 toArtifactDto row =
   ArtifactDto
@@ -170,6 +198,14 @@ artifactsAPI auth authHeader =
       _artifactsAPIListBuild = \buildId -> do
         void requireArtifactStore
         rows <- getArtifactDtosForBuild buildId
+        visibleArtifacts auth authHeader rows,
+      _artifactsAPICommitCounts = \owner repo -> do
+        void requireArtifactStore
+        counts <- getArtifactCommitCountsForRepo owner repo
+        pure $ map (uncurry ArtifactCommitCount) counts,
+      _artifactsAPIListCommit = \owner repo commit -> do
+        void requireArtifactStore
+        rows <- getArtifactDtosForCommit owner repo commit
         visibleArtifacts auth authHeader rows,
       _artifactsAPIZipByBuild = \buildId name ->
         serveByBuild buildId name (pure . artifactZipKey),

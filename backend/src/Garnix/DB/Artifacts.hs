@@ -16,6 +16,8 @@ module Garnix.DB.Artifacts
     insertArtifactObject,
     getArtifactDtosForBuild,
     getArtifactDtosForRepo,
+    getArtifactDtosForCommit,
+    getArtifactCommitCountsForRepo,
     reapExpiredArtifactRows,
     pruneFailedArtifactRows,
     getOrphanedArtifactObjects,
@@ -292,6 +294,45 @@ getArtifactDtosForRepo repoOwner repoName' mBranch = do
         ORDER BY a.created_at DESC, a.id DESC
       |]
   mapM toArtifactDtoRow rows
+
+-- | All artifact DTOs whose build's commit matches, for the commit\/build
+-- detail page's per-row artifact icons (see 'getArtifactDtosForBuild'\/
+-- 'getArtifactDtosForRepo' for the id-\/repo-scoped equivalents this mirrors).
+getArtifactDtosForCommit :: GhRepoOwner -> GhRepoName -> CommitHash -> M [ArtifactDtoRow]
+getArtifactDtosForCommit repoOwner repoName' commit = do
+  rows <-
+    DB.pgQuery
+      -- see the `!` note on getArtifactDtosForBuild
+      [pgSQL|!
+        SELECT a.id, a.build_id, a.repo_user, a.repo_name, a.branch, a.name, a.store_hash, a.bucket, a.status, a.locked, a.created_at,
+          COALESCE(ao.total_size, 0)::bigint, COALESCE(ao.file_count, 0)::int
+        FROM artifacts a
+        JOIN builds b ON b.id = a.build_id
+        LEFT JOIN artifact_objects ao
+          ON ao.store_hash = a.store_hash AND ao.bucket = a.bucket
+        WHERE a.repo_user = ${repoOwner}
+          AND a.repo_name = ${repoName'}
+          AND b.git_commit = ${commit}
+        ORDER BY a.created_at DESC, a.id DESC
+      |]
+  mapM toArtifactDtoRow rows
+
+-- | Published-artifact counts per commit, for the repo build-list page's
+-- per-row badges.
+getArtifactCommitCountsForRepo :: GhRepoOwner -> GhRepoName -> M [(CommitHash, Int64)]
+getArtifactCommitCountsForRepo repoOwner repoName' =
+  DB.pgQuery
+    -- see the `!` note on getArtifactDtosForBuild: `builds.git_commit` is
+    -- NOT NULL and COUNT(*) is never null.
+    [pgSQL|!
+      SELECT b.git_commit, COUNT(*)
+      FROM artifacts a
+      JOIN builds b ON b.id = a.build_id
+      WHERE a.repo_user = ${repoOwner}
+        AND a.repo_name = ${repoName'}
+        AND a.status = 'published'
+      GROUP BY b.git_commit
+    |]
 
 -- * Reaper queries
 

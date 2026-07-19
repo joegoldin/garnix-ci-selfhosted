@@ -134,6 +134,35 @@ spec = do
         otherBranch <- _artifactsAPIListRepo anonymous "test-owner" "test-repo" (Just "other-branch")
         otherBranch `shouldBeM` []
 
+      it "commit listing filters by the build's commit and hides private rows from anonymous callers" $ withStore $ do
+        b1 <- testBuild $ gitCommit .~ "c1"
+        b2 <- testBuild $ gitCommit .~ "c2"
+        Artifacts.upsertArtifact b1 "pub" "h1" ArtifactPublic "published"
+        Artifacts.upsertArtifact b1 "priv" "h2" ArtifactPrivate "published"
+        Artifacts.upsertArtifact b2 "other" "h3" ArtifactPublic "published"
+        anonDtos <- _artifactsAPIListCommit anonymous "test-owner" "test-repo" "c1"
+        map _artifactDtoName anonDtos `shouldBeM` ["pub"]
+        admin <- sessionAs "artifacts-admin" Admin
+        adminDtos <- _artifactsAPIListCommit admin "test-owner" "test-repo" "c1"
+        sort (map _artifactDtoName adminDtos) `shouldBeM` ["priv", "pub"]
+
+      it "commit-counts counts published artifacts per commit" $ withStore $ do
+        b1 <- testBuild $ gitCommit .~ "c1"
+        b2 <- testBuild $ gitCommit .~ "c1"
+        b3 <- testBuild $ gitCommit .~ "c2"
+        Artifacts.upsertArtifact b1 "a" "h1" ArtifactPublic "published"
+        Artifacts.upsertArtifact b2 "b" "h2" ArtifactPublic "published"
+        Artifacts.upsertArtifact b3 "c" "h3" ArtifactPublic "failed"
+        counts <- _artifactsAPICommitCounts anonymous "test-owner" "test-repo"
+        map (\c -> (_artifactCommitCountCommit c, _artifactCommitCountCount c)) counts
+          `shouldBeM` [("c1", 2)]
+
+      it "404s the commit-scoped endpoints when no artifact store is configured" $ do
+        b <- testBuild $ gitCommit .~ "c1"
+        Artifacts.upsertArtifact b "a" "h" ArtifactPublic "published"
+        _artifactsAPIListCommit anonymous "test-owner" "test-repo" "c1" `shouldThrowM` NotFound
+        _artifactsAPICommitCounts anonymous "test-owner" "test-repo" `shouldThrowM` NotFound
+
       it "serializes ArtifactDto with the exact snake_case keys" $ withStore $ do
         b <- testBuild identity
         Artifacts.upsertArtifact b "a" "h" ArtifactPublic "published"

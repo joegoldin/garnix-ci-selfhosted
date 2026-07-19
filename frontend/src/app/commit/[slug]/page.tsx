@@ -4,6 +4,7 @@ import React from "react";
 import { P, match } from "ts-pattern";
 import { CommitBuildsSummary } from "@/components/build";
 import { StatusIcon } from "@/components/statusIcon";
+import { ArtifactIcon } from "@/components/icons/artifact";
 import { Text } from "@/components/text";
 import { Link } from "@/components/link";
 import { Button } from "@/components/button";
@@ -19,6 +20,7 @@ import {
   cancelCommit,
   restartFailedCommit,
 } from "@/services/commit";
+import { getCommitArtifacts } from "@/services/artifacts";
 import styles from "./styles.module.css";
 
 const Page = ({ params }: { params: { slug: string } }) => {
@@ -36,6 +38,31 @@ const Page = ({ params }: { params: { slug: string } }) => {
           .exhaustive(),
     },
   );
+  // Artifact counts per build for this commit, so package rows can show an
+  // artifact icon (only `Build` rows can have artifacts; `Run` rows -
+  // actions, deployments, etc. - aren't linked to the `artifacts` table).
+  // Tolerates a 404 (no artifact store configured) by showing no icons.
+  const repoOwner =
+    !commit.loading && commit.data.ok ? commit.data.data.summary.repoUser : null;
+  const repoName =
+    !commit.loading && commit.data.ok ? commit.data.data.summary.repoName : null;
+  const loadArtifactCounts = React.useCallback(
+    () =>
+      repoOwner && repoName
+        ? getCommitArtifacts(repoOwner, repoName, params.slug).then((result) =>
+            result.ok
+              ? result.data.reduce<Record<string, number>>((acc, artifact) => {
+                  acc[artifact.build_id] = (acc[artifact.build_id] ?? 0) + 1;
+                  return acc;
+                }, {})
+              : {},
+          )
+        : Promise.resolve({} as Record<string, number>),
+    [repoOwner, repoName, params.slug],
+  );
+  const artifactCounts = useLoading(loadArtifactCounts);
+  const artifactCountByBuildId = artifactCounts.loading ? {} : artifactCounts.data;
+
   if (commit.loading) return null;
   const reloadCommit = commit.reload;
   return (
@@ -76,14 +103,30 @@ const Page = ({ params }: { params: { slug: string } }) => {
                     build.status === "Pending" && runningIds.has(build.id)
                       ? ("Running" as const)
                       : build.status;
+                  // Only `Build` rows (packages) can have artifacts.
+                  const artifactCount =
+                    build.tag === "Build"
+                      ? artifactCountByBuildId[build.id]
+                      : undefined;
+                  const href =
+                    artifactCount != null && artifactCount > 0
+                      ? `${runUrl(build)}#artifacts`
+                      : runUrl(build);
                   return (
-                    <Link
-                      key={build.id}
-                      href={runUrl(build)}
-                      variant="wrapper"
-                    >
+                    <Link key={build.id} href={href} variant="wrapper">
                       <div className={styles.module}>
-                        <Text>{formatRunName(build)}</Text>
+                        <div className={styles.moduleName}>
+                          <Text>{formatRunName(build)}</Text>
+                          {artifactCount != null && artifactCount > 0 && (
+                            <span
+                              className={styles.artifactBadge}
+                              title={`${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`}
+                            >
+                              <ArtifactIcon width={12} height={12} />
+                              {artifactCount}
+                            </span>
+                          )}
+                        </div>
                         <div className={styles.status}>
                           <StatusIcon status={status} />
                           <Text className={styles.statusText}>

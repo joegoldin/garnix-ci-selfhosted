@@ -1,0 +1,148 @@
+.container {
+  padding: 24px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.h1 {
+  font-size: 32px;
+  line-height: 130%;
+  margin-bottom: 0;
+}
+
+.h2 {
+  font-size: 20px;
+  line-height: 130%;
+  margin-bottom: 8px;
+}
+
+.filterChip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background-color: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+}
+
+.filterChipCode {
+  font-family: var(--font-mono, monospace);
+}
+
+.empty {
+  padding: 40px 24px;
+  text-align: center;
+  background-color: var(--color-white);
+  border: 1px solid var(--color-stone-300);
+}
+
+.artifactList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-stone-300);
+  background-color: var(--color-white);
+}
+
+.artifact {
+  border-bottom: 1px solid var(--color-stone-200);
+}
+
+.artifact:last-child {
+  border-bottom: none;
+}
+
+.artifactRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px;
+}
+
+.artifactMain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.artifactName {
+  font-weight: 500;
+  color: var(--color-stone-800);
+}
+
+.artifactBuildLink {
+  font-size: 13px;
+  color: var(--color-stone-600);
+}
+
+.artifactBranch {
+  font-size: 12px;
+  color: var(--color-stone-500);
+  padding: 1px 8px;
+  border: 1px solid var(--color-stone-300);
+  border-radius: 4px;
+}
+
+.artifactMeta {
+  color: var(--color-stone-500);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.failedChip {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+}
+
+.artifactActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.artifactBtn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-stone-300);
+  border-radius: 4px;
+  background: var(--color-white);
+  color: var(--color-stone-700);
+  white-space: nowrap;
+}
+
+.artifactBtn:hover {
+  background: var(--color-stone-100);
+}
+
+.artifactDownload {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+@media only screen and (max-width: 850px) {
+  .container {
+    padding: 0 16px;
+  }
+
+  .artifactActions {
+    margin-left: 0;
+  }
+}

@@ -54,6 +54,20 @@
   background-color: var(--color-stone-200);
 }
 
+.moduleName {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.artifactBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-stone-500);
+  font-size: 12px;
+}
+
 .status {
   display: flex;
   align-items: center;

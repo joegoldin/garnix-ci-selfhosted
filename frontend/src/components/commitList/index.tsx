@@ -8,6 +8,7 @@ import { GithubIcon } from "@/components/icons/github";
 import { useConfig } from "@/store/configContext";
 import { useLoading } from "@/hooks/useLoading";
 import { CommitSummary, getCommits, getCommitsForRepo } from "@/services/commit";
+import { getArtifactCommitCounts } from "@/services/artifacts";
 import { fromSecs } from "@/utils/duration";
 import { Link } from "@/components/link";
 import styles from "./styles.module.css";
@@ -43,6 +44,26 @@ export const CommitList = (props: {
     null,
   );
 
+  // Per-commit published-artifact counts for the row badges, repo pages
+  // only (there's no cross-repo counts endpoint for the reqUser dashboard).
+  // Tolerates a 404 (no artifact store configured) by simply showing no
+  // badges.
+  const loadArtifactCounts = React.useCallback(
+    () =>
+      props.for === "reqUser"
+        ? Promise.resolve({} as Record<string, number>)
+        : getArtifactCommitCounts(props.for.owner, props.for.repo).then(
+            (result) =>
+              result.ok
+                ? Object.fromEntries(
+                    result.data.map((c) => [c.commit, c.count]),
+                  )
+                : {},
+          ),
+    [props.for],
+  );
+  const artifactCounts = useLoading(loadArtifactCounts);
+
   const loadingCommits = useLoading(getCommitsFn, { poll: fromSecs(5) });
   if (loadingCommits.loading) return null;
   if (!loadingCommits.data.ok) {
@@ -54,6 +75,9 @@ export const CommitList = (props: {
   const shown = statusFilter
     ? commits.filter((c) => commitStatus(c) === statusFilter)
     : commits;
+  const artifactCountByCommit = artifactCounts.loading
+    ? {}
+    : artifactCounts.data;
   return commits.length > 0 ? (
     <div className={styles.container}>
       <div className={styles.header}>
@@ -81,6 +105,7 @@ export const CommitList = (props: {
             className={styles.build}
             key={commit.gitCommit}
             commit={commit}
+            artifactCount={artifactCountByCommit[commit.gitCommit]}
             link
           />
         ))}

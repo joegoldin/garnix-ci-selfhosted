@@ -1,4 +1,5 @@
 .container {
+  position: relative;
   background-color: var(--color-white);
   display: flex;
   align-items: center;
@@ -8,6 +9,28 @@
   transition:
     background-color 0.3s,
     transform 0.3s;
+}
+
+/* The full-row click target for `link` rows. A sibling of the artifact
+   badge (not an ancestor), so both stay real, independently-clickable
+   anchors without nesting <a> inside <a>. */
+.rowLink {
+  position: absolute;
+  inset: 0;
+}
+
+.artifactBadge {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-stone-500);
+}
+
+.artifactBadge:hover {
+  color: var(--color-stone-800);
+  text-decoration: underline;
 }
 
 .link:hover {

@@ -10,7 +10,12 @@ import { Button } from "@/components/button";
 import { StatusIcon } from "@/components/statusIcon";
 import { Text } from "@/components/text";
 import { Loading } from "@/components/loading";
-import { formatBytes, formatCommitSha, formatRunName } from "@/utils/format";
+import {
+  formatBytes,
+  formatCommitSha,
+  formatDateTime,
+  formatRunName,
+} from "@/utils/format";
 import branchIcon from "@/components/icons/branch.svg";
 import commitIcon from "@/components/icons/commit.svg";
 import repoIcon from "@/components/icons/repo.svg";
@@ -239,11 +244,26 @@ const ArtifactsSection = ({ buildId }: { buildId: string }) => {
   const whoami = useLoading(getWhoami);
   const isAdmin =
     !whoami.loading && whoami.data.ok && whoami.data.data?.is_admin === true;
+  // Deep-linked from the commit page's per-row artifact icons
+  // (`/build/<id>#artifacts`): once the section actually renders, jump to it
+  // (the browser's own anchor-scroll fires before this async data arrives).
+  React.useEffect(() => {
+    if (
+      !artifacts.loading &&
+      artifacts.data.ok &&
+      artifacts.data.data.length > 0 &&
+      window.location.hash === "#artifacts"
+    ) {
+      document
+        .getElementById("artifacts")
+        ?.scrollIntoView({ block: "start" });
+    }
+  }, [artifacts]);
   // No artifacts (or a backend without the feature) -> no section at all.
   if (artifacts.loading || !artifacts.data.ok) return null;
   if (artifacts.data.data.length === 0) return null;
   return (
-    <div className={styles.section}>
+    <div className={styles.section} id="artifacts">
       <Text type="h2" className={styles.h2}>
         Artifacts
       </Text>
@@ -398,13 +418,6 @@ const CopyLatestUrlButton = ({ url }: { url: string }) => {
       {copied ? "Copied" : "Copy latest URL"}
     </button>
   );
-};
-
-const formatDateTime = (date: Date | null): string => {
-  if (!date) return "-";
-  const day = date.toLocaleDateString(undefined, { dateStyle: "short" });
-  const time = date.toLocaleTimeString(undefined, { hourCycle: "h24" });
-  return `${day} ${time}`;
 };
 
 const formatPackageType = (packageType: string): string => {
