@@ -41,6 +41,48 @@ export const getBuildArtifacts = async (
 ): Promise<APIResult<Array<Artifact>>> =>
   await fetchFromAPI(z.array(artifactSchema), "GET", `artifacts/build/${buildId}`);
 
+// All of a repo's artifacts (newest first), for the "View Artifacts" page.
+export const getRepoArtifacts = async (
+  owner: string,
+  repo: string,
+): Promise<APIResult<Array<Artifact>>> =>
+  await fetchFromAPI(
+    z.array(artifactSchema),
+    "GET",
+    `artifacts/repo/${owner}/${repo}`,
+  );
+
+// A single commit's artifacts across all of its builds, for the commit page's
+// per-row artifact icons and the "View Artifacts" page's commit filter.
+export const getCommitArtifacts = async (
+  owner: string,
+  repo: string,
+  commit: string,
+): Promise<APIResult<Array<Artifact>>> =>
+  await fetchFromAPI(
+    z.array(artifactSchema),
+    "GET",
+    `artifacts/commit/${owner}/${repo}/${commit}`,
+  );
+
+const commitCountSchema = z.object({
+  commit: z.string(),
+  count: z.number(),
+});
+export type ArtifactCommitCount = z.infer<typeof commitCountSchema>;
+
+// Published-artifact counts per commit, for the repo build-list page's
+// per-row badges.
+export const getArtifactCommitCounts = async (
+  owner: string,
+  repo: string,
+): Promise<APIResult<Array<ArtifactCommitCount>>> =>
+  await fetchFromAPI(
+    z.array(commitCountSchema),
+    "GET",
+    `artifacts/repo/${owner}/${repo}/commit-counts`,
+  );
+
 // The manifest endpoint 302s to storage; fetch follows the redirect and
 // returns the manifest JSON from the bucket.
 export const getArtifactManifest = async (
@@ -67,6 +109,9 @@ export const unlockBuildArtifacts = async (
 // Download URLs are plain hrefs (the endpoints 302 to storage), not fetches.
 export const artifactZipUrl = (buildId: string, name: string): string =>
   `/api/artifacts/build/${buildId}/${encodeURIComponent(name)}/all.zip`;
+
+export const artifactManifestUrl = (buildId: string, name: string): string =>
+  `/api/artifacts/build/${buildId}/${encodeURIComponent(name)}/manifest`;
 
 export const artifactFileUrl = (
   buildId: string,

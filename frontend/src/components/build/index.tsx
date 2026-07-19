@@ -1,8 +1,8 @@
 import Image from "next/image";
-import { ReactNode } from "react";
 import { Link } from "@/components/link";
 import { Text } from "@/components/text";
 import { StatusIcon } from "@/components/statusIcon";
+import { ArtifactIcon } from "@/components/icons/artifact";
 import repoIcon from "@/components/icons/repo.svg";
 import branchIcon from "@/components/icons/branch.svg";
 import commitIcon from "@/components/icons/commit.svg";
@@ -22,6 +22,9 @@ type Props = {
   commit: CommitSummary;
   link?: boolean;
   className?: string;
+  // Count of published artifacts for this commit (repo-scoped listings
+  // only); renders a small badge linking to the repo's artifacts page.
+  artifactCount?: number;
 };
 
 const createHeaderProps = (commit: CommitSummary, giteaUrl: string) => {
@@ -58,19 +61,23 @@ export const CommitBuildsSummary = ({
   link = false,
   commit,
   className,
+  artifactCount,
 }: Props) => {
   const { giteaUrl } = useConfig();
-  const wrapper = link
-    ? (children: ReactNode) => (
-        <Link href={`/commit/${commit.gitCommit}`} variant="wrapper">
-          {children}
-        </Link>
-      )
-    : (children: ReactNode) => <>{children}</>;
-  return wrapper(
+  return (
     <div
       className={`${styles.container} ${link ? styles.link : ""} ${className}`}
     >
+      {/* A full-row link, laid under the artifact badge below (a sibling,
+          real <a>, not nested) so both stay independently clickable without
+          nesting anchors. */}
+      {link && (
+        <Link
+          href={`/commit/${commit.gitCommit}`}
+          aria-label={`Commit ${formatCommitSha(commit)}`}
+          className={styles.rowLink}
+        />
+      )}
       <div>
         <div className={styles.header}>
           {createHeaderProps(commit, giteaUrl).map(
@@ -88,6 +95,16 @@ export const CommitBuildsSummary = ({
                 )}
               </Text>
             ),
+          )}
+          {artifactCount != null && artifactCount > 0 && (
+            <Link
+              href={`/repo/${commit.repoUser}/${commit.repoName}/artifacts?commit=${commit.gitCommit}`}
+              className={styles.artifactBadge}
+              title={`${artifactCount} published artifact${artifactCount === 1 ? "" : "s"}`}
+            >
+              <ArtifactIcon width={12} height={12} />
+              {artifactCount}
+            </Link>
           )}
         </div>
         <Text className={`${styles.timestamp} ${styles.status}`}>
@@ -150,7 +167,7 @@ export const CommitBuildsSummary = ({
           );
         })()}
       </div>
-    </div>,
+    </div>
   );
 };
 

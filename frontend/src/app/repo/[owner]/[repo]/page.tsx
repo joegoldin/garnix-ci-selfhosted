@@ -31,6 +31,9 @@ const Page = ({ params }: { params: { owner: string; repo: string } }) => {
         for={params}
         headerRight={
           <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <Button href={`/repo/${params.owner}/${params.repo}/artifacts`}>
+              View Artifacts
+            </Button>
             <Button onClick={() => setTriggerOpen(true)}>Trigger Builds</Button>
             <Button
               href={forgeRepoUrl(forge, giteaUrl, params.owner, params.repo)}
