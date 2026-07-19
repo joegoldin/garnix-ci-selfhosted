@@ -166,9 +166,12 @@
         }
       )
     // {
-      inherit (import ./examples/example-multi-server-deployment.nix {
-        inherit self overlays flakeInputs;
-      }) nixosConfigurations;
+      nixosConfigurations =
+        (import ./examples/example-multi-server-deployment.nix {
+          inherit self overlays flakeInputs;
+        }).nixosConfigurations
+        # The action-runner VM the backend spec suite boots (Garnix.Action).
+        // (import ./nix/tests/action-runner-vm.nix { inherit flakeInputs; }).nixosConfigurations;
       nixosModules.self-hosted = import ./nix/modules/self-hosted.nix;
       # Shared profile for garnix-hosted microVM guests: user-deployed
       # nixosConfigurations must import this (together with

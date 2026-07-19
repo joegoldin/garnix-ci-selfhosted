@@ -9,32 +9,37 @@ import Garnix.Prelude
 import System.Metrics.Prometheus.Metric.Gauge (Gauge, set)
 import System.Metrics.Prometheus.Metric.Histogram (Histogram)
 
--- | A slot semaphore whose waiters are woken strictly in arrival order:
--- the oldest job gets the next free slot, regardless of which repo/owner it
--- belongs to. (Upstream garnix scheduled round-robin per key so no tenant
--- could starve the others; on a single-operator self-host that let newer
--- pushes under a different key jump ahead of older waiting jobs, so we use
--- plain FIFO instead. The key argument is kept in the API for callers but
--- does not affect scheduling.)
-newtype FifoQSem = FifoQSem (MVar Queue)
+-- | A slot semaphore that schedules round-robin across keys and strictly
+-- FIFO within a key. Pools are keyed per repo (owner, name): a huge fan-out
+-- from one repo can't monopolize the pool — a push to another repo gets the
+-- next free slot — while within a repo the oldest job always runs first.
+-- (Upstream keyed per owner for multi-tenant fairness, which degenerates to
+-- a single queue on a single-owner self-host.)
+newtype FairQSem a
+  = FairQSem (MVar (Queue a))
 
-data Queue
+data Queue a
   = SlotsAvailable
       { count :: Int
       }
   | BackedUp
-      { scheduled :: Seq (MVar ())
+      { scheduled :: Seq (PerKeyQueue a)
       }
 
-newQSem :: Gauge -> Int -> IO FifoQSem
+data PerKeyQueue a = PerKeyQueue
+  { key :: a,
+    queue :: Seq (MVar ())
+  }
+
+newQSem :: Gauge -> Int -> IO (FairQSem a)
 newQSem gauge initial = do
   let q = SlotsAvailable initial
   updateGauge gauge q
   sem <- newMVar q
-  return (FifoQSem sem)
+  return (FairQSem sem)
 
-modifyAndUpdateGauge :: Gauge -> FifoQSem -> (Queue -> IO (Queue, output)) -> IO output
-modifyAndUpdateGauge gauge (FifoQSem q) action = do
+modifyAndUpdateGauge :: Gauge -> FairQSem a -> (Queue a -> IO (Queue a, output)) -> IO output
+modifyAndUpdateGauge gauge (FairQSem q) action = do
   modifyMVar q $ \queue -> do
     (newQueue, output) <- action queue
     updateGauge gauge newQueue
@@ -43,14 +48,18 @@ modifyAndUpdateGauge gauge (FifoQSem q) action = do
 -- | The gauge is the number of waiters (0 when there are free slots; it used
 -- to report free slots as a negative count, which made the queue-length
 -- metrics read as nonsense).
-updateGauge :: Gauge -> Queue -> IO ()
+updateGauge :: Gauge -> Queue a -> IO ()
 updateGauge g q = do
   flip set g $ realToFrac $ case q of
     SlotsAvailable _ -> 0 :: Int
-    BackedUp seq -> length seq
+    BackedUp seq -> foldl' (+) 0 $ fmap (length . queue) seq
 
-waitQSem :: Gauge -> FifoQSem -> IO ()
-waitQSem gauge q = do
+-- | Like the traditional 'waitQSem', but takes an extra argument, the key for
+-- the fairness property. After a thread with key k is woken up, another one
+-- with the same key will only be woken up after all waiting keys have had one
+-- thread served. Within a key, waiters are FIFO by arrival.
+waitQSem :: (Show a, Eq a) => Gauge -> a -> FairQSem a -> IO ()
+waitQSem gauge v q = do
   res <- schedule
   case res of
     Nothing -> pure ()
@@ -61,14 +70,18 @@ waitQSem gauge q = do
       case queue of
         BackedUp {scheduled} -> do
           me <- newEmptyMVar
-          pure (BackedUp {scheduled = scheduled |> me}, Just me)
+          pure (BackedUp {scheduled = signMeUp me scheduled}, Just me)
         SlotsAvailable {count = 0} -> do
           me <- newEmptyMVar
-          pure (BackedUp {scheduled = Seq.singleton me}, Just me)
+          pure (BackedUp {scheduled = signMeUp me Seq.Empty}, Just me)
         SlotsAvailable {count} -> do
           pure (SlotsAvailable (count - 1), Nothing)
+    signMeUp me s = case Seq.spanl (\PerKeyQueue {key} -> v /= key) s of
+      (aheadOfMe, PerKeyQueue {queue} :<| behindMe) ->
+        aheadOfMe <> (PerKeyQueue v (queue |> me) :<| behindMe)
+      (aheadOfMe, Seq.Empty) -> aheadOfMe |> PerKeyQueue v (Seq.singleton me)
 
-signalQSem :: Gauge -> FifoQSem -> IO ()
+signalQSem :: (Show a) => Gauge -> FairQSem a -> IO ()
 signalQSem gauge q = do
   modifyAndUpdateGauge gauge q $ \queue -> do
     (,()) <$> case queue of
@@ -76,16 +89,19 @@ signalQSem gauge q = do
       BackedUp {scheduled} -> do
         case scheduled of
           Seq.Empty -> pure $ SlotsAvailable {count = 1}
-          -- Hand the freed slot directly to the oldest waiter.
-          upNext :<| rest -> do
+          -- We 'do' the first thing in the queue, *and then* shift all of
+          -- the items in the key with the same key as that thing to the back.
+          (PerKeyQueue {key, queue = upNext :<| rest}) :<| others -> do
             putMVar upNext ()
-            pure
-              $ if Seq.null rest
-                then SlotsAvailable {count = 0}
-                else BackedUp {scheduled = rest}
+            let remaining =
+                  if Seq.null rest
+                    then others
+                    else others |> PerKeyQueue key rest
+            pure $ BackedUp {scheduled = remaining}
+          (PerKeyQueue {queue = Seq.Empty}) :<| _ -> error "impossible"
 
 data Pool a = Pool
-  { _qsem :: FifoQSem,
+  { _qsem :: FairQSem a,
     _timerMetric :: Lens' Metrics Histogram,
     _lenMetric :: Lens' Metrics Gauge
   }
@@ -95,18 +111,18 @@ newPool limit metrics timerMetric lenMetric = do
   qsem <- liftIO $ newQSem (metrics ^. lenMetric) limit
   pure $ Pool qsem timerMetric lenMetric
 
-withPoolM :: (MonadMask m, MonadReader s m, HasField' "metrics" s Metrics, MonadIO m) => (s -> Pool a) -> a -> m b -> m b
+withPoolM :: (MonadMask m, MonadReader s m, HasField' "metrics" s Metrics, Eq a, Show a, MonadIO m) => (s -> Pool a) -> a -> m b -> m b
 withPoolM poolLens key action = do
   pool <- asks poolLens
   withPool pool key action
 
-withPool :: (MonadMask m, MonadReader s m, HasField' "metrics" s Metrics, MonadIO m) => Pool a -> a -> m b -> m b
-withPool (Pool qsem timerMetricLens lenMetricLens) _key action = do
+withPool :: (MonadMask m, MonadReader s m, HasField' "metrics" s Metrics, Eq a, Show a, MonadIO m) => Pool a -> a -> m b -> m b
+withPool (Pool qsem timerMetricLens lenMetricLens) key action = do
   bracket_ acquire release action
   where
     acquire = do
       lenMetric <- view (#metrics . lenMetricLens)
-      timingAs timerMetricLens $ liftIO $ waitQSem lenMetric qsem
+      timingAs timerMetricLens $ liftIO $ waitQSem lenMetric key qsem
     release = do
       lenMetric <- view (#metrics . lenMetricLens)
       liftIO $ signalQSem lenMetric qsem

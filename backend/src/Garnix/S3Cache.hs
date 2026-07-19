@@ -92,7 +92,7 @@ getDirSize path = do
 uploadStorePath :: GhRepoOwner -> GhRepoName -> StorePath -> Bool -> M ()
 uploadStorePath repoOwner repoName storePath usePrivateBucket = do
   nixConfig <- view #userNixConfig
-  withPoolM s3UploadPool repoOwner
+  withPoolM s3UploadPool (repoOwner, repoName)
     $ withBinaryFileInTempDir
     $ \(narFilePath, narFileHandle) -> do
       runSubProcess_

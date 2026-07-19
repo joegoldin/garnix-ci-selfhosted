@@ -19,18 +19,18 @@ import Garnix.YamlConfig
 subAttrs ::
   (HasCallStack) =>
   Duration ->
-  GhRepoOwner ->
+  (GhRepoOwner, GhRepoName) ->
   FlakeDir ->
   Attribute ->
   M [Attribute]
-subAttrs evalTimeout repoOwner flakeDir attr = do
+subAttrs evalTimeout repoKey flakeDir attr = do
   cacheDir <- getNixXdgCacheDir
   nixConfig <- view #userNixConfig
   curDir <- view #workingDir
   attr' <- localAttr flakeDir attr
   let args = ["eval", attr', "--apply", "builtins.attrNames", "--json"]
   res <-
-    withPoolM nixEvalPool repoOwner $ do
+    withPoolM nixEvalPool repoKey $ do
       (exitCode, StdoutTrimmed stdout, StderrRaw stderr) <-
         timeoutThrowing evalTimeout (NixCommandTimeout {command = "nix " <> T.unwords args})
           $ (>>= run)
@@ -49,8 +49,8 @@ subAttrs evalTimeout repoOwner flakeDir attr = do
   parsed <- aesonDecode ("output of 'nix" <> T.unwords args <> "'") parseJSON res
   pure $ catMaybes [addSubAttr attr r | r <- parsed]
 
-ifIsAttr :: (HasCallStack) => Duration -> GhRepoOwner -> FlakeDir -> Attribute -> M [Attribute]
-ifIsAttr evalTimeout repoOwner flakeDir attr = do
+ifIsAttr :: (HasCallStack) => Duration -> (GhRepoOwner, GhRepoName) -> FlakeDir -> Attribute -> M [Attribute]
+ifIsAttr evalTimeout repoKey flakeDir attr = do
   cacheDir <- getNixXdgCacheDir
   nixConfig <- view #userNixConfig
   curDir <- view #workingDir
@@ -58,7 +58,7 @@ ifIsAttr evalTimeout repoOwner flakeDir attr = do
   -- Probably there is a prettier way of checking that the attr exists
   let args = ["eval", attr', "--apply", "x : {}", "--json"]
   res <-
-    withPoolM nixEvalPool repoOwner $ do
+    withPoolM nixEvalPool repoKey $ do
       (exitCode, StdoutTrimmed stdout, StderrRaw stderr) <-
         timeoutThrowing evalTimeout (NixCommandTimeout {command = "nix " <> T.unwords args})
           $ (>>= run)
@@ -101,13 +101,14 @@ getAttributesToBuild commitInfo cfg = timingAs #getAttrsToBuildTime $ do
   -- that in fact match.
   -- We do the first step because the second might fail. But we don't care
   -- whether it does if it couldn't have mattered what the result was.
+  let repoKey = (commitInfo ^. repoInfo . ghRepoOwner, commitInfo ^. repoInfo . ghRepoName)
   general <- forM allParentAttrs $ \attr ->
     if attr `mightMatchConfig` cfg
-      then subAttrs evalTimeout (commitInfo ^. repoInfo . ghRepoOwner) (cfg ^. flakeDir) attr
+      then subAttrs evalTimeout repoKey (cfg ^. flakeDir) attr
       else pure []
   defaults <- forM allDirectAttrs $ \attr ->
     if matchesConfig attr cfg (commitInfo ^. branch)
-      then ifIsAttr evalTimeout (commitInfo ^. repoInfo . ghRepoOwner) (cfg ^. flakeDir) attr
+      then ifIsAttr evalTimeout repoKey (cfg ^. flakeDir) attr
       else pure []
   pure [attr | attr <- join (general <> defaults), matchesConfig attr cfg (commitInfo ^. branch)]
 

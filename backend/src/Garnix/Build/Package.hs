@@ -37,9 +37,9 @@ doBuild fodChecker runReporter buildKind flakeDir repoConfig plan initialBuild =
       -- Concurrent-build cap: the build is already registered as pending (in
       -- setupBuilds, before this promise was spawned), so waiting here just
       -- keeps it pending until a slot frees — it flips to running on its first
-      -- log line. FairQSem is round-robin fair by repo owner. A failed build
+      -- log line. FairQSem is round-robin fair by repo (FIFO within one). A failed build
       -- still releases its slot (withPoolM brackets acquire/release).
-      withPoolM buildPool (initialBuild ^. repoUser) $ do
+      withPoolM buildPool (initialBuild ^. repoUser, initialBuild ^. repoName) $ do
         -- Catch both IO exceptions and M errors
         ( runBuild
             `catchError` \_ -> do

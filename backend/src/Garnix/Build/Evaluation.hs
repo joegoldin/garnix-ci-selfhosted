@@ -96,7 +96,7 @@ evaluateAttribute ::
 evaluateAttribute repoConfig plan cacheDir workingDir build attr = withBubbling $ \bubble -> do
   evalRes <-
     timingAs #evalDrvPathTime
-      $ withPoolM nixEvalPool (build ^. repoUser)
+      $ withPoolM nixEvalPool (build ^. repoUser, build ^. repoName)
       $ logDuration "nix eval for drvPath"
       $ withTextSpan ("phase", "eval")
       $ timeout (fromMinutes $ plan ^. packageEvaluationTimeout)

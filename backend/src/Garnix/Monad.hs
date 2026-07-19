@@ -126,12 +126,13 @@ data Env = Env
     buildLogsDir :: FilePath,
     opensearchQueryUrl :: String,
     opensearchPassword :: ByteString,
-    nixEvalPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
+    nixEvalPool :: Garnix.Monad.Pool.Pool (GhRepoOwner, GhRepoName),
     -- | Concurrent-build cap. All builds still fan out and register as
     -- pending; this bounds how many actually eval+build at once (the rest
-    -- wait their turn in the queue). Env-tunable via GARNIX_MAX_CONCURRENT_BUILDS.
-    buildPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
-    s3UploadPool :: Garnix.Monad.Pool.Pool GhRepoOwner,
+    -- wait their turn in the queue, round-robin across repos, FIFO within
+    -- one). Env-tunable via GARNIX_MAX_CONCURRENT_BUILDS.
+    buildPool :: Garnix.Monad.Pool.Pool (GhRepoOwner, GhRepoName),
+    s3UploadPool :: Garnix.Monad.Pool.Pool (GhRepoOwner, GhRepoName),
     mocks :: Maybe EnvMocks,
     emptyDir :: FilePath,
     spanCtx :: [(Text, Text)],
