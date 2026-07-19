@@ -336,6 +336,11 @@ const ServersTable = (props: {
                     Logs
                   </Button>
                   <Button href={`/servers/${server.id}`}>Monitor</Button>
+                  {server.status === "Online" ? (
+                    <Button href={`/servers/${server.id}/terminal`}>
+                      Open Terminal
+                    </Button>
+                  ) : null}
                 </td>
               </tr>
             );
