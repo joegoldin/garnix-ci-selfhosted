@@ -21,6 +21,7 @@ import Garnix.API.Hosts
 import Garnix.API.Keys
 import Garnix.API.Modules
 import Garnix.API.Runs (RunAPI, runAPI)
+import Garnix.API.Terminal (TerminalAPI, terminalAPI)
 import Garnix.DB qualified as DB
 import Garnix.Hosting.Domains qualified as Domains
 import Garnix.Monad
@@ -53,6 +54,11 @@ data WholeAPI r = WholeAPI
     modules :: r :- "api" :> "modules" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi ModulesAPI,
     dev :: r :- "api" :> "dev" :> ToServantApi DevAPI,
     hosts :: r :- "api" :> "hosts" :> ToServantApi HostsAPI,
+    -- | WebSocket bridge to a PTY running @ssh garnix@<guest>@ for one of the
+    -- authenticated user's own servers (see Garnix.API.Terminal). Must stay
+    -- behind the reverse proxy's auth gate like the rest of /api — never add
+    -- /api/terminal to a gate-bypass list.
+    terminal :: r :- "api" :> "terminal" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi TerminalAPI,
     keys :: r :- "api" :> "keys" :> Capture "owner" GhRepoOwner :> Capture "repo" GhRepoName :> "repo-key.public" :> Get '[PlainText] PublicKey,
     actionKeys :: r :- "api" :> "keys" :> Capture "owner" GhRepoOwner :> Capture "repo" GhRepoName :> "actions" :> Capture "action" PackageName :> "key.public" :> Get '[PlainText] PublicKey,
     login :: r :- "api" :> "login" :> ToServantApi LoginAPI,
@@ -102,6 +108,7 @@ wholeAPI =
       whoami = whoAmIAPI,
       authJwt = toServant authJwtAPI,
       hosts = toServant hostsAPI,
+      terminal = toServant . terminalAPI,
       keys = Garnix.API.Keys.getRepoPublicKey,
       actionKeys = Garnix.API.Keys.getActionPublicKey,
       config = getConfig,

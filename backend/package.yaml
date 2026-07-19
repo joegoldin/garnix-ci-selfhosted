@@ -51,6 +51,7 @@ dependencies:
   - aeson-qq
   - amazonka
   - amazonka-s3
+  - async
   - attoparsec
   - autodocodec
   - autodocodec-schema
@@ -96,10 +97,12 @@ dependencies:
   - lifted-base
   - monad-control
   - mtl
+  - network
   - network-uri
   - nix-derivation
   - oauth2-simple
   - openapi3
+  - posix-pty
   - postgresql-typed
   - prettyprinter
   - pretty-show
@@ -143,7 +146,9 @@ dependencies:
   - wai
   - wai-app-static
   - wai-extra
+  - wai-websockets
   - warp
+  - websockets
   - wreq
   - yaml
   - zip-archive

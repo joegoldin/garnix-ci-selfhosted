@@ -43,7 +43,6 @@ library
       Garnix.API.Commits
       Garnix.API.ConfigSchema
       Garnix.API.Configure
-      Garnix.API.Monitoring
       Garnix.API.Dev
       Garnix.API.GhWebhooks
       Garnix.API.GiteaWebhooks
@@ -51,7 +50,9 @@ library
       Garnix.API.Hosts
       Garnix.API.Keys
       Garnix.API.Modules
+      Garnix.API.Monitoring
       Garnix.API.Runs
+      Garnix.API.Terminal
       Garnix.Artifacts
       Garnix.Artifacts.Reaper
       Garnix.Artifacts.Store
@@ -180,6 +181,7 @@ library
     , aeson-qq
     , amazonka
     , amazonka-s3
+    , async
     , attoparsec
     , auto-update
     , autodocodec
@@ -230,6 +232,7 @@ library
     , nix-derivation
     , oauth2-simple
     , openapi3
+    , posix-pty
     , postgresql-typed
     , pretty-show
     , prettyprinter
@@ -273,7 +276,9 @@ library
     , wai
     , wai-app-static
     , wai-extra
+    , wai-websockets
     , warp
+    , websockets
     , wreq
     , yaml
     , zip-archive
@@ -328,6 +333,7 @@ executable convert-hashids
     , aeson-qq
     , amazonka
     , amazonka-s3
+    , async
     , attoparsec
     , auto-update
     , autodocodec
@@ -379,6 +385,7 @@ executable convert-hashids
     , nix-derivation
     , oauth2-simple
     , openapi3
+    , posix-pty
     , postgresql-typed
     , pretty-show
     , prettyprinter
@@ -422,7 +429,9 @@ executable convert-hashids
     , wai
     , wai-app-static
     , wai-extra
+    , wai-websockets
     , warp
+    , websockets
     , wreq
     , yaml
     , zip-archive
@@ -477,6 +486,7 @@ executable generate-yaml-config-docs
     , aeson-qq
     , amazonka
     , amazonka-s3
+    , async
     , attoparsec
     , auto-update
     , autodocodec
@@ -529,6 +539,7 @@ executable generate-yaml-config-docs
     , nix-derivation
     , oauth2-simple
     , openapi3
+    , posix-pty
     , postgresql-typed
     , pretty-show
     , prettyprinter
@@ -572,7 +583,9 @@ executable generate-yaml-config-docs
     , wai
     , wai-app-static
     , wai-extra
+    , wai-websockets
     , warp
+    , websockets
     , wreq
     , yaml
     , zip-archive
@@ -627,6 +640,7 @@ executable server
     , aeson-qq
     , amazonka
     , amazonka-s3
+    , async
     , attoparsec
     , auto-update
     , autodocodec
@@ -678,6 +692,7 @@ executable server
     , nix-derivation
     , oauth2-simple
     , openapi3
+    , posix-pty
     , postgresql-typed
     , pretty-show
     , prettyprinter
@@ -721,7 +736,9 @@ executable server
     , wai
     , wai-app-static
     , wai-extra
+    , wai-websockets
     , warp
+    , websockets
     , wreq
     , yaml
     , zip-archive
@@ -749,6 +766,7 @@ test-suite spec
       Garnix.API.KeysSpec
       Garnix.API.ModulesSpec
       Garnix.API.RunsSpec
+      Garnix.API.TerminalSpec
       Garnix.Artifacts.ReaperSpec
       Garnix.ArtifactsSpec
       Garnix.AsyncSpec
@@ -824,7 +842,6 @@ test-suite spec
       Garnix.API.Commits
       Garnix.API.ConfigSchema
       Garnix.API.Configure
-      Garnix.API.Monitoring
       Garnix.API.Dev
       Garnix.API.GhWebhooks
       Garnix.API.GiteaWebhooks
@@ -832,7 +849,9 @@ test-suite spec
       Garnix.API.Hosts
       Garnix.API.Keys
       Garnix.API.Modules
+      Garnix.API.Monitoring
       Garnix.API.Runs
+      Garnix.API.Terminal
       Garnix.Artifacts
       Garnix.Artifacts.Reaper
       Garnix.Artifacts.Store
@@ -963,6 +982,7 @@ test-suite spec
     , aeson-qq
     , amazonka
     , amazonka-s3
+    , async
     , attoparsec
     , auto-update
     , autodocodec
@@ -1024,6 +1044,7 @@ test-suite spec
     , openapi3
     , pcre-light
     , port-utils
+    , posix-pty
     , postgresql-typed
     , pretty-show
     , prettyprinter
@@ -1070,7 +1091,9 @@ test-suite spec
     , wai
     , wai-app-static
     , wai-extra
+    , wai-websockets
     , warp
+    , websockets
     , wreq
     , yaml
     , zip-archive

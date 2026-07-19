@@ -13,6 +13,7 @@ import Data.ByteString.Char8 qualified
 import Data.ByteString.Char8 qualified as BSC
 import Data.Functor ((<&>))
 import Data.HashTable.IO qualified as HashTables
+import Data.Map qualified as Map
 import Data.Pool qualified as Pool
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -373,6 +374,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
   fodCheckPool <- Garnix.Monad.Pool.newPool 20 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
+  terminalSessions <- newMVar Map.empty
   withDefaultLogger $ \defaultLogger -> do
     let env =
           Env
@@ -438,7 +440,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               hostname = hostname,
               githubLogDebounceDuration = fromSeconds @Int 15,
               featureFlagConfig,
-              fodCheckPool
+              fodCheckPool,
+              terminalSessions
             }
     action env
 
