@@ -162,7 +162,11 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
           Just value -> pure (Just (cs value))
           Nothing ->
             doesFileExist filePath >>= \case
-              True -> Just <$> BSC.readFile filePath
+              -- Unreadable counts as absent: the file may exist but be
+              -- root-only (e.g. running dev builds or the spec suite on the
+              -- production host) — an *optional* secret should fall back,
+              -- not crash.
+              True -> (Just <$> BSC.readFile filePath) `Control.Exception.catch` \(_ :: Control.Exception.IOException) -> pure Nothing
               False -> pure Nothing
   s3CacheEnv <- do
     accessKeyId <-

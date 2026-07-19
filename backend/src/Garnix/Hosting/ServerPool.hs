@@ -74,10 +74,23 @@ initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ 
             ( do
                 server <- provisionServer id' serverTier <?> ("Preprovisioning server " <> show id')
                 DB.updatePreprovisionedServer server
-                setupServer server
-                DB.setPreprovisionedReady (server ^. id)
+                ( do
+                    setupServer server
+                    DB.setPreprovisionedReady (server ^. id)
+                  )
+                  -- If the server never becomes ready, destroy the guest as
+                  -- well: deleting only the pool row leaks the provisioned
+                  -- VM (it keeps running with no record of it), and the
+                  -- refill loop then boots a replacement every interval — a
+                  -- VM storm under any persistent provisioning failure.
+                  `onError` bestEffortDeleteGuest (server ^. provisionedServerId)
               )
               `onError` DB.deleteServerFromPool id'
+  where
+    bestEffortDeleteGuest provisionedId =
+      deleteServer provisionedId
+        `catchAny` (\e -> log Warning $ "Failed to delete unready pooled guest: " <> show e)
+        `catchError` (\e -> log Warning $ "Failed to delete unready pooled guest: " <> show e)
 
 setupServer :: PreprovisionedServer -> M ()
 setupServer preprovisionedServer = do
