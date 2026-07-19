@@ -610,6 +610,17 @@ in
         forceSSL = ! config.garnix.devMode.enable;
         enableACME = ! config.garnix.devMode.enable;
         locations."/api".proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}";
+        # The web terminal (/api/terminal/<serverId>) is a websocket; nginx
+        # only proxies the upgrade with the Upgrade/Connection headers set.
+        # The endpoint authenticates the garnix session + server ownership
+        # in-app (see Garnix.API.Terminal); when fronting the API with an
+        # additional auth gate (oauth2-proxy/Authentik or similar), keep
+        # /api/terminal behind that gate like the rest of /api — never add it
+        # to a bypass/allow list. See docs/web-terminal.md.
+        locations."/api/terminal/" = {
+          proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}";
+          proxyWebsockets = true;
+        };
         locations."@frontend".proxyPass = "http://127.0.0.1:${toString config.services.frontend.port}";
         locations."/" = {
           root = "${flakePackages.frontend_default}/public";

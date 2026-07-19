@@ -62,6 +62,7 @@
 , monad-control
 , mtl
 , neat-interpolation
+, network
 , network-uri
 , nix-derivation
 , oauth2-simple
@@ -181,6 +182,7 @@ mkDerivation {
     lifted-base
     monad-control
     mtl
+    network
     network-uri
     nix-derivation
     oauth2-simple
@@ -289,6 +291,7 @@ mkDerivation {
     lifted-base
     monad-control
     mtl
+    network
     network-uri
     nix-derivation
     oauth2-simple
@@ -406,6 +409,7 @@ mkDerivation {
     monad-control
     mtl
     neat-interpolation
+    network
     network-uri
     nix-derivation
     oauth2-simple

@@ -10,7 +10,6 @@ import Control.Exception.Safe qualified as Safe
 import Data.Char (isDigit)
 import Data.Text qualified as T
 import Garnix.DB qualified as DB
-import Garnix.GithubInterface.Types
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.TestHelpers
@@ -94,7 +93,7 @@ spec = do
         jwtSettings' <- view #jwtSettings
         jwt <-
           liftIO (makeJWT (WebSession user (GhToken "tok")) jwtSettings' Nothing) >>= \case
-            Left err -> liftIO $ Safe.throwString ("makeJWT failed: " <> show err)
+            Left err -> liftIO $ Safe.throwString ("makeJWT failed: " <> cs (show err))
             Right jwt -> pure jwt
         let port :: Int
             port = read $ cs $ T.takeWhile isDigit $ T.drop (T.length "http://localhost:") (apiUrl testServer)

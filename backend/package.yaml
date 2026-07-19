@@ -97,6 +97,7 @@ dependencies:
   - lifted-base
   - monad-control
   - mtl
+  - network
   - network-uri
   - nix-derivation
   - oauth2-simple

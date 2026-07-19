@@ -52,6 +52,7 @@ library
       Garnix.API.Modules
       Garnix.API.Monitoring
       Garnix.API.Runs
+      Garnix.API.Terminal
       Garnix.Artifacts
       Garnix.Artifacts.Reaper
       Garnix.Artifacts.Store
@@ -226,6 +227,7 @@ library
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -378,6 +380,7 @@ executable convert-hashids
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -531,6 +534,7 @@ executable generate-yaml-config-docs
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -683,6 +687,7 @@ executable server
     , lifted-base
     , monad-control
     , mtl
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple
@@ -761,6 +766,7 @@ test-suite spec
       Garnix.API.KeysSpec
       Garnix.API.ModulesSpec
       Garnix.API.RunsSpec
+      Garnix.API.TerminalSpec
       Garnix.Artifacts.ReaperSpec
       Garnix.ArtifactsSpec
       Garnix.AsyncSpec
@@ -845,6 +851,7 @@ test-suite spec
       Garnix.API.Modules
       Garnix.API.Monitoring
       Garnix.API.Runs
+      Garnix.API.Terminal
       Garnix.Artifacts
       Garnix.Artifacts.Reaper
       Garnix.Artifacts.Store
@@ -1030,6 +1037,7 @@ test-suite spec
     , monad-control
     , mtl
     , neat-interpolation
+    , network
     , network-uri
     , nix-derivation
     , oauth2-simple

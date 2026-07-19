@@ -15,9 +15,15 @@
 --   * The spawned process is a fixed argv (no shell): @ssh@ with the hosting
 --     key args from 'ServerPool.sshArgsFor' (the exact mechanism deploys use)
 --     plus hardening flags (no agent/X11 forwarding, all forwardings
---     cleared), to @garnix\@\<guest ip\>@. No part of the command comes from
---     the client; the only client-controlled inputs are terminal bytes
---     (written to the PTY) and resize dimensions (clamped).
+--     cleared), to @\<login user\>\@\<guest ip\>@. The login user defaults to
+--     @garnix@ (the deploy user); a client-chosen override is accepted only
+--     when it matches a strict allowlist pattern
+--     (@^[a-z_][a-z0-9_-]{0,31}$@ — so it can never start with @-@ or carry
+--     option/space characters) and is passed as part of a single
+--     non-interpolated argv element, never through a shell. Everything else
+--     about the command is fixed server-side; the remaining
+--     client-controlled inputs are terminal bytes (written to the PTY) and
+--     resize dimensions (clamped).
 --   * Browser cookie sessions are protected against cross-site WebSocket
 --     hijacking: when an @Origin@ header is present it must match the
 --     configured 'baseUrl' origin.
@@ -31,14 +37,16 @@ module Garnix.API.Terminal
   )
 where
 
-import Control.Concurrent (modifyMVar, modifyMVar_)
+import Control.Concurrent (MVar, modifyMVar, modifyMVar_)
 import Control.Concurrent.Async (race)
+import Control.Exception.Safe (tryAny)
 import Data.Aeson qualified as Aeson
-import Data.Char (isDigit)
+import Data.Char (isAsciiLower, isDigit)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map qualified as Map
 import Data.Text qualified as T
 import Garnix.Duration
+import Garnix.GithubInterface.Types (organizationName)
 import Garnix.Hosting.Helpers
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Monad
@@ -58,7 +66,9 @@ import System.Process (ProcessHandle, getPid, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 
 data TerminalAPI route = TerminalAPI
-  { _terminalAPIConnect :: route :- Capture "serverId" ServerId :> RawM
+  { -- | @?user=@ optionally selects the guest login user (default: garnix);
+    -- see 'validateLoginUser' for the strict allowlist gate it must pass.
+    _terminalAPIConnect :: route :- Capture "serverId" ServerId :> QueryParam "user" Text :> RawM
   }
   deriving (Generic)
 
@@ -87,8 +97,9 @@ maxWsPayloadBytes = 1024 * 1024
 -- | Authenticate + authorize in 'M' (same monad, same checks as the rest of
 -- the API), then hand back the WAI 'Application' that performs the websocket
 -- upgrade. Every rejection happens before anything is spawned.
-connectTerminal :: AuthResult AuthJwtPayload -> ServerId -> M Application
-connectTerminal (Authenticated (WebSession user ghToken)) serverId = do
+connectTerminal :: AuthResult AuthJwtPayload -> ServerId -> Maybe Text -> M Wai.Application
+connectTerminal (Authenticated (WebSession user ghToken)) serverId requestedUser = do
+  loginUser <- validateLoginUser requestedUser
   servers <-
     getRunningAndRecentServersForOwners
       . (GhRepoOwner (user ^. githubLogin) :)
@@ -111,12 +122,41 @@ connectTerminal (Authenticated (WebSession user ghToken)) serverId = do
   -- Reuse the deploy path's ssh mechanism/identity verbatim: hosting keys,
   -- BatchMode, internal-guest host-key handling, connect timeout, port split.
   (guestHost, sshArgs) <- ServerPool.sshArgsFor (GuestAddress guestAddr)
-  let sshArgv = map cs (sshArgs <> sshHardeningArgs <> ["garnix@" <> guestHost])
+  let sshArgv = map cs (sshArgs <> sshHardeningArgs <> [loginUser <> "@" <> guestHost])
   env <- ask
   pure $ terminalApp env (getGhLogin (user ^. githubLogin)) serverId sshArgv
-connectTerminal _ _ = do
+connectTerminal _ _ _ = do
   log Notice "terminal: unauthenticated websocket rejected"
   throw Unauthorized
+
+-- | The guest login user. Defaults to @garnix@ (the deploy user). A
+-- client-supplied override is the single client-influenced token of the ssh
+-- argv, so it is gated by a strict allowlist pattern
+-- (@^[a-z_][a-z0-9_-]{0,31}$@): it can never start with @-@ (no option
+-- injection), never contain whitespace, @\@@, or any shell/ssh
+-- metacharacter, and is length-bounded. Anything else is a 400 before any
+-- process is spawned. Which users can actually log in remains enforced by
+-- the guest's own sshd (authorized keys) — this endpoint only ever offers
+-- the hosting key.
+validateLoginUser :: Maybe Text -> M Text
+validateLoginUser = \case
+  Nothing -> pure defaultLoginUser
+  Just requested
+    | isValidLoginUser requested -> pure requested
+    | otherwise -> do
+        log Notice "terminal: websocket rejected (invalid login user)"
+        throw $ BadRequest "invalid terminal login user"
+
+defaultLoginUser :: Text
+defaultLoginUser = "garnix"
+
+isValidLoginUser :: Text -> Bool
+isValidLoginUser user = case T.uncons user of
+  Nothing -> False
+  Just (first', rest) ->
+    T.length user <= 32
+      && (isAsciiLower first' || first' == '_')
+      && T.all (\c -> isAsciiLower c || isDigit c || c == '_' || c == '-') rest
 
 -- | Extra ssh client hardening on top of 'ServerPool.sshArgsFor' (which
 -- already sets the hosting identity files, BatchMode, the internal-guest
@@ -163,7 +203,7 @@ connectionOptions =
 -- Rejects mismatched-Origin browser requests (cross-site WebSocket hijacking
 -- of cookie sessions), then performs the upgrade and runs the PTY session
 -- under the per-user concurrency cap.
-terminalApp :: Env -> Text -> ServerId -> [String] -> Application
+terminalApp :: Env -> Text -> ServerId -> [String] -> Wai.Application
 terminalApp env login serverId sshArgv req respond
   | not (originAllowed (env ^. #baseUrl) req) = do
       lifecycle Notice "terminal: websocket rejected (mismatched Origin)"
@@ -171,7 +211,10 @@ terminalApp env login serverId sshArgv req respond
   | otherwise = case WaiWs.websocketsApp connectionOptions serverApp req of
       Nothing ->
         respond
-          $ Wai.responseLBS HTTP.status426 [("Upgrade", "websocket")] "WebSocket upgrade required"
+          $ Wai.responseLBS
+            (HTTP.mkStatus 426 "Upgrade Required")
+            [("Upgrade", "websocket")]
+            "WebSocket upgrade required"
       Just response -> respond response
   where
     lifecycle :: Severity -> Text -> IO ()
@@ -200,7 +243,7 @@ terminalApp env login serverId sshArgv req respond
           WS.rejectRequestWith
             pending
             WS.defaultRejectRequest
-              { WS.rejectResponseCode = 429,
+              { WS.rejectCode = 429,
                 WS.rejectMessage = "Too Many Requests",
                 WS.rejectBody = "Too many concurrent terminal sessions"
               }
@@ -231,7 +274,7 @@ runSession conn sshArgv = do
   environ <- getEnvironment
   let childEnv = ("TERM", "xterm-256color") : filter ((/= "TERM") . fst) environ
   bracket (Pty.spawnWithPty (Just childEnv) True "ssh" sshArgv (80, 24)) cleanupPty
-    $ \(pty, processHandle) -> do
+    $ \(pty, _processHandle) -> do
       startedAt <- getCurrentTime
       lastActivity <- newIORef startedAt
       outcome <-
@@ -250,24 +293,26 @@ runSession conn sshArgv = do
 -- exited) or errors.
 ptyToWs :: WS.Connection -> Pty.Pty -> IORef UTCTime -> IO ()
 ptyToWs conn pty lastActivity =
-  ( forever $ do
-      bytes <- Pty.readPty pty
-      getCurrentTime >>= writeIORef lastActivity
-      WS.sendBinaryData conn bytes
-  )
+  forever
+    ( do
+        bytes <- Pty.readPty pty
+        getCurrentTime >>= writeIORef lastActivity
+        WS.sendBinaryData conn bytes
+    )
     `catchAny` \_ -> pure ()
 
 -- | Websocket -> PTY: binary frames are raw terminal input; text frames are
 -- JSON control messages (currently only resize). Ends when the client closes.
 wsToPty :: WS.Connection -> Pty.Pty -> IORef UTCTime -> IO ()
 wsToPty conn pty lastActivity =
-  ( forever $ do
-      message <- WS.receiveDataMessage conn
-      getCurrentTime >>= writeIORef lastActivity
-      case message of
-        WS.Binary bytes -> Pty.writePty pty (cs bytes)
-        WS.Text bytes _ -> handleControlMessage pty bytes
-  )
+  forever
+    ( do
+        message <- WS.receiveDataMessage conn
+        getCurrentTime >>= writeIORef lastActivity
+        case message of
+          WS.Binary bytes -> Pty.writePty pty (cs bytes)
+          WS.Text bytes _ -> handleControlMessage pty bytes
+    )
     `catchAny` \_ -> pure ()
 
 data ControlMessage = ResizeMessage Int Int
