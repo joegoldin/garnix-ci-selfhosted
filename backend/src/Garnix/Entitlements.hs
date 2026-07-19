@@ -8,10 +8,12 @@ module Garnix.Entitlements
     defaultProductPlan,
     applyConfiguredTimeouts,
     defaultBuildTimeoutMinutes,
+    getConfiguredEvalTimeout,
   )
 where
 
 import Garnix.DB qualified as DB
+import Garnix.Duration (Duration, fromMinutes)
 import Garnix.Monad (M)
 import Garnix.Prelude
 import Garnix.Types
@@ -56,3 +58,14 @@ applyConfiguredTimeouts repoConfig plan = do
     -- 0 explicitly means "no limit".
     Just 0 -> setTimeout maxBound
     Just minutes -> setTimeout (fromIntegral (min 32767 (max 1 minutes)))
+
+-- | The configured evaluation timeout for a repo as a 'Duration' (per-repo
+-- override > Configure-page global default > 1 h; 0 = no limit). Applied to
+-- the pre-build nix commands (config eval, attr discovery, flake metadata) so
+-- a wedged nix-daemon fails the push instead of leaving it at "Build
+-- starting" forever.
+getConfiguredEvalTimeout :: GhRepoOwner -> GhRepoName -> M Duration
+getConfiguredEvalTimeout owner name = do
+  repoConfig <- DB.getRepoConfig owner name
+  plan <- getPlan owner >>= applyConfiguredTimeouts repoConfig
+  pure $ fromMinutes $ plan ^. packageEvaluationTimeout

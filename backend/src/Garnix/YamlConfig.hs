@@ -68,9 +68,11 @@ import Data.Tuple.Extra (fst3, snd3, thd3, uncurry3)
 import Data.Void (Void)
 import Data.Yaml (decodeEither', decodeFileEither, prettyPrintParseException)
 import GHC.IsList (fromList)
+import Garnix.Duration (Duration)
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Log
 import Garnix.Monad
+import Garnix.Monad.Async (timeoutThrowing)
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude
 import Garnix.Sandbox
@@ -80,13 +82,17 @@ import Garnix.Sandbox
 import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, domains, exposeSSH)
 import System.Directory (doesFileExist)
 
-getConfigFromFlake :: (HasCallStack) => M (Maybe GarnixConfig)
-getConfigFromFlake = do
+getConfigFromFlake :: (HasCallStack) => Duration -> M (Maybe GarnixConfig)
+getConfigFromFlake evalTimeout = do
   cacheDir <- getNixXdgCacheDir
   nixConfig <- view #userNixConfig
   dir <- view #workingDir
+  -- Configured eval timeout ('getConfiguredEvalTimeout'): a wedged nix-daemon
+  -- (e.g. a deadlocked GC holding gc.lock) otherwise leaves this eval — and
+  -- the whole push — stuck at "Build starting" forever.
   result <-
-    (>>= Cradle.run)
+    timeoutThrowing evalTimeout (NixCommandTimeout {command = "nix eval .#garnix.config"})
+      $ (>>= Cradle.run)
       $ Cradle.cmd "nix"
       & Cradle.addArgs @Text
         [ "eval",
@@ -105,9 +111,9 @@ getConfigFromFlake = do
         Left _ -> pure Nothing
         Right config -> pure $ Just config
 
-getConfig :: (HasCallStack) => M GarnixConfig
-getConfig = do
-  getConfigFromFlake >>= \case
+getConfig :: (HasCallStack) => Duration -> M GarnixConfig
+getConfig evalTimeout = do
+  getConfigFromFlake evalTimeout >>= \case
     Just config -> pure config
     Nothing -> do
       dir <- view #workingDir

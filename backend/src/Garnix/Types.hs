@@ -1031,6 +1031,7 @@ data Error
   | OtherError Text
   | DecodeConfigError {message :: Text}
   | SshTimeout {command :: Text}
+  | NixCommandTimeout {command :: Text}
   | InvalidEmail
   | InvalidAccessToken
   | EntitlementError {message :: Text}
@@ -1127,6 +1128,8 @@ instance Pretty Error where
           ]
     SshTimeout {command} ->
       pretty $ "ssh command timed out: " <> command
+    NixCommandTimeout {command} ->
+      pretty $ "nix command timed out: " <> command
     OtherError message -> pretty message
     DecodeConfigError {..} ->
       "Error decoding garnix.yaml:"
@@ -1249,6 +1252,8 @@ toErrorDetails e = case err e of
     errorDetails 400 $ "Error activating server at " <> _serverInfoIpv4Addr serverInfo <> ": " <> stdErr
   SshTimeout {command} ->
     errorDetails 500 $ "Timeout: ssh command " <> command
+  NixCommandTimeout {command} ->
+    errorDetails 500 $ "Timeout: nix command " <> command
   OtherError errMsg ->
     errorDetails 500 errMsg
   EntitlementError message ->

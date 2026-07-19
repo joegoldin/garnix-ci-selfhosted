@@ -23,6 +23,7 @@ import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.LocalProvisioner (exposeServer)
 import Garnix.Duration
+import Garnix.Entitlements (getConfiguredEvalTimeout)
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Monad
@@ -72,7 +73,11 @@ getDeployPlan ::
   M DeployPlan
 getDeployPlan reporter commitInfo deploymentType = do
   withErrorReporter reporter commitInfo $ do
-    cfg <- getConfig
+    evalTimeout <-
+      getConfiguredEvalTimeout
+        (commitInfo ^. repoInfo . ghRepoOwner)
+        (commitInfo ^. repoInfo . ghRepoName)
+    cfg <- getConfig evalTimeout
     let wantedPackagesMapping :: Map PackageName (ServerTier, Bool, ServerSection) = Map.fromList $ case deploymentType of
           BranchDeployment thisBranch -> flip mapMaybe (cfg ^. serverSection)
             $ \s -> case s ^. deploySection of

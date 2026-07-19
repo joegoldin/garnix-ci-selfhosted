@@ -12,6 +12,7 @@ where
 import Control.Lens qualified as Lens
 import Control.Lens.Regex.Text qualified as Regex
 import Garnix.Build.Helpers qualified as Internal
+import Garnix.Entitlements (getConfiguredEvalTimeout)
 import Garnix.FlakeInputAuthorization (checkAuthorization)
 import Garnix.GiteaInterface (giteaGetRemote, requireGiteaConfig)
 import Garnix.Monad
@@ -65,7 +66,11 @@ withBeforeAction before remote = Remote $ \commitInfo action -> do
 remoteWithConfig :: (HasCallStack) => Remote
 remoteWithConfig = Remote $ \commitInfo action -> do
   withCheckout commitInfo $ do
-    config <- getConfig
+    evalTimeout <-
+      getConfiguredEvalTimeout
+        (commitInfo ^. repoInfo . ghRepoOwner)
+        (commitInfo ^. repoInfo . ghRepoName)
+    config <- getConfig evalTimeout
     action config
 
 withAuthorization :: FlakeDir -> RepoConfig -> CommitInfo -> M a -> M a

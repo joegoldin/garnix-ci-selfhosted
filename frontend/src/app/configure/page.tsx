@@ -90,9 +90,11 @@ const Page = () => {
           </Text>
           <Text className={styles.help}>
             Cap how long a build may run before it is stopped. The cap applies
-            to both the evaluation and build phases. Defaults to 1 hour when
-            left empty; enter 0 for no limit. Lowering a limit also cancels any
-            in-progress build already past it.
+            to both the evaluation and build phases, including the pre-build
+            nix commands (garnix config eval, attribute discovery, flake
+            metadata) — so a stuck evaluation fails instead of pending forever.
+            Defaults to 1 hour when left empty; enter 0 for no limit. Lowering
+            a limit also cancels any in-progress build already past it.
           </Text>
           {settings.loading ? (
             <Loading />

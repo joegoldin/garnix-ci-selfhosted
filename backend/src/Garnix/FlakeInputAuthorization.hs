@@ -21,7 +21,9 @@ import Data.Aeson.Types (Parser, Value, withObject, (.:))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Garnix.DB qualified as DB
+import Garnix.Entitlements (getConfiguredEvalTimeout)
 import Garnix.Monad
+import Garnix.Monad.Async (timeoutThrowing)
 import Garnix.NixConfig
 import Garnix.Prelude
 import Garnix.Sandbox
@@ -38,8 +40,13 @@ checkAuthorization flakeDir repoConfig commitInfo = do
   nixConfig <- view #userNixConfig
   curDir <- view #workingDir
   flakeDir' <- safeGetAbsoluteFlakeDir flakeDir
+  evalTimeout <-
+    getConfiguredEvalTimeout
+      (commitInfo ^. repoInfo . ghRepoOwner)
+      (commitInfo ^. repoInfo . ghRepoName)
   (exitCode, StdoutTrimmed stdout, StderrRaw stderr) <-
-    (>>= run)
+    timeoutThrowing evalTimeout (NixCommandTimeout {command = "nix flake metadata"})
+      $ (>>= run)
       $ cmd "nix"
       & addArgs ["flake", "metadata", "--json", flakeDir']
       & addNixConfigEnvironment nixConfig

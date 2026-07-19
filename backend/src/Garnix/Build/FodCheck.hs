@@ -27,6 +27,7 @@ import Garnix.BuildLogs.Types (LogLine (LogLine))
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags qualified as FeatureFlags
 import Garnix.DB.FeatureFlags.Types qualified as FeatureFlags
+import Garnix.Duration (fromMinutes)
 import Garnix.Monad
 import Garnix.Monad.Async (joinAll, resolve, spawn)
 import Garnix.Monad.Bubbling
@@ -105,8 +106,8 @@ withFodChecker reporter commitInfo plan action = do
   either rethrow pure actionResult
 
 getFodChecker :: Reporter -> CommitInfo -> ProductPlan -> M (Maybe FodChecker)
-getFodChecker reporter commitInfo _plan = do
-  garnixConfig <- YamlConfig.getConfig
+getFodChecker reporter commitInfo plan = do
+  garnixConfig <- YamlConfig.getConfig (fromMinutes $ plan ^. packageEvaluationTimeout)
   if garnixConfig ^. YamlConfig.fodChecks
     then do
       run <- DB.newRun "FOD checks" commitInfo

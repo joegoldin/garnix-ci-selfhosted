@@ -4,7 +4,10 @@ import Control.Lens.Regex.Text qualified as RE
 import Cradle
 import Data.Text qualified as T
 import Garnix.Attribute
+import Garnix.Duration (Duration)
+import Garnix.Entitlements (getConfiguredEvalTimeout)
 import Garnix.Monad
+import Garnix.Monad.Async (timeoutThrowing)
 import Garnix.Monad.Metrics
 import Garnix.Monad.Pool (withPoolM)
 import Garnix.NixConfig (addNixConfigEnvironment)
@@ -15,11 +18,12 @@ import Garnix.YamlConfig
 
 subAttrs ::
   (HasCallStack) =>
+  Duration ->
   GhRepoOwner ->
   FlakeDir ->
   Attribute ->
   M [Attribute]
-subAttrs repoOwner flakeDir attr = do
+subAttrs evalTimeout repoOwner flakeDir attr = do
   cacheDir <- getNixXdgCacheDir
   nixConfig <- view #userNixConfig
   curDir <- view #workingDir
@@ -28,7 +32,8 @@ subAttrs repoOwner flakeDir attr = do
   res <-
     withPoolM nixEvalPool repoOwner $ do
       (exitCode, StdoutTrimmed stdout, StderrRaw stderr) <-
-        (>>= run)
+        timeoutThrowing evalTimeout (NixCommandTimeout {command = "nix " <> T.unwords args})
+          $ (>>= run)
           $ cmd "nix"
           & addArgs args
           & addNixConfigEnvironment nixConfig
@@ -44,8 +49,8 @@ subAttrs repoOwner flakeDir attr = do
   parsed <- aesonDecode ("output of 'nix" <> T.unwords args <> "'") parseJSON res
   pure $ catMaybes [addSubAttr attr r | r <- parsed]
 
-ifIsAttr :: (HasCallStack) => GhRepoOwner -> FlakeDir -> Attribute -> M [Attribute]
-ifIsAttr repoOwner flakeDir attr = do
+ifIsAttr :: (HasCallStack) => Duration -> GhRepoOwner -> FlakeDir -> Attribute -> M [Attribute]
+ifIsAttr evalTimeout repoOwner flakeDir attr = do
   cacheDir <- getNixXdgCacheDir
   nixConfig <- view #userNixConfig
   curDir <- view #workingDir
@@ -55,7 +60,8 @@ ifIsAttr repoOwner flakeDir attr = do
   res <-
     withPoolM nixEvalPool repoOwner $ do
       (exitCode, StdoutTrimmed stdout, StderrRaw stderr) <-
-        (>>= run)
+        timeoutThrowing evalTimeout (NixCommandTimeout {command = "nix " <> T.unwords args})
+          $ (>>= run)
           $ cmd "nix"
           & addArgs args
           & addNixConfigEnvironment nixConfig
@@ -86,6 +92,10 @@ getAttributesToBuild ::
   GarnixConfig ->
   M [Attribute]
 getAttributesToBuild commitInfo cfg = timingAs #getAttrsToBuildTime $ do
+  evalTimeout <-
+    getConfiguredEvalTimeout
+      (commitInfo ^. repoInfo . ghRepoOwner)
+      (commitInfo ^. repoInfo . ghRepoName)
   -- We first check whether a child could even match a config entry. Only
   -- then do we try to figure out it's children. And finally we filter those
   -- that in fact match.
@@ -93,11 +103,11 @@ getAttributesToBuild commitInfo cfg = timingAs #getAttrsToBuildTime $ do
   -- whether it does if it couldn't have mattered what the result was.
   general <- forM allParentAttrs $ \attr ->
     if attr `mightMatchConfig` cfg
-      then subAttrs (commitInfo ^. repoInfo . ghRepoOwner) (cfg ^. flakeDir) attr
+      then subAttrs evalTimeout (commitInfo ^. repoInfo . ghRepoOwner) (cfg ^. flakeDir) attr
       else pure []
   defaults <- forM allDirectAttrs $ \attr ->
     if matchesConfig attr cfg (commitInfo ^. branch)
-      then ifIsAttr (commitInfo ^. repoInfo . ghRepoOwner) (cfg ^. flakeDir) attr
+      then ifIsAttr evalTimeout (commitInfo ^. repoInfo . ghRepoOwner) (cfg ^. flakeDir) attr
       else pure []
   pure [attr | attr <- join (general <> defaults), matchesConfig attr cfg (commitInfo ^. branch)]
 
