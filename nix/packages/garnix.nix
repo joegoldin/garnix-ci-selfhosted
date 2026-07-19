@@ -4,6 +4,7 @@
 , aeson-qq
 , amazonka
 , amazonka-s3
+, async
 , attoparsec
 , auto-update
 , autodocodec
@@ -67,6 +68,7 @@
 , openapi3
 , pcre-light
 , port-utils
+, posix-pty
 , postgresql-typed
 , pretty-show
 , prettyprinter
@@ -114,7 +116,9 @@
 , wai
 , wai-app-static
 , wai-extra
+, wai-websockets
 , warp
+, websockets
 , wreq
 , yaml
 , zip-archive
@@ -131,6 +135,7 @@ mkDerivation {
     aeson-qq
     amazonka
     amazonka-s3
+    async
     attoparsec
     auto-update
     autodocodec
@@ -180,6 +185,7 @@ mkDerivation {
     nix-derivation
     oauth2-simple
     openapi3
+    posix-pty
     postgresql-typed
     pretty-show
     prettyprinter
@@ -223,7 +229,9 @@ mkDerivation {
     wai
     wai-app-static
     wai-extra
+    wai-websockets
     warp
+    websockets
     wreq
     yaml
     zip-archive
@@ -234,6 +242,7 @@ mkDerivation {
     aeson-qq
     amazonka
     amazonka-s3
+    async
     attoparsec
     auto-update
     autodocodec
@@ -284,6 +293,7 @@ mkDerivation {
     nix-derivation
     oauth2-simple
     openapi3
+    posix-pty
     postgresql-typed
     pretty-show
     prettyprinter
@@ -327,7 +337,9 @@ mkDerivation {
     wai
     wai-app-static
     wai-extra
+    wai-websockets
     warp
+    websockets
     wreq
     yaml
     zip-archive
@@ -338,6 +350,7 @@ mkDerivation {
     aeson-qq
     amazonka
     amazonka-s3
+    async
     attoparsec
     auto-update
     autodocodec
@@ -399,6 +412,7 @@ mkDerivation {
     openapi3
     pcre-light
     port-utils
+    posix-pty
     postgresql-typed
     pretty-show
     prettyprinter
@@ -446,7 +460,9 @@ mkDerivation {
     wai
     wai-app-static
     wai-extra
+    wai-websockets
     warp
+    websockets
     wreq
     yaml
     zip-archive
