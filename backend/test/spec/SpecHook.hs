@@ -21,9 +21,14 @@ hook spec =
 
 setTestSshKeyPermissions :: IO ()
 setTestSshKeyPermissions = do
+  -- git can't store 0600 modes, so fresh checkouts have these keys 0644 and
+  -- ssh refuses them ("UNPROTECTED PRIVATE KEY FILE"). ssh-key-for-tests is
+  -- what the server-pool health check uses: with it 0644, pooled VMs never
+  -- become ready and every deploy spec times out waiting for provisioning.
   run_
     $ cmd "chmod"
     & addArgs
       [ "go-rwx" :: String,
-        "dev-action-runner-ssh-key"
+        "dev-action-runner-ssh-key",
+        "ssh-key-for-tests"
       ]

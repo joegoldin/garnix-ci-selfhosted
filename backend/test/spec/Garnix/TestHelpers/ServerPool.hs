@@ -16,12 +16,16 @@ import System.Directory (canonicalizePath)
 import System.Environment (setEnv)
 import System.IO.Temp (withSystemTempDirectory)
 
+-- | Every pooled server is a real qemu VM (see 'ProvisionerMock'), so keep
+-- this minimal. I1x1 is the default `deployment.machine` tier and the only
+-- one DeploySpec's configs request (claimServerDB matches tiers exactly):
+-- the old I2x4/I4x8 entries booted five VMs no test could ever claim, while
+-- every deploy waited the full serverWaitTimeout for an I1x1 that was never
+-- provisioned and failed with "Waited too long for server provisioning".
+-- Two, because "deletes old servers" holds gen-1 while deploying gen-2.
 testPoolConfig :: [(ServerTier, Int)]
 testPoolConfig =
-  [ (I2x4, 4),
-    (I4x8, 1),
-    (I8x16, 0),
-    (I16x32, 0)
+  [ (I1x1, 2)
   ]
 
 withServerPool :: IO a -> IO a

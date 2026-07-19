@@ -94,7 +94,12 @@ spec = do
           forM_ firstGenServers assertNotExists
 
       context "persistence" $ do
-        let commitInfo c = CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub Nothing undefined "owner" "repo") (Just "branch") Nothing c
+        -- The mock flakes declare github: inputs, so the RepoInfo needs the
+        -- (mocked) installation auth — with Nothing, buildFlake dies in
+        -- authorizeGithubPrivateInputs with "missing GitHub installation auth".
+        let mkCommitInfo c = do
+              iAuth <- getInstallation $ Github.Data.Id 42
+              pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
             flake = flakeWithPersistence True "db" "db" "local"
             yaml = Just $ getMultiConfig "branch" [PackageName "db"]
             branch = "branch"
@@ -106,7 +111,7 @@ spec = do
           it "build fails when persistence is enabled and name is empty" $ do
             (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db" "" "local") yaml branch $ \_mockGithubRepo commit -> do
               withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty (commitInfo commit)
+                resolve =<< buildFlake mempty =<< mkCommitInfo commit
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
                 liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Just "db"]
             err error `shouldBe` DeploymentWantsNixosConfigurationsThatDontExist [PackageName "db"]
@@ -115,7 +120,7 @@ spec = do
           it "ignores persistence names if persistence is not enabled" $ do
             result <- Deprecated.withMockRepo (cs $ flakeWithPersistence False "db" "db" "local") yaml branch $ \_mockGithubRepo commit -> do
               withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty (commitInfo commit)
+                resolve =<< buildFlake mempty =<< mkCommitInfo commit
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
                 liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Nothing]
             result `shouldBe` Right ()
@@ -123,13 +128,13 @@ spec = do
           it "fails if persistence name is not a valid subdomain" $ do
             (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db/invalid-name" "db" "local") yaml branch $ \_mockGithubRepo commit -> do
               withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty (commitInfo commit)
+                resolve =<< buildFlake mempty =<< mkCommitInfo commit
             err error `shouldBe` NameIsNotValidSubdomain PersistenceNameSubdomain "db/invalid-name"
 
           it "correctly reads and stores the persistence name" $ do
             result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
               withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty (commitInfo commit)
+                resolve =<< buildFlake mempty =<< mkCommitInfo commit
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
                 liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Just "db"]
             result `shouldBe` Right ()
@@ -145,7 +150,7 @@ spec = do
                     & readyAt ?~ now
                     & endedAt .~ Nothing
 
-                resolve =<< buildFlake mempty (commitInfo commit)
+                resolve =<< buildFlake mempty =<< mkCommitInfo commit
 
                 (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
 
@@ -157,14 +162,14 @@ spec = do
         it "reuses servers @slow" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \mockGithubRepo commit -> do
 
-            resolve =<< buildFlake mempty (commitInfo commit)
+            resolve =<< buildFlake mempty =<< mkCommitInfo commit
             firstGenServer <- fromSingleton <$> getAllDbServers
 
             void $ sshServer firstGenServer ["sudo", "touch", "/hello"]
 
             liftIO $ writeFile (mockGithubRepo </> "flake.nix") (cs $ flakeWithPersistence True "db" "db" "second")
             commit2 <- commitAll mockGithubRepo
-            resolve =<< buildFlake mempty (commitInfo commit2)
+            resolve =<< buildFlake mempty =<< mkCommitInfo commit2
             secondGenServers <- getAllDbServers
 
             liftIO $ length secondGenServers `shouldBe` 1
@@ -250,7 +255,9 @@ spec = do
           liftIO $ cs result `shouldStartWith` "AGE-SECRET-KEY"
 
       context "stopUnusedServers" $ do
-        let commitInfo c = CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub Nothing undefined "owner" "repo") (Just "branch") Nothing c
+        let mkCommitInfo c = do
+              iAuth <- getInstallation $ Github.Data.Id 42
+              pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
             flake = flakeWithPersistence True "db" "db" "local"
             yaml = Just $ onPullRequestConfig (PackageName "db")
             branch = "branch"
@@ -260,7 +267,7 @@ spec = do
 
         it "stops servers that do not have a heartbeat" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-            let ci = commitInfo commit
+            ci <- mkCommitInfo commit
 
             runPrEvent ci
             before <- fromSingleton <$> getAllDbServers
@@ -282,7 +289,7 @@ spec = do
 
         it "does not stop servers were started recently" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-            let ci = commitInfo commit
+            ci <- mkCommitInfo commit
 
             runPrEvent ci
             before <- fromSingleton <$> getAllDbServers
@@ -298,7 +305,7 @@ spec = do
 
         it "does not stop servers with a heartbeat" $ Deprecated.addTestSecrets $ do
           result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-            let ci = commitInfo commit
+            ci <- mkCommitInfo commit
 
             runPrEvent ci
             before <- fromSingleton <$> getAllDbServers
@@ -324,7 +331,7 @@ spec = do
         it "does not stop branch servers" $ Deprecated.addTestSecrets $ do
           let branchYaml = Just $ getMultiConfig branch [PackageName "db"]
           result <- Deprecated.withMockRepo flake branchYaml branch $ \_mockGithubRepo commit -> do
-            let ci = commitInfo commit
+            ci <- mkCommitInfo commit
 
             resolve =<< buildFlake mempty ci
             before <- fromSingleton <$> getAllDbServers

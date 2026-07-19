@@ -79,6 +79,12 @@ addTestSecrets test =
         ("S3_CACHE_PUBLIC_BUCKET", "foo"),
         ("S3_CACHE_PUBLIC_BASE_URL", "foo"),
         ("S3_CACHE_PRIVATE_BUCKET", "foo"),
+        -- The per-bucket private pair (fork addition) must be faked too:
+        -- without these the env init falls through to /run/secrets/*, which
+        -- is root-only (PermissionDenied) on a dev host and in the CI action
+        -- sandbox.
+        ("S3_CACHE_PRIVATE_ACCESS_KEY_ID", "foo"),
+        ("S3_CACHE_PRIVATE_SECRET_ACCESS_KEY", "foo"),
         ("CACHE_PRIV_KEY_FILE", s3CacheKeyFile)
       ]
       test

@@ -182,8 +182,15 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
                 <> nixpkgsCommitSha
                 <> "#qemu"
             ]
-      let drvHash = Aeson.toText $ fromSingleton $ Aeson.keys $ output ^. key "derivations" . _Object
-      let drvPath = fromRight $ Nix.parseDrvPath ("/nix/store/" <> drvHash)
+      -- nix < 2.32 puts the drv paths at the JSON top level; newer nix nests
+      -- them under "derivations". Accept both.
+      let drvsObj = case output ^. key "derivations" . _Object of
+            o | not (Aeson.null o) -> o
+            _ -> output ^. _Object
+      let drvKey = Aeson.toText $ fromSingleton $ Aeson.keys drvsObj
+      -- ... and older nix's keys are already absolute store paths.
+      let drvPathText = if "/nix/store/" `T.isPrefixOf` drvKey then drvKey else "/nix/store/" <> drvKey
+      let drvPath = fromRight $ Nix.parseDrvPath drvPathText
       void $ __findAllFodsRecursively drvPath
 
   let rebuildFodTestImpl :: (System, Nix.DrvPath) -> M (Either Text Text)

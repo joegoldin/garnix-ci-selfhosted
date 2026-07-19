@@ -13,6 +13,9 @@
       "${flakeInputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
       ../modules/action-runner.nix
       ({ pkgs, ... }: {
+        # The spec helper runs `bin/run-action-runner2-vm`, whose name derives
+        # from the hostname.
+        networking.hostName = "action-runner2";
         garnix.actionRunner = {
           enable = true;
           # Public key of backend/dev-action-runner-ssh-key (dev/test only).
@@ -26,6 +29,9 @@
         virtualisation = {
           cores = 2;
           memorySize = 4096;
+          # Headless: without this qemu tries to open a GTK window and dies
+          # ("gtk initialization failed") on a display-less CI host.
+          graphics = false;
           # Share the host store (with an overlay): `nix copy` into the VM is
           # cheap and the .vm script needs no store image build.
           writableStore = true;
