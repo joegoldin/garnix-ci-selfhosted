@@ -50,12 +50,13 @@
   text-align: center;
 }
 
-/* Per-row action buttons (Visit / Delete / Logs / Monitor): a 2×2 grid.
-   Buttons keep their own styling; the container just lays them out two per
-   row, each filling its cell so the block stays tidy. */
+/* Per-row action buttons (Visit / Delete / Logs / Monitor / Redeploy /
+   Open Terminal): a 3×2 grid. Buttons keep their own styling; the container
+   just lays them out three per row, each filling its cell so the block stays
+   tidy. */
 .rowActions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
   justify-items: stretch;
 }
@@ -107,13 +108,15 @@
   min-width: 300px;
 }
 
-/* Holds the (i) DNS-help button, right-aligned above the connect details. */
-.connectHeader {
-  display: flex;
-  justify-content: flex-end;
+/* The "Connect" column header with its inline (i) DNS-help button just to the
+   right of the title text. */
+.thConnect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-/* Small round (i) button that opens the DNS-help modal for a server. */
+/* Small round (i) button that opens the custom/vanity domain DNS-help modal. */
 .infoBtn {
   display: inline-flex;
   align-items: center;

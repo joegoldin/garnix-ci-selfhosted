@@ -21,6 +21,8 @@ import Garnix.GithubInterface.Types
 import Garnix.Hosting.Deploy (stopServer)
 import Garnix.Hosting.Helpers
 import Garnix.Monad
+import Garnix.Monad.Concurrency (forkM)
+import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
 import Garnix.Types
 import Servant.Auth.Server
@@ -42,6 +44,10 @@ data HostsAPI route = HostsAPI
     _hostsAPIOnDemandCheck :: route :- "on-demand-check" :> QueryParam "domain" Text :> Get '[JSON] NoContent,
     _hostsAPIGetHosts :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Get '[JSON] [RunningServer],
     _hostsAPIDeleteHost :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> Delete '[JSON] (),
+    -- | Kick off a fresh build+deploy job for this server's current commit,
+    -- re-running the pipeline and redeploying the guest. Auth + ownership-gated
+    -- the same way as DELETE / stats. Async: returns immediately.
+    _hostsAPIRedeployHost :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "redeploy" :> Post '[JSON] (),
     -- | Current sample + the short rolling window of samples for one server,
     -- for the per-server Monitor page. Auth + ownership-gated the same way as
     -- GET /api/hosts.
@@ -60,6 +66,7 @@ hostsAPI =
       _hostsAPIOnDemandCheck = onDemandCheck,
       _hostsAPIGetHosts = getHosts,
       _hostsAPIDeleteHost = deleteHost,
+      _hostsAPIRedeployHost = redeployHost,
       _hostsAPIGetServerStats = getServerStats
     }
 
@@ -263,6 +270,25 @@ deleteHost (Authenticated (WebSession user ghToken)) serverId = do
     [provisionedServerId] -> do stopServer serverId provisionedServerId
     _ -> throw NotFound
 deleteHost _ _ = throw Unauthorized
+
+-- | Redeploy a server: re-run the build+deploy pipeline for the commit the
+-- server's current configuration was built from. Works for both branch and PR
+-- deployments (the commit's own ref is reconstructed from its build row). Same
+-- auth + ownership gate as GET /api/hosts/<id>/stats. Runs asynchronously; the
+-- pipeline's progress shows on the usual commit/run pages.
+redeployHost :: AuthResult AuthJwtPayload -> ServerId -> M ()
+redeployHost (Authenticated (WebSession user ghToken)) serverId = do
+  servers <-
+    getRunningAndRecentServersForOwners
+      . (GhRepoOwner (user ^. githubLogin) :)
+      . map organizationName
+      =<< getInstalledOrgs ghToken
+  case filter ((== serverId) . _runningServerId) servers of
+    (server : _) -> do
+      build <- DB.getBuild (_runningServerConfigurationBuildId server)
+      forkM $ Orchestrator.restartCommit (user ^. githubLogin) build
+    [] -> throw NotFound
+redeployHost _ _ = throw Unauthorized
 
 data OnDemandResolverDomainNames = OnDemandResolverDomainNames
   { domains :: [Text]

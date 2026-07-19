@@ -8,6 +8,7 @@ import {
   RunningServer,
   getRunningServers,
   deleteServer,
+  redeployServer,
 } from "@/services/servers";
 import { Table } from "@/components/table";
 import { Link } from "@/components/link";
@@ -149,20 +150,8 @@ const ConnectCell = ({
     server.url.replace(/^https:\/\//, `https://${name}.`);
   const hasAny =
     !!ip || (sshPort != null && !!sshHost) || httpPorts.length > 0 || tcpPorts.length > 0;
-  const [showDomainsModal, setShowDomainsModal] = React.useState(false);
   return (
     <div className={styles.connect}>
-      <div className={styles.connectHeader}>
-        <button
-          type="button"
-          className={styles.infoBtn}
-          title="DNS setup for this server's domains"
-          aria-label="DNS setup for this server's domains"
-          onClick={() => setShowDomainsModal(true)}
-        >
-          i
-        </button>
-      </div>
       {hasAny ? (
         <>
           {ip ? (
@@ -200,13 +189,36 @@ const ConnectCell = ({
       ) : (
         <span className={styles.muted}>—</span>
       )}
-      {showDomainsModal ? (
-        <DomainsModal
-          server={server}
-          onRequestClose={() => setShowDomainsModal(false)}
-        />
-      ) : null}
     </div>
+  );
+};
+
+// Per-row Redeploy: kicks off a fresh build+deploy job for this server's
+// branch/PR and reloads the list. Disabled (spinner) while the request is
+// in flight.
+const RedeployButton = ({
+  serverId,
+  onRedeployed,
+}: {
+  serverId: string;
+  onRedeployed: () => void;
+}) => {
+  const [loading, setLoading] = React.useState(false);
+  return (
+    <Button
+      loading={loading}
+      onClick={async () => {
+        setLoading(true);
+        try {
+          await redeployServer(serverId);
+          onRedeployed();
+        } finally {
+          setLoading(false);
+        }
+      }}
+    >
+      Redeploy
+    </Button>
   );
 };
 
@@ -222,8 +234,12 @@ const ServersTable = (props: {
   const [deleteServerModal, setDeleteServerModal] = React.useState<
     null | string
   >(null);
+  const [showDomainsHelp, setShowDomainsHelp] = React.useState(false);
   return (
     <>
+      {showDomainsHelp && (
+        <DomainsModal onRequestClose={() => setShowDomainsHelp(false)} />
+      )}
       {currentLogsModal != null && (
         <FloatingModal onRequestClose={() => setCurrentLogsModal(null)}>
           <ModalSection>
@@ -252,7 +268,20 @@ const ServersTable = (props: {
             <th>Status</th>
             <th>Resources</th>
             <th>Internal IP</th>
-            <th>Connect</th>
+            <th>
+              <span className={styles.thConnect}>
+                Connect
+                <button
+                  type="button"
+                  className={styles.infoBtn}
+                  title="How to point a custom or vanity domain at your hosted servers"
+                  aria-label="Custom and vanity domain DNS setup"
+                  onClick={() => setShowDomainsHelp(true)}
+                >
+                  i
+                </button>
+              </span>
+            </th>
             <th>Created</th>
             <th></th>
           </tr>
@@ -336,6 +365,20 @@ const ServersTable = (props: {
                     Logs
                   </Button>
                   <Button href={`/servers/${server.id}`}>Monitor</Button>
+                  {server.status !== "Ended" ? (
+                    <RedeployButton
+                      serverId={server.id}
+                      onRedeployed={props.onRequestReload}
+                    />
+                  ) : null}
+                  {server.status === "Online" ? (
+                    <Button
+                      href={`/servers/${server.id}/terminal`}
+                      target="_blank"
+                    >
+                      Open Terminal
+                    </Button>
+                  ) : null}
                 </td>
               </tr>
             );

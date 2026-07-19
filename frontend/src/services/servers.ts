@@ -95,6 +95,12 @@ export async function deleteServer(id: string): Promise<APIResult<null>> {
   return await fetchFromAPI(z.null(), "DELETE", `hosts/${id}`);
 }
 
+// Kick off a fresh build+deploy job for this server's branch/PR. The backend
+// resolves the server's repo + ref and re-runs the pipeline (which redeploys).
+export async function redeployServer(id: string): Promise<APIResult<null>> {
+  return await fetchFromAPI(z.null(), "POST", `hosts/${id}/redeploy`);
+}
+
 export async function getServerStats(
   id: string,
 ): Promise<APIResult<ServerStatsHistory>> {
