@@ -1,6 +1,7 @@
 module Garnix.Hosting.Helpers
   ( getRunningAndRecentServersForOwners,
     RunningServer (..),
+    ServerStatus (..),
   )
 where
 

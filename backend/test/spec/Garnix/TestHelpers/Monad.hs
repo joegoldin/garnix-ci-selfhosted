@@ -42,6 +42,7 @@ import Data.Aeson (Key)
 import Data.Aeson.Lens (key, _String)
 import Data.Either (fromRight)
 import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.Map qualified as Map
 import Data.Pool qualified as Pool
 import Data.String.Conversions (SBS)
 import Data.String.Interpolate (i)
@@ -258,6 +259,7 @@ withTestEnvironment tempDir action = do
       Just emptyDir' <- lookupEnv "EMPTY_DIR"
       featureFlagConfig <- getFeatureFlagConfig
       fodCheckPool <- Garnix.Monad.Pool.newPool 40 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
+      terminalSessions <- newMVar Map.empty
       withDefaultLogger $ \defaultLogger -> do
         ghInterface <- Deprecated.testGithubInterface tempDir buildRef
         let env =
@@ -320,7 +322,8 @@ withTestEnvironment tempDir action = do
                   sshHost = "",
                   provisionerSocket = Nothing,
                   giteaConfig = Nothing,
-                  defaultAuthentik = Nothing
+                  defaultAuthentik = Nothing,
+                  terminalSessions
                 }
         action env
   where

@@ -18,6 +18,7 @@ import Data.Aeson (Value, eitherDecode')
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BSL
+import Data.Map (Map)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Set qualified as Set
 import Data.Text qualified as T
@@ -138,7 +139,10 @@ data Env = Env
     hostname :: Text,
     githubLogDebounceDuration :: Duration,
     featureFlagConfig :: FeatureFlagConfig,
-    fodCheckPool :: Garnix.Monad.Pool.Pool ()
+    fodCheckPool :: Garnix.Monad.Pool.Pool (),
+    -- | Live web-terminal websocket sessions per user (github login), backing
+    -- the per-user concurrency cap on /api/terminal (see Garnix.API.Terminal).
+    terminalSessions :: MVar (Map Text Int)
   }
   deriving stock (Generic)
 
