@@ -74,6 +74,25 @@ spec = do
       sort (map (\dto -> (DB._artifactDtoRowName dto, DB._artifactDtoRowTotalSize dto, DB._artifactDtoRowFileCount dto)) dtos)
         `shouldBeM` [("with-object", 123, 4), ("without-object", 0, 0)]
 
+    it "commit-scoped dtos join through builds and ignore other commits" $ do
+      b1 <- testBuild $ gitCommit .~ "c1"
+      b2 <- testBuild $ gitCommit .~ "c2"
+      DB.upsertArtifact b1 "a" "h1" ArtifactPublic "published"
+      DB.insertArtifactObject "h1" ArtifactPublic 10 2
+      DB.upsertArtifact b2 "b" "h2" ArtifactPublic "published"
+      dtos <- DB.getArtifactDtosForCommit "test-owner" "test-repo" "c1"
+      map (\dto -> (DB._artifactDtoRowName dto, DB._artifactDtoRowTotalSize dto)) dtos
+        `shouldBeM` [("a", 10)]
+
+    it "commit counts are grouped per commit and count only published rows" $ do
+      b1 <- testBuild $ gitCommit .~ "c1"
+      b2 <- testBuild $ gitCommit .~ "c1"
+      b3 <- testBuild $ gitCommit .~ "c2"
+      DB.upsertArtifact b1 "a" "h1" ArtifactPublic "published"
+      DB.upsertArtifact b2 "b" "h2" ArtifactPublic "published"
+      DB.upsertArtifact b3 "c" "h3" ArtifactPublic "failed"
+      DB.getArtifactCommitCountsForRepo "test-owner" "test-repo" `shouldReturnM` [("c1", 2)]
+
     it "storage usage dedupes shared objects per repo" $ do
       b1 <- testBuild identity
       b2 <- testBuild identity
