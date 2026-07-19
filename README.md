@@ -515,6 +515,13 @@ output's store hash: builds whose output didn't change upload nothing and
 share objects. Artifacts go to a public or private bucket by the same
 repo-publicity rules as the cache.
 
+**In the web UI.** A **View Artifacts** button (left of *Trigger Builds* on a
+repo's builds page) opens a per-repo artifacts list with sizes, file counts, and
+one-click `.zip` / manifest / browse-files downloads. Build-list rows show an
+artifact icon + count for commits that produced artifacts, and each package /
+check line on the commit page gets an artifact icon linking to that build's
+downloads. All of this hides itself when the artifact store isn't configured.
+
 **Setup:**
 
 1. Two more S3/B2 buckets (public-read + private), separate from the cache
@@ -840,6 +847,35 @@ via Traefik (on-demand TLS issues for them automatically). `tcp` ports get a
 public host port via DNAT (`tcpExposePortBase + id*20 + i`); the host:port is
 shown on the Servers page. Set `services.garnixServer.sshHost` and the
 provisioner's `exposePortRange` (firewall) for the DNAT methods.
+
+### Redeploy, and the in-browser terminal
+
+Each row on the **Servers** page has, alongside Visit / Delete / Logs / Monitor:
+
+- **Redeploy** — kicks off a fresh build+deploy job for the server's current
+  commit (`POST /api/hosts/<id>/redeploy`, auth + ownership-gated). It re-runs
+  the whole pipeline (`Orchestrator.restartCommit`), so it rebuilds and
+  redeploys; works for both branch and PR deployments.
+- **Open Terminal** — an in-browser shell to the guest, at
+  `/servers/<id>/terminal`. A websocket endpoint (`/api/terminal/<id>`) attaches
+  a PTY running `ssh garnix@<guest-ip>`; the guest IP is resolved from the DB,
+  never the client. It is authenticated (JWT/cookie) and ownership-checked
+  exactly like the stats endpoint, requires the server to be `Online`, and is
+  hardened: fixed command (no client-supplied host/args/options), no
+  port/agent/X11 forwarding, an `Origin` allowlist, a 10-minute idle / 60-minute
+  absolute timeout, and a per-user concurrency cap. Terminal bytes are never
+  logged. **The endpoint must stay behind your authenticated reverse-proxy gate**
+  — never bypass-list `/api/terminal`; see [`docs/web-terminal.md`](docs/web-terminal.md).
+
+**Login user.** The terminal defaults to the `garnix` user, but the "Login as"
+picker lets you switch. Its suggestions are the real login accounts on the guest:
+at deploy time garnix reads them from the machine (`getent passwd`, minus
+`nologin`/`false` shells) over the SSH session it already opens to switch
+configuration, and stores them on the server (`servers.ssh_users`, surfaced as
+`ssh_users`). You can also type any username; it is validated
+(`^[a-z_][a-z0-9_-]{0,31}$`) on both sides and passed as a single
+non-interpolated `user@ip` argument. Actual access is still enforced by the
+guest's own sshd (the chosen user must authorize the hosting key).
 
 ### Custom & vanity domains
 
