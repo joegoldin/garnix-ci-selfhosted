@@ -64,14 +64,19 @@ const Page = ({ params }: { params: Record<string, string> }) => {
       : null;
 
   // Curated login-user suggestions from what garnix knows about this guest:
-  // the deploy user (default) plus the exposed ssh login user, when set.
+  // the deploy user (default), the exposed ssh login user when set, and the
+  // guest's real login accounts captured at deploy time (getent passwd).
+  // Filtered by the same pattern the backend re-validates, so a stray guest
+  // account can't render an invalid chip.
   const userSuggestions = Array.from(
     new Set(
-      [DEFAULT_USER, server?.exposed?.ssh_user ?? null].filter(
-        (u): u is string => u != null,
-      ),
+      [
+        DEFAULT_USER,
+        server?.exposed?.ssh_user ?? null,
+        ...(server?.ssh_users ?? []),
+      ].filter((u): u is string => u != null),
     ),
-  );
+  ).filter((u) => USER_PATTERN.test(u));
 
   useEffect(() => {
     const container = containerRef.current;

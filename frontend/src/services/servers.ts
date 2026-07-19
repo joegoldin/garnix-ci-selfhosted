@@ -42,6 +42,10 @@ const runningServerSchema = z.object({
   // Extra hostnames declared for this server (garnix.yaml servers[].domains),
   // beyond the default deployed `url`. Used by the Servers-page DNS-help modal.
   domains: z.array(z.string()).default([]),
+  // Real login usernames captured from the guest at deploy time (getent
+  // passwd, minus service/nologin accounts). Used by the terminal page's
+  // "Login as" picker to suggest valid usernames beyond the default.
+  ssh_users: z.array(z.string()).default([]),
   // Per-server SSH/port exposure (servers.exposed); null when nothing exposed.
   exposed: z
     .object({

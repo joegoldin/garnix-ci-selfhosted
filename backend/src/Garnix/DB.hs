@@ -1649,6 +1649,34 @@ getServerDomains = do
 getAllDeclaredServerDomains :: M [Text]
 getAllDeclaredServerDomains = concatMap snd <$> getServerDomains
 
+-- | Store a server's real login usernames (servers.ssh_users), captured from
+-- the guest at deploy time (see 'Garnix.Hosting.Deploy.captureAndStoreSshUsers').
+-- The value is encoded to text and cast to jsonb, so we don't need a jsonb
+-- PGColumn instance.
+setServerSshUsers :: ServerId -> [Text] -> M ()
+setServerSshUsers serverId users = do
+  let encoded = cs (Aeson.encode users) :: Text
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE servers
+        SET ssh_users = ${encoded}::text::jsonb
+        WHERE id = ${serverId}
+      |]
+
+-- | Real login usernames (servers.ssh_users) of all live servers, keyed by
+-- ServerId. Read back as text and decoded (jsonb has no PGColumn instance).
+getServerSshUsers :: M [(ServerId, [Text])]
+getServerSshUsers = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT servers.id, servers.ssh_users::text
+        FROM servers
+        WHERE servers.ended_at IS NULL
+      |]
+  pure [(sid, us) | (sid, t :: Text) <- rows, Just us <- [Aeson.decode (cs t)]]
+
 -- * Connected domains (operator-registered hosting domains; DNS-points-here verified)
 
 getConnectedDomains :: M [(Int64, Text, Bool, Maybe UTCTime)]
