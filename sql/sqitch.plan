@@ -14,3 +14,4 @@ add-build-status-skipped 2026-07-17T19:00:00Z joegoldin <joe@joegold.in> # Add '
 add-server-stats 2026-07-17T20:00:00Z joegoldin <joe@joegold.in> # Per-server resource stats: server_stats table (guest-pushed CPU/RAM samples, rolling window)
 add-server-domains 2026-07-18T10:00:00Z joegoldin <joe@joegold.in> # servers.domains: extra declared hostnames per hosted server
 add-connected-domains 2026-07-18T10:05:00Z joegoldin <joe@joegold.in> # connected_domains: operator-registered hosting domains (DNS-points-here verified)
+add-server-ssh-users 2026-07-18T10:10:00Z joegoldin <joe@joegold.in> # servers.ssh_users: real guest login usernames captured at deploy time

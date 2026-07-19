@@ -50,7 +50,12 @@ data RunningServer = RunningServer
     -- | Declared extra hostnames (servers.domains) this server answers on, when
     -- it declares any; the Servers-page (i) menu renders the DNS records to set
     -- for each. 'Nothing' (omitted from JSON, like 'exposed'/'stats') when none.
-    _runningServerDomains :: Maybe [Text]
+    _runningServerDomains :: Maybe [Text],
+    -- | Real login usernames (servers.ssh_users) captured from the guest at
+    -- deploy time (getent passwd, minus service/nologin accounts), when any
+    -- were captured; the terminal page's "Login as" picker renders these as
+    -- suggestions. 'Nothing' (omitted from JSON, like 'domains') when none.
+    _runningServerSshUsers :: Maybe [Text]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -63,6 +68,7 @@ getRunningAndRecentServersForOwners owners = do
   exposures <- DB.getServerExposures
   stats <- DB.getLatestServerStats
   domainsAssoc <- DB.getServerDomains
+  sshUsersAssoc <- DB.getServerSshUsers
   let mkUrl typ repoName repoUser packageName =
         "https://"
           <> getPackageName packageName
@@ -78,7 +84,7 @@ getRunningAndRecentServersForOwners owners = do
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (mfilter (not . null) (lookup id domainsAssoc))
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (mfilter (not . null) (lookup id domainsAssoc)) (mfilter (not . null) (lookup id sshUsersAssoc))
     )
     <$> DB.pgQuery
       [pgSQL|

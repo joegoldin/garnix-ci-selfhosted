@@ -12,9 +12,10 @@ import Control.Concurrent.Async.Lifted qualified as Async
 import Control.Lens (traversed)
 import Cradle
 import Data.Aeson qualified as Aeson
+import Data.Containers.ListUtils (nubOrd)
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Garnix.API.Keys (getRepoKeys)
@@ -309,6 +310,7 @@ startServer = curry4
       DB.appendToServerDeployLog (serverInfo ^. id) logs
       reportLogs runReporter (mkLogLine logs)
       reportComplete runReporter RunReportStatusSuccess
+      captureAndStoreSshUsers serverInfo
       pure serverInfo
 
 redeployServer :: Reporter -> CommitInfo -> DeploymentType -> ServerInfo -> Build -> M ServerInfo
@@ -329,6 +331,7 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
                 & readyAt
                 ?~ now
         DB.updateServerPostDeploy serverInfo' <?> "Updating DB about the redeployed server"
+        captureAndStoreSshUsers serverInfo'
         domain <- view #hostingDomain
         let logs =
               T.unlines
@@ -548,3 +551,51 @@ switchToConfiguration (SshUser user) server storePath = do
       RunProcessError {stdErr} ->
         ActivationError serverInfo stdErr
       error -> error
+
+-- | Best-effort: read the guest's real login accounts (via @getent passwd@,
+-- over the same garnix-user ssh path 'switchToConfiguration' already uses to
+-- switch configuration) and store them on the server row, so the web
+-- terminal's "Login as" picker can suggest them. Never fails the deploy —
+-- any error capturing/storing is logged and swallowed.
+--
+-- Uses 'catchEither' (not plain 'catchAny') because 'runSubProcess' signals a
+-- non-zero ssh/getent exit via 'throwError' (a 'MonadError' failure inside
+-- the ExceptT stack), not a thrown 'SomeException'; 'catchAny' alone would
+-- miss it and let the failure propagate into the deploy.
+captureAndStoreSshUsers :: ServerInfo -> M ()
+captureAndStoreSshUsers server =
+  capture `catchEither` \e ->
+    log Informational
+      $ "captureAndStoreSshUsers: best-effort capture of guest login users failed for server "
+      <> show (server ^. id)
+      <> ": "
+      <> either show show e
+  where
+    capture = do
+      (ip, sshArgs) <- ServerPool.sshArgsFor server
+      StdoutUntrimmed output <-
+        runSubProcess
+          $ cmd "ssh"
+          & addArgs (sshArgs <> ["garnix@" <> ip, "getent passwd"])
+      DB.setServerSshUsers (server ^. id) (parseLoginUsers output)
+
+-- | Parse @getent passwd@ output (@name:passwd:uid:gid:gecos:home:shell@ per
+-- line) into login usernames, dropping service/system accounts whose shell
+-- ends in @nologin@ or @false@. Deduplicated, first-occurrence order
+-- preserved, capped to a sane maximum so a pathological guest can't blow up
+-- the servers row. @garnix@ is always included when present, regardless of
+-- its shell, since it's the deploy account and always a valid login.
+parseLoginUsers :: Text -> [Text]
+parseLoginUsers raw =
+  take maxCapturedSshUsers $ nubOrd (shellUsers <> garnixIfPresent)
+  where
+    maxCapturedSshUsers = 50 :: Int
+    entries = map (T.splitOn ":") (T.lines raw)
+    shellUsers = mapMaybe loginUser entries
+    garnixIfPresent = ["garnix" | any ((== Just "garnix") . listToMaybe) entries]
+    loginUser fields = case fields of
+      (name : _ : _ : _ : _ : _ : shell : _)
+        | not (hasNologinShell shell) -> Just name
+      _ -> Nothing
+    hasNologinShell shell =
+      "nologin" `T.isSuffixOf` shell || "false" `T.isSuffixOf` shell
