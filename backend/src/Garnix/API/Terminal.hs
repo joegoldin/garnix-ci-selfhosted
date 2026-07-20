@@ -16,12 +16,13 @@
 --     key args from 'ServerPool.sshArgsFor' (the exact mechanism deploys use)
 --     plus hardening flags (no agent/X11 forwarding, all forwardings
 --     cleared), to @\<login user\>\@\<guest ip\>@. The login user defaults to
---     @garnix@ (the deploy user); a client-chosen override is accepted only
---     when it matches a strict allowlist pattern
---     (@^[a-z_][a-z0-9_-]{0,31}$@ — so it can never start with @-@ or carry
---     option/space characters) and is passed as part of a single
---     non-interpolated argv element, never through a shell. Everything else
---     about the command is fixed server-side; the remaining
+--     @garnix@; the guest profile trusts the hosting key for every user (see
+--     @provisioner/guest-profile.nix@), so any declared login user (e.g.
+--     @joe@) is reachable directly. A client-chosen override is accepted only
+--     when it matches a strict allowlist pattern (@^[a-z_][a-z0-9_-]{0,31}$@ —
+--     so it can never start with @-@ or carry option/space characters) and is
+--     passed as a single non-interpolated argv element, never through a shell.
+--     Everything else about the command is fixed server-side; the remaining
 --     client-controlled inputs are terminal bytes (written to the PTY) and
 --     resize dimensions (clamped).
 --   * Browser cookie sessions are protected against cross-site WebSocket
@@ -39,7 +40,7 @@ where
 
 import Control.Concurrent (MVar, modifyMVar, modifyMVar_)
 import Control.Concurrent.Async (race)
-import Control.Exception.Safe (tryAny)
+import Control.Exception.Safe (throwString, tryAny)
 import Data.Aeson qualified as Aeson
 import Data.Char (isAsciiLower, isDigit)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -60,9 +61,11 @@ import Servant.Auth.Server
 import Servant.RawM (RawM)
 import Servant.RawM.Server ()
 import System.Environment (getEnvironment)
+import System.Exit (ExitCode (..))
+import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Pty qualified as Pty
 import System.Posix.Signals (sigKILL, signalProcess)
-import System.Process (ProcessHandle, getPid, terminateProcess, waitForProcess)
+import System.Process (ProcessHandle, getPid, readProcessWithExitCode, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 
 data TerminalAPI route = TerminalAPI
@@ -121,10 +124,23 @@ connectTerminal (Authenticated (WebSession user ghToken)) serverId requestedUser
       throw NotFound
   -- Reuse the deploy path's ssh mechanism/identity verbatim: hosting keys,
   -- BatchMode, internal-guest host-key handling, connect timeout, port split.
+  -- We ssh straight in as the chosen login user, authenticating with a
+  -- short-lived per-session certificate minted per connection (the guest trusts
+  -- the hosting key as a CA), so a declared login user like @joe@ is reachable
+  -- directly without the hosting key ever being a standing login for them.
   (guestHost, sshArgs) <- ServerPool.sshArgsFor (GuestAddress guestAddr)
-  let sshArgv = map cs (sshArgs <> sshHardeningArgs <> [loginUser <> "@" <> guestHost])
+  -- The hosting key the guest trusts as a certificate authority; the session
+  -- cert is signed with its private key.
+  caKeyFile <-
+    view #sshUserHostingKeys >>= \case
+      (k : _) -> pure (cs k)
+      [] -> do
+        log Notice "terminal: websocket rejected (no hosting key to sign a session certificate)"
+        throw NotFound
   env <- ask
-  pure $ terminalApp env (getGhLogin (user ^. githubLogin)) serverId sshArgv
+  pure
+    $ terminalApp env (getGhLogin (user ^. githubLogin)) serverId
+    $ TerminalTarget (sshArgs <> sshHardeningArgs) guestHost loginUser caKeyFile
 connectTerminal _ _ _ = do
   log Notice "terminal: unauthenticated websocket rejected"
   throw Unauthorized
@@ -199,12 +215,24 @@ connectionOptions =
       WS.connectionMessageDataSizeLimit = WS.SizeLimit maxWsPayloadBytes
     }
 
+-- | Everything the per-session handler needs to build the ssh command once it
+-- has minted the session certificate: the base ssh args (hosting-key @-i@
+-- flags + BatchMode/host-key/port options + the terminal hardening flags, with
+-- no destination yet), the guest host, the chosen login user, and the hosting
+-- key file the per-session cert is signed with.
+data TerminalTarget = TerminalTarget
+  { ttBaseArgs :: [Text],
+    ttGuestHost :: Text,
+    ttLoginUser :: Text,
+    ttCaKeyFile :: Text
+  }
+
 -- | The WAI application run once the caller is authenticated + authorized.
 -- Rejects mismatched-Origin browser requests (cross-site WebSocket hijacking
 -- of cookie sessions), then performs the upgrade and runs the PTY session
 -- under the per-user concurrency cap.
-terminalApp :: Env -> Text -> ServerId -> [String] -> Wai.Application
-terminalApp env login serverId sshArgv req respond
+terminalApp :: Env -> Text -> ServerId -> TerminalTarget -> Wai.Application
+terminalApp env login serverId target req respond
   | not (originAllowed (env ^. #baseUrl) req) = do
       lifecycle Notice "terminal: websocket rejected (mismatched Origin)"
       respond $ Wai.responseLBS HTTP.status403 [] "Origin not allowed"
@@ -233,7 +261,7 @@ terminalApp env login serverId sshArgv req respond
       withSessionSlot (env ^. #terminalSessions) login rejectOverCap $ do
         conn <- WS.acceptRequest pending
         lifecycle Informational "terminal session opened"
-        result <- tryAny (runSession conn sshArgv)
+        result <- tryAny (runSession conn target)
         lifecycle Informational $ case result of
           Right reason -> "terminal session closed (" <> reason <> ")"
           Left _ -> "terminal session closed (error)"
@@ -266,28 +294,79 @@ withSessionSlot sessions login onFull action =
         $ pure
         . Map.update (\n -> if n <= 1 then Nothing else Just (n - 1)) login
 
--- | Spawn the fixed ssh argv on a fresh PTY and pump bytes both ways until
--- the shell exits, the client disconnects, or a timeout fires. Returns a
--- human-readable close reason (never terminal content).
-runSession :: WS.Connection -> [String] -> IO Text
-runSession conn sshArgv = do
-  environ <- getEnvironment
-  let childEnv = ("TERM", "xterm-256color") : filter ((/= "TERM") . fst) environ
-  bracket (Pty.spawnWithPty (Just childEnv) True "ssh" sshArgv (80, 24)) cleanupPty
-    $ \(pty, _processHandle) -> do
-      startedAt <- getCurrentTime
-      lastActivity <- newIORef startedAt
-      outcome <-
-        WS.withPingThread conn 30 (pure ())
-          $ race
-            (race (ptyToWs conn pty lastActivity) (wsToPty conn pty lastActivity))
-            (watchdog startedAt lastActivity)
-      let reason = case outcome of
-            Left (Left ()) -> "shell exited"
-            Left (Right ()) -> "connection closed"
-            Right timedOut -> timedOut
-      closeGracefully conn reason
-      pure reason
+-- | Mint the per-session certificate (in a temp dir cleaned up on exit), spawn
+-- the ssh argv on a fresh PTY, and pump bytes both ways until the shell exits,
+-- the client disconnects, or a timeout fires. Returns a human-readable close
+-- reason (never terminal content).
+runSession :: WS.Connection -> TerminalTarget -> IO Text
+runSession conn target =
+  withSystemTempDirectory "garnix-terminal" $ \dir -> do
+    sshArgv <- prepareCertSsh dir target
+    environ <- getEnvironment
+    let childEnv = ("TERM", "xterm-256color") : filter ((/= "TERM") . fst) environ
+    bracket (Pty.spawnWithPty (Just childEnv) True "ssh" sshArgv (80, 24)) cleanupPty
+      $ \(pty, _processHandle) -> do
+        startedAt <- getCurrentTime
+        lastActivity <- newIORef startedAt
+        outcome <-
+          WS.withPingThread conn 30 (pure ())
+            $ race
+              (race (ptyToWs conn pty lastActivity) (wsToPty conn pty lastActivity))
+              (watchdog startedAt lastActivity)
+        let reason = case outcome of
+              Left (Left ()) -> "shell exited"
+              Left (Right ()) -> "connection closed"
+              Right timedOut -> timedOut
+        closeGracefully conn reason
+        pure reason
+
+-- | Mint an ephemeral, per-session SSH user certificate for the target login
+-- user in @dir@ and return the ssh argv that authenticates with it. The guest
+-- trusts the hosting key as a certificate authority (@TrustedUserCAKeys@, see
+-- @provisioner/guest-profile.nix@), so a short-lived cert signed by the hosting
+-- private key logs us in directly as any declared user without the hosting key
+-- ever being a standing login for them. The throwaway keypair + cert live only
+-- in @dir@ (removed when the session ends), the guest is never mutated, and the
+-- cert is time-bounded (outliving the session cap by a small margin, then
+-- useless). The cert carries only @permit-pty@ — no forwardings.
+prepareCertSsh :: FilePath -> TerminalTarget -> IO [String]
+prepareCertSsh dir target = do
+  let keyPath = dir </> "id"
+      certPath = dir </> "id-cert.pub"
+  runKeygen ["-q", "-t", "ed25519", "-N", "", "-C", "garnix-terminal", "-f", keyPath]
+  runKeygen
+    [ "-s",
+      cs (ttCaKeyFile target),
+      "-I",
+      "garnix-web-terminal",
+      "-n",
+      cs (ttLoginUser target),
+      "-V",
+      "+70m",
+      "-O",
+      "clear",
+      "-O",
+      "permit-pty",
+      keyPath <> ".pub"
+    ]
+  pure
+    $ map cs (ttBaseArgs target)
+      <> [ "-i",
+           keyPath,
+           "-o",
+           "CertificateFile=" <> certPath,
+           cs (ttLoginUser target) <> "@" <> cs (ttGuestHost target)
+         ]
+
+-- | Run @ssh-keygen@ with the given args, failing the session (a caught
+-- exception that closes the websocket) if it errors. Never logs the args or
+-- output — they reference the session key material.
+runKeygen :: [String] -> IO ()
+runKeygen args = do
+  (code, _out, err) <- readProcessWithExitCode "ssh-keygen" args ""
+  case code of
+    ExitSuccess -> pure ()
+    ExitFailure _ -> throwString ("ssh-keygen failed: " <> err)
 
 -- | PTY output -> websocket, as binary frames, until the PTY hits EOF (shell
 -- exited) or errors.

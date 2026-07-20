@@ -113,7 +113,16 @@ in
     # tolerates the file being absent: the garnix user stays login-closed
     # until it exists. Declare your own login users in the guest config for
     # the user-module pattern.
+    # Trust the hosting key as a user-certificate authority. This lets the
+    # backend mint short-lived, per-session SSH certificates to open the web
+    # terminal directly as any declared login user (e.g. `joe`), instead of
+    # permanently authorizing the hosting key for every user. It grants no new
+    # standing access: the same key is already an authorized key for root, so
+    # its compromise already implies full control; the certs it signs are minted
+    # on demand by the backend and expire within the terminal-session window.
+    environment.etc."ssh/garnix-hosting-ca.pub".text = config.garnix.guest.sshPublicKey + "\n";
     services.openssh.extraConfig = ''
+      TrustedUserCAKeys /etc/ssh/garnix-hosting-ca.pub
       Match User garnix
         AuthorizedKeysFile .ssh/authorized_keys /var/garnix/keys/authorized_keys
       Match all
