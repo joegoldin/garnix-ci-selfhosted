@@ -6,6 +6,8 @@ no iptables/network is touched (pure helpers only)."""
 import contextlib
 import json
 import os
+import shlex
+import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -50,6 +52,53 @@ def write_state(directory, name, state):
     with open(path, "w") as f:
         json.dump(state, f)
     return path
+
+
+class FakeIptables:
+    def __init__(self, nat=None, forward=None, fail_when=None):
+        self.rules = {
+            ("nat", "PREROUTING"): list(nat or []),
+            (None, "FORWARD"): list(forward or []),
+        }
+        self.calls = []
+        self.fail_when = fail_when or (lambda cmd: False)
+
+    def run(self, cmd, check=True, timeout=None):
+        self.calls.append((list(cmd), check, timeout))
+        table = None
+        index = 1
+        if cmd[index : index + 2] == ["-t", "nat"]:
+            table = "nat"
+            index += 2
+        op = cmd[index]
+        chain = cmd[index + 1]
+        args = list(cmd[index + 2 :])
+        key = (table, chain)
+        if op == "-S":
+            return SimpleNamespace(
+                stdout="".join(shlex.join(parts) + "\n" for parts in self.rules[key]),
+                returncode=0,
+            )
+        if self.fail_when(cmd):
+            if check:
+                raise subprocess.CalledProcessError(1, cmd, output="injected failure")
+            return SimpleNamespace(stdout="injected failure", returncode=1)
+        if op == "-D":
+            target = ["-A", chain] + args
+            try:
+                self.rules[key].remove(target)
+            except ValueError:
+                if check:
+                    raise subprocess.CalledProcessError(1, cmd, output="rule absent")
+                return SimpleNamespace(stdout="rule absent", returncode=1)
+        elif op == "-A":
+            self.rules[key].append(["-A", chain] + args)
+        elif op == "-I":
+            position = int(args[0])
+            self.rules[key].insert(position - 1, ["-A", chain] + args[1:])
+        else:
+            raise AssertionError(f"unexpected iptables operation: {cmd}")
+        return SimpleNamespace(stdout="", returncode=0)
 
 
 class AllocTests(unittest.TestCase):
@@ -187,121 +236,194 @@ class StrictRegistryTests(unittest.TestCase):
 
 
 class IptablesRuleTests(unittest.TestCase):
-    def test_list_rules_returns_only_requested_chain(self):
-        calls = []
-
+    def test_list_rules_preserves_quoted_arguments_and_checks_command(self):
         def fake_run(cmd, check=True, timeout=None):
-            calls.append((cmd, check, timeout))
+            self.assertTrue(check)
             return SimpleNamespace(
                 stdout=(
-                    "-P PREROUTING ACCEPT\n"
-                    "-A PREROUTING -i eth0 -p tcp --dport 22000 -j DNAT "
-                    "--to-destination 10.111.0.11:22\n"
-                    "-A OUTPUT -p tcp --dport 22000 -j DNAT\n"
-                )
+                    '-A PREROUTING -i eth0 -p tcp --dport 22000 '
+                    '-m comment --comment "legacy tenant" -j DNAT '
+                    '--to-destination 10.111.0.11:22\n'
+                ),
+                returncode=0,
             )
 
         with patched_pd(run=fake_run):
             rules = required_callable("_list_rules")("nat", "PREROUTING")
+        self.assertIn("legacy tenant", rules[0])
+        self.assertNotIn('"legacy', rules[0])
 
-        self.assertEqual(
-            rules,
-            [
-                [
-                    "-A",
-                    "PREROUTING",
-                    "-i",
-                    "eth0",
-                    "-p",
-                    "tcp",
-                    "--dport",
-                    "22000",
-                    "-j",
-                    "DNAT",
-                    "--to-destination",
-                    "10.111.0.11:22",
-                ]
-            ],
-        )
-        self.assertEqual(calls, [(["iptables", "-t", "nat", "-S", "PREROUTING"], False, None)])
-
-    def test_flush_host_port_rules_deletes_only_matching_uplink_rules(self):
-        rules = [
-            ["-A", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "22001", "-j", "DNAT"],
-            ["-A", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "22002", "-j", "DNAT"],
-            ["-A", "PREROUTING", "-i", "tailscale0", "-p", "tcp", "--dport", "22001", "-j", "DNAT"],
+    def test_affected_rules_are_narrow_and_keep_original_positions(self):
+        matching = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "22001",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
         ]
-        calls = []
-
-        def fake_run(cmd, check=True, timeout=None):
-            calls.append((cmd, check, timeout))
-            return SimpleNamespace(stdout="")
-
-        with patched_pd(_list_rules=lambda table, chain: rules, run=fake_run, UPLINK="eth0"):
-            required_callable("flush_host_port_rules")(22001)
-
-        self.assertEqual(
-            calls,
-            [
-                (
-                    [
-                        "iptables",
-                        "-t",
-                        "nat",
-                        "-D",
-                        "PREROUTING",
-                        "-i",
-                        "eth0",
-                        "-p",
-                        "tcp",
-                        "--dport",
-                        "22001",
-                        "-j",
-                        "DNAT",
-                    ],
-                    False,
-                    None,
-                )
-            ],
-        )
-
-    def test_flush_forward_accepts_deletes_only_guest_accept_rules(self):
-        rules = [
-            ["-A", "FORWARD", "-p", "tcp", "-d", "10.111.0.52/32", "--dport", "80", "-j", "ACCEPT"],
-            ["-A", "FORWARD", "-p", "tcp", "-d", "10.111.0.53/32", "--dport", "80", "-j", "ACCEPT"],
-            ["-A", "FORWARD", "-p", "tcp", "-d", "10.111.0.52/32", "--dport", "81", "-j", "DROP"],
+        stale_by_ip = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "22999",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:81",
         ]
-        calls = []
-
-        def fake_run(cmd, check=True, timeout=None):
-            calls.append((cmd, check, timeout))
-            return SimpleNamespace(stdout="")
-
-        with patched_pd(_list_rules=lambda table, chain: rules, run=fake_run):
-            required_callable("flush_forward_accepts")("10.111.0.52")
-
+        udp = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "udp",
+            "--dport",
+            "22001",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
+        ]
+        non_dnat = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "22001",
+            "-j",
+            "ACCEPT",
+        ]
+        other_interface = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "tailscale0",
+            "-p",
+            "tcp",
+            "--dport",
+            "22001",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
+        ]
+        forward = [
+            "-A",
+            "FORWARD",
+            "-p",
+            "tcp",
+            "-d",
+            "10.111.0.52/32",
+            "--dport",
+            "80",
+            "-j",
+            "ACCEPT",
+        ]
+        unrelated_forward = [
+            "-A",
+            "FORWARD",
+            "-p",
+            "udp",
+            "-d",
+            "10.111.0.52/32",
+            "--dport",
+            "80",
+            "-j",
+            "ACCEPT",
+        ]
+        fake = FakeIptables(
+            nat=[udp, matching, non_dnat, other_interface, stale_by_ip],
+            forward=[unrelated_forward, forward],
+        )
+        with patched_pd(run=fake.run, UPLINK="eth0"):
+            snapshots = required_callable("_affected_firewall_rules")(
+                {22001}, "10.111.0.52"
+            )
         self.assertEqual(
-            calls,
+            snapshots,
             [
-                (
-                    [
-                        "iptables",
-                        "-D",
-                        "FORWARD",
-                        "-p",
-                        "tcp",
-                        "-d",
-                        "10.111.0.52/32",
-                        "--dport",
-                        "80",
-                        "-j",
-                        "ACCEPT",
-                    ],
-                    False,
-                    None,
-                )
+                ("nat", "PREROUTING", 2, matching[2:]),
+                ("nat", "PREROUTING", 5, stale_by_ip[2:]),
+                (None, "FORWARD", 2, forward[2:]),
             ],
         )
+
+    def test_checked_delete_failure_does_not_hide_error(self):
+        rule = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "22001",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
+        ]
+        fake = FakeIptables(nat=[rule], fail_when=lambda cmd: "-D" in cmd)
+        journal = []
+        with patched_pd(run=fake.run):
+            with self.assertRaises(subprocess.CalledProcessError):
+                required_callable("_delete_snapshots")(
+                    [("nat", "PREROUTING", 1, rule[2:])], journal
+                )
+        self.assertEqual(journal, [])
+        self.assertEqual(fake.rules[("nat", "PREROUTING")], [rule])
+
+    def test_duplicate_matching_rules_delete_and_rollback_in_original_order(self):
+        duplicate = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "22001",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
+        ]
+        unrelated = [
+            "-A",
+            "PREROUTING",
+            "-p",
+            "udp",
+            "--dport",
+            "22001",
+            "-j",
+            "ACCEPT",
+        ]
+        original = [duplicate, unrelated, duplicate]
+        fake = FakeIptables(nat=original)
+        with patched_pd(run=fake.run, UPLINK="eth0"):
+            snapshots = required_callable("_affected_firewall_rules")(
+                {22001}, "10.111.0.52"
+            )
+            journal = []
+            required_callable("_delete_snapshots")(snapshots, journal)
+            self.assertEqual(fake.rules[("nat", "PREROUTING")], [unrelated])
+            required_callable("_rollback")(journal)
+        self.assertEqual(fake.rules[("nat", "PREROUTING")], original)
 
 
 class GuestSpecTests(unittest.TestCase):

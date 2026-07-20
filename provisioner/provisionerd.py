@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import socket
 import socketserver
@@ -242,44 +243,121 @@ def del_dnat(host_port: int, guest_ip: str, guest_port: int):
 
 
 def _list_rules(table, chain: str) -> list:
-    """Parse `iptables [-t table] -S <chain>` into arg-lists (['-A', chain, ...])."""
     cmd = ["iptables"]
     if table:
         cmd += ["-t", table]
     cmd += ["-S", chain]
-    res = run(cmd, check=False)
+    res = run(cmd, check=True)
     rules = []
     for line in (res.stdout or "").splitlines():
-        parts = line.split()
+        try:
+            parts = shlex.split(line)
+        except ValueError as error:
+            raise RuntimeError(f"cannot parse iptables rule in {chain}: {line!r}") from error
         if parts[:2] == ["-A", chain]:
             rules.append(parts)
     return rules
 
 
+def _rule_value(parts: list, flag: str):
+    try:
+        index = parts.index(flag)
+    except ValueError:
+        return None
+    return parts[index + 1] if index + 1 < len(parts) else None
+
+
+def _is_affected_dnat(parts: list, host_ports: set, guest_ip: str) -> bool:
+    destination = _rule_value(parts, "--to-destination") or ""
+    destination_ip = destination.rsplit(":", 1)[0]
+    dport = _rule_value(parts, "--dport")
+    return (
+        _rule_value(parts, "-i") == UPLINK
+        and _rule_value(parts, "-p") == "tcp"
+        and _rule_value(parts, "-j") == "DNAT"
+        and dport is not None
+        and (dport in {str(port) for port in host_ports} or destination_ip == guest_ip)
+    )
+
+
+def _is_affected_forward(parts: list, guest_ip: str) -> bool:
+    return (
+        _rule_value(parts, "-p") == "tcp"
+        and _rule_value(parts, "-d") in {guest_ip, f"{guest_ip}/32"}
+        and _rule_value(parts, "--dport") is not None
+        and _rule_value(parts, "-j") == "ACCEPT"
+    )
+
+
+def _affected_firewall_rules(host_ports: set, guest_ip: str) -> list:
+    snapshots = []
+    for position, parts in enumerate(_list_rules("nat", "PREROUTING"), start=1):
+        if _is_affected_dnat(parts, host_ports, guest_ip):
+            snapshots.append(("nat", "PREROUTING", position, parts[2:]))
+    for position, parts in enumerate(_list_rules(None, "FORWARD"), start=1):
+        if _is_affected_forward(parts, guest_ip):
+            snapshots.append((None, "FORWARD", position, parts[2:]))
+    return snapshots
+
+
+def _iptables_command(table, operation: str, chain: str, rest: list) -> list:
+    cmd = ["iptables"]
+    if table:
+        cmd += ["-t", table]
+    return cmd + [operation, chain] + rest
+
+
+def _delete_snapshots(snapshots: list, journal: list):
+    ordered = sorted(snapshots, key=lambda item: (item[0] or "", item[1], -item[2]))
+    for table, chain, position, rest in ordered:
+        run(_iptables_command(table, "-D", chain, rest), check=True)
+        journal.append(("insert", table, chain, position, rest))
+
+
+def _append_rule(table, chain: str, rest: list, journal: list):
+    run(_iptables_command(table, "-A", chain, rest), check=True)
+    journal.append(("delete", table, chain, 0, rest))
+
+
+def _rollback(journal: list):
+    failures = []
+    for operation, table, chain, position, rest in reversed(journal):
+        inverse_rest = [str(position)] + rest if operation == "insert" else rest
+        iptables_operation = "-I" if operation == "insert" else "-D"
+        try:
+            run(_iptables_command(table, iptables_operation, chain, inverse_rest), check=True)
+        except Exception as error:
+            failures.append(str(error))
+    if failures:
+        raise RuntimeError("firewall rollback failed: " + "; ".join(failures))
+
+
 def flush_host_port_rules(host_port: int):
-    """Delete EVERY uplink PREROUTING rule for this host port, whatever guest
-    it pointed at — stale DNATs from crashed daemons or prior tenants must
-    never linger behind a fresh expose."""
-    for parts in _list_rules("nat", "PREROUTING"):
-        if (
-            "--dport" in parts
-            and parts[parts.index("--dport") + 1] == str(host_port)
-            and "-i" in parts
-            and parts[parts.index("-i") + 1] == UPLINK
-        ):
-            run(["iptables", "-t", "nat", "-D"] + parts[1:], check=False)
+    snapshots = [
+        snapshot
+        for snapshot in _affected_firewall_rules({host_port}, "")
+        if snapshot[0] == "nat"
+    ]
+    journal = []
+    try:
+        _delete_snapshots(snapshots, journal)
+    except BaseException:
+        _rollback(journal)
+        raise
 
 
 def flush_forward_accepts(guest_ip: str):
-    """Delete every FORWARD ACCEPT aimed at this guest IP (stale entries from
-    an earlier VM that held the same deterministic IP)."""
-    for parts in _list_rules(None, "FORWARD"):
-        if (
-            "-d" in parts
-            and parts[parts.index("-d") + 1] == f"{guest_ip}/32"
-            and parts[-1] == "ACCEPT"
-        ):
-            run(["iptables", "-D"] + parts[1:], check=False)
+    snapshots = [
+        snapshot
+        for snapshot in _affected_firewall_rules(set(), guest_ip)
+        if snapshot[0] is None
+    ]
+    journal = []
+    try:
+        _delete_snapshots(snapshots, journal)
+    except BaseException:
+        _rollback(journal)
+        raise
 
 
 def _exposure_path(name: str) -> str:
