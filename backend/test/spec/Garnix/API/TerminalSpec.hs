@@ -9,6 +9,7 @@ module Garnix.API.TerminalSpec (spec) where
 import Control.Exception.Safe qualified as Safe
 import Data.Char (isDigit)
 import Data.Text qualified as T
+import Garnix.API.Terminal (TerminalTarget (..), signingArgs)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
@@ -23,6 +24,35 @@ import Test.Hspec hiding (shouldReturn)
 
 spec :: Spec
 spec = do
+  describe "signingArgs" $ do
+    it "mints a tightly-scoped certificate" $ do
+      let target =
+            TerminalTarget
+              { ttBaseArgs = [],
+                ttGuestHost = "10.111.0.5",
+                ttLoginUser = "alice",
+                ttCaKeyFile = "/run/secrets/garnix_terminal_ca",
+                ttServerIdText = "vBV73Z9e",
+                ttSourceAddress = Just "10.111.0.1/32"
+              }
+      signingArgs target "123e4567-e89b-12d3-a456-426614174000" "/tmp/id"
+        `shouldBe` [ "-s",
+                     "/run/secrets/garnix_terminal_ca",
+                     "-I",
+                     "garnix-web-terminal-vBV73Z9e-123e4567-e89b-12d3-a456-426614174000",
+                     "-n",
+                     "alice,server-vBV73Z9e",
+                     "-V",
+                     "+61m",
+                     "-O",
+                     "clear",
+                     "-O",
+                     "permit-pty",
+                     "-O",
+                     "source-address=10.111.0.1/32",
+                     "/tmp/id.pub"
+                   ]
+
   inM $ beforeM_ truncateDBM $ aroundM_ suppressLogsWhenPassing $ do
     describe "/api/terminal" $ do
       it "responds with 401 when logged out" $ withServer $ \testServer -> do
@@ -46,6 +76,31 @@ spec = do
             (ipv4Addr .~ "10.0.0.1")
         result <- testServer.get (terminalPath server)
         result `shouldHaveStatusCode` 404
+
+      it "responds with 404 for an owned server on a private repo without collaborator access" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createPrivateServer user (ipv4Addr .~ "10.0.0.1")
+        result <- testServer.get (terminalPath server)
+        result `shouldHaveStatusCode` 404
+
+      it "refuses a root terminal login" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user (ipv4Addr .~ "10.0.0.1")
+        result <- testServer.get (terminalPath server <> "?user=root")
+        result `shouldHaveStatusCode` 400
+
+      it "refuses a login user the guest did not declare" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user (ipv4Addr .~ "10.0.0.1")
+        result <- testServer.get (terminalPath server <> "?user=alice")
+        result `shouldHaveStatusCode` 400
+
+      it "accepts a login user the guest declared" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user (ipv4Addr .~ "10.0.0.1")
+        DB.setServerSshUsers (server ^. id) ["alice"]
+        result <- testServer.get (terminalPath server <> "?user=alice")
+        result `shouldHaveStatusCode` 426
 
       it "responds with 404 for an owned server that is not online" $ withServer $ \testServer -> do
         user <- testServer.login
@@ -131,11 +186,14 @@ createSimpleServer user =
     user
 
 createServer :: GhRepoOwner -> GhRepoName -> Branch -> PackageName -> User -> (ServerInfo -> ServerInfo) -> M ServerInfo
-createServer repoOwner repoName branch packageName user updateServerInfo = do
+createServer = createServerWithPublicity (RepoIsPublic True)
+
+createServerWithPublicity :: RepoPublicity -> GhRepoOwner -> GhRepoName -> Branch -> PackageName -> User -> (ServerInfo -> ServerInfo) -> M ServerInfo
+createServerWithPublicity publicity repoOwner repoName branch packageName user updateServerInfo = do
   let commitInfo =
         CommitInfo
           (user ^. githubLogin)
-          (RepoIsPublic True)
+          publicity
           (RepoInfo ForgeGithub Nothing undefined repoOwner repoName)
           (Just branch)
           Nothing
@@ -150,8 +208,20 @@ createServer repoOwner repoName branch packageName user updateServerInfo = do
   now <- liftIO getCurrentTime
   addTestServer $ updateServerInfo . \server ->
     server
-      & configurationBuildId .~ (build ^. id)
-      & readyAt ?~ now
+      & configurationBuildId
+      .~ (build ^. id)
+      & readyAt
+      ?~ now
+
+createPrivateServer :: User -> (ServerInfo -> ServerInfo) -> M ServerInfo
+createPrivateServer user =
+  createServerWithPublicity
+    (RepoIsPublic False)
+    (GhRepoOwner $ user ^. githubLogin)
+    (GhRepoName "repo")
+    (Branch "branch")
+    (PackageName "package")
+    user
 
 markServerDead :: ServerInfo -> M ()
 markServerDead serverInfo = do

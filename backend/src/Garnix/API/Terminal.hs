@@ -10,18 +10,20 @@
 --   * Ownership is checked exactly like 'Garnix.API.Hosts.getServerStats':
 --     the requested 'ServerId' must be among
 --     'getRunningAndRecentServersForOwners' for the user's login + installed
---     orgs, otherwise 'NotFound'. The guest IP is resolved from the DB row —
---     never from anything client-supplied.
+--     orgs, otherwise 'NotFound'. Shell access additionally requires
+--     'Garnix.Access.hasAccessToRepo' for the server's configuration build.
+--     The guest IP is resolved from the DB row — never from anything
+--     client-supplied.
 --   * The spawned process is a fixed argv (no shell): @ssh@ with the hosting
 --     key args from 'ServerPool.sshArgsFor' (the exact mechanism deploys use)
 --     plus hardening flags (no agent/X11 forwarding, all forwardings
 --     cleared), to @\<login user\>\@\<guest ip\>@. The login user defaults to
---     @garnix@; the guest profile trusts the hosting key for every user (see
---     @provisioner/guest-profile.nix@), so any declared login user (e.g.
---     @joe@) is reachable directly. A client-chosen override is accepted only
---     when it matches a strict allowlist pattern (@^[a-z_][a-z0-9_-]{0,31}$@ —
---     so it can never start with @-@ or carry option/space characters) and is
---     passed as a single non-interpolated argv element, never through a shell.
+--     @garnix@; any override must both match a strict allowlist pattern and be
+--     one of the guest's declared users, and @root@ is always refused. The
+--     session identity is a short-lived certificate signed by the dedicated
+--     terminal CA ('sshTerminalCaKey'), never by the hosting/deploy key. A
+--     client-chosen override is passed as a single non-interpolated argv
+--     element, never through a shell.
 --     Everything else about the command is fixed server-side; the remaining
 --     client-controlled inputs are terminal bytes (written to the PTY) and
 --     resize dimensions (clamped).
@@ -35,6 +37,10 @@
 module Garnix.API.Terminal
   ( TerminalAPI (..),
     terminalAPI,
+
+    -- * Exported for the spec
+    TerminalTarget (..),
+    signingArgs,
   )
 where
 
@@ -46,6 +52,10 @@ import Data.Char (isAsciiLower, isDigit)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Map qualified as Map
 import Data.Text qualified as T
+import Data.UUID qualified
+import Data.UUID.V4 qualified
+import Garnix.Access (hasAccessToRepo)
+import Garnix.DB qualified as DB
 import Garnix.Duration
 import Garnix.GithubInterface.Types (organizationName)
 import Garnix.Hosting.Helpers
@@ -60,6 +70,7 @@ import Network.WebSockets qualified as WS
 import Servant.Auth.Server
 import Servant.RawM (RawM)
 import Servant.RawM.Server ()
+import System.Directory (doesFileExist)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO.Temp (withSystemTempDirectory)
@@ -114,6 +125,25 @@ connectTerminal (Authenticated (WebSession user ghToken)) serverId requestedUser
     Nothing -> do
       log Notice "terminal: websocket rejected (server not owned or unknown)"
       throw NotFound
+  -- [H1] Repo-access gate: org membership alone is too coarse for a shell.
+  -- The caller must also have access to the repo this server was deployed
+  -- from (public repo, admin, or collaborator — the same 'hasAccessToRepo'
+  -- the build/commit/artifact endpoints use). Publicity comes from the
+  -- server's configuration build row, the same DB snapshot
+  -- 'getBuildWithAccess' trusts, so connecting stays forge-round-trip-free.
+  build <- DB.getBuild (_runningServerConfigurationBuildId server)
+  hasAccess <-
+    hasAccessToRepo
+      (Just user)
+      (build ^. repoIsPublic)
+      (_runningServerRepoOwner server)
+      (_runningServerRepoName server)
+  unless hasAccess $ do
+    log Notice "terminal: websocket rejected (no access to the server's repo)"
+    throw NotFound
+  -- [H2a] Login-user gate, now that the server row is known: only users the
+  -- guest actually declares (plus the deploy user), never root.
+  requireDeclaredLoginUser server loginUser
   unless (_runningServerStatus server == Online) $ do
     log Notice "terminal: websocket rejected (server not online)"
     throw NotFound
@@ -122,25 +152,36 @@ connectTerminal (Authenticated (WebSession user ghToken)) serverId requestedUser
     _ -> do
       log Notice "terminal: websocket rejected (server has no usable guest address)"
       throw NotFound
-  -- Reuse the deploy path's ssh mechanism/identity verbatim: hosting keys,
-  -- BatchMode, internal-guest host-key handling, connect timeout, port split.
-  -- We ssh straight in as the chosen login user, authenticating with a
-  -- short-lived per-session certificate minted per connection (the guest trusts
-  -- the hosting key as a CA), so a declared login user like @joe@ is reachable
-  -- directly without the hosting key ever being a standing login for them.
+  -- Reuse the deploy path's ssh mechanism verbatim: BatchMode, internal-guest
+  -- host-key handling, connect timeout, port split. We ssh straight in as the
+  -- chosen login user, authenticating with a short-lived per-session
+  -- certificate minted per connection (the guest trusts the terminal CA), so
+  -- a declared login user like @joe@ is reachable directly without any
+  -- standing key for them.
   (guestHost, sshArgs) <- ServerPool.sshArgsFor (GuestAddress guestAddr)
-  -- The hosting key the guest trusts as a certificate authority; the session
-  -- cert is signed with its private key.
-  caKeyFile <-
-    view #sshUserHostingKeys >>= \case
-      (k : _) -> pure (cs k)
-      [] -> do
-        log Notice "terminal: websocket rejected (no hosting key to sign a session certificate)"
-        throw NotFound
+  -- [H3] The dedicated terminal certificate authority (never the
+  -- hosting/deploy key): guests trust its public half via TrustedUserCAKeys,
+  -- so the deploy/root identity and the terminal-signing identity stay
+  -- separable. Absent key file fails closed, before any upgrade.
+  caKeyFile <- do
+    path <- view #sshTerminalCaKey
+    exists <- liftIO $ doesFileExist path
+    unless exists $ do
+      log Notice "terminal: websocket rejected (terminal CA key not present)"
+      throw NotFound
+    pure (cs path)
+  sourceAddress <- view #sshTerminalSourceAddress
   env <- ask
   pure
     $ terminalApp env (getGhLogin (user ^. githubLogin)) serverId
-    $ TerminalTarget (sshArgs <> sshHardeningArgs) guestHost loginUser caKeyFile
+    $ TerminalTarget
+      { ttBaseArgs = sshArgs <> sshHardeningArgs,
+        ttGuestHost = guestHost,
+        ttLoginUser = loginUser,
+        ttCaKeyFile = caKeyFile,
+        ttServerIdText = getHashId (getServerId serverId),
+        ttSourceAddress = sourceAddress
+      }
 connectTerminal _ _ _ = do
   log Notice "terminal: unauthenticated websocket rejected"
   throw Unauthorized
@@ -151,9 +192,9 @@ connectTerminal _ _ _ = do
 -- (@^[a-z_][a-z0-9_-]{0,31}$@): it can never start with @-@ (no option
 -- injection), never contain whitespace, @\@@, or any shell/ssh
 -- metacharacter, and is length-bounded. Anything else is a 400 before any
--- process is spawned. Which users can actually log in remains enforced by
--- the guest's own sshd (authorized keys) — this endpoint only ever offers
--- the hosting key.
+-- process is spawned. This is only the syntactic gate; once the server row
+-- is known, 'requireDeclaredLoginUser' additionally requires the user to be
+-- one the guest declared (and never root).
 validateLoginUser :: Maybe Text -> M Text
 validateLoginUser = \case
   Nothing -> pure defaultLoginUser
@@ -166,11 +207,29 @@ validateLoginUser = \case
 defaultLoginUser :: Text
 defaultLoginUser = "garnix"
 
+-- | Second gate on the login user, once the server row is known: a session
+-- certificate is only minted for login users the guest actually declared at
+-- deploy time (servers.ssh_users, captured on the guest via getent — see
+-- '_runningServerSshUsers') plus the deploy user @garnix@. @root@ never gets
+-- one, even if a guest were to declare it: the web terminal is for
+-- interactive logins as declared users, not a root channel.
+requireDeclaredLoginUser :: RunningServer -> Text -> M ()
+requireDeclaredLoginUser server loginUser
+  | loginUser == "root" = do
+      log Notice "terminal: websocket rejected (root login refused)"
+      throw $ BadRequest "terminal login as root is not allowed"
+  | loginUser == defaultLoginUser = pure ()
+  | loginUser `elem` fromMaybe [] (_runningServerSshUsers server) = pure ()
+  | otherwise = do
+      log Notice "terminal: websocket rejected (login user not declared by this server)"
+      throw $ BadRequest "login user not declared by this server"
+
 isValidLoginUser :: Text -> Bool
 isValidLoginUser user = case T.uncons user of
   Nothing -> False
   Just (first', rest) ->
-    T.length user <= 32
+    T.length user
+      <= 32
       && (isAsciiLower first' || first' == '_')
       && T.all (\c -> isAsciiLower c || isDigit c || c == '_' || c == '-') rest
 
@@ -218,13 +277,22 @@ connectionOptions =
 -- | Everything the per-session handler needs to build the ssh command once it
 -- has minted the session certificate: the base ssh args (hosting-key @-i@
 -- flags + BatchMode/host-key/port options + the terminal hardening flags, with
--- no destination yet), the guest host, the chosen login user, and the hosting
--- key file the per-session cert is signed with.
+-- no destination yet), the guest host, the chosen login user, and the terminal
+-- CA key file the per-session cert is signed with.
 data TerminalTarget = TerminalTarget
   { ttBaseArgs :: [Text],
     ttGuestHost :: Text,
     ttLoginUser :: Text,
-    ttCaKeyFile :: Text
+    ttCaKeyFile :: Text,
+    -- | The server's public hash id (the one in its URLs). Used for the
+    -- per-guest cert principal @server-\<id\>@ — so a guest can pin terminal
+    -- certs to itself via @AuthorizedPrincipalsFile@ — and for the unique
+    -- per-session key id.
+    ttServerIdText :: Text,
+    -- | When set, baked into the cert as @-O source-address=...@: the cert
+    -- then only authenticates from this CIDR (the backend's own address on
+    -- the guest bridge; GARNIX_TERMINAL_SOURCE_ADDRESS).
+    ttSourceAddress :: Maybe Text
   }
 
 -- | The WAI application run once the caller is authenticated + authorized.
@@ -322,41 +390,58 @@ runSession conn target =
 
 -- | Mint an ephemeral, per-session SSH user certificate for the target login
 -- user in @dir@ and return the ssh argv that authenticates with it. The guest
--- trusts the hosting key as a certificate authority (@TrustedUserCAKeys@, see
--- @provisioner/guest-profile.nix@), so a short-lived cert signed by the hosting
--- private key logs us in directly as any declared user without the hosting key
--- ever being a standing login for them. The throwaway keypair + cert live only
--- in @dir@ (removed when the session ends), the guest is never mutated, and the
--- cert is time-bounded (outliving the session cap by a small margin, then
--- useless). The cert carries only @permit-pty@ — no forwardings.
+-- trusts the dedicated terminal CA (@TrustedUserCAKeys@, see
+-- @provisioner/guest-profile.nix@), so a short-lived cert signed by it logs us
+-- in directly as any declared user without any standing key for them. The
+-- throwaway keypair + cert live only in @dir@ (removed when the session ends),
+-- the guest is never mutated, and the cert's scope is pinned down by
+-- 'signingArgs'.
 prepareCertSsh :: FilePath -> TerminalTarget -> IO [String]
 prepareCertSsh dir target = do
   let keyPath = dir </> "id"
       certPath = dir </> "id-cert.pub"
+  sessionUuid <- Data.UUID.toText <$> Data.UUID.V4.nextRandom
   runKeygen ["-q", "-t", "ed25519", "-N", "", "-C", "garnix-terminal", "-f", keyPath]
-  runKeygen
-    [ "-s",
-      cs (ttCaKeyFile target),
-      "-I",
-      "garnix-web-terminal",
-      "-n",
-      cs (ttLoginUser target),
-      "-V",
-      "+70m",
-      "-O",
-      "clear",
-      "-O",
-      "permit-pty",
-      keyPath <> ".pub"
-    ]
+  runKeygen (signingArgs target sessionUuid keyPath)
   pure
     $ map cs (ttBaseArgs target)
-      <> [ "-i",
-           keyPath,
-           "-o",
-           "CertificateFile=" <> certPath,
-           cs (ttLoginUser target) <> "@" <> cs (ttGuestHost target)
-         ]
+    <> [ "-i",
+         keyPath,
+         "-o",
+         "CertificateFile=" <> certPath,
+         cs (ttLoginUser target) <> "@" <> cs (ttGuestHost target)
+       ]
+
+-- | The @ssh-keygen -s@ argv that signs a session certificate (pure, so the
+-- spec can pin down exactly what a cert grants):
+--
+--   * principals: the login user plus @server-\<serverId\>@ — the login-user
+--     principal is what sshd matches by default; the per-server principal
+--     lets a guest restrict certs to itself via @AuthorizedPrincipalsFile@;
+--   * key id: unique per session (server id + session UUID), so guest auth
+--     logs attribute each login to exactly one websocket session;
+--   * validity: +61m, just over the 60m 'maxSessionDuration' cap (sshd only
+--     checks validity once, at authentication);
+--   * options: cleared, then @permit-pty@ only — no forwardings — plus
+--     @source-address@ pinning the cert to the backend's own guest-bridge
+--     address when configured.
+signingArgs :: TerminalTarget -> Text -> FilePath -> [String]
+signingArgs target sessionUuid keyPath =
+  [ "-s",
+    cs (ttCaKeyFile target),
+    "-I",
+    cs ("garnix-web-terminal-" <> ttServerIdText target <> "-" <> sessionUuid),
+    "-n",
+    cs (ttLoginUser target <> ",server-" <> ttServerIdText target),
+    "-V",
+    "+61m",
+    "-O",
+    "clear",
+    "-O",
+    "permit-pty"
+  ]
+    <> maybe [] (\addr -> ["-O", cs ("source-address=" <> addr)]) (ttSourceAddress target)
+    <> [keyPath <> ".pub"]
 
 -- | Run @ssh-keygen@ with the given args, failing the session (a caught
 -- exception that closes the websocket) if it errors. Never logs the args or
