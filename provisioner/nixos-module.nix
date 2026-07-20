@@ -251,6 +251,11 @@ in
       # host-/DNAT-initiated inbound connections stay allowed via conntrack
       # (so a LAN client using an exposed DNAT port still gets answers).
       # A dedicated chain, flushed and rebuilt every reload, stays idempotent.
+      # Establish a uniquely-commented DROP guard before removing the live jump:
+      # if any chain/CIDR command fails, the guard stays and egress fails closed.
+      # Reuse a guard left by a prior failed reload instead of duplicating it.
+      iptables -C FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP 2>/dev/null || \
+        iptables -I FORWARD 2 -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP
       iptables -D FORWARD -i ${cfg.bridge} -j garnix-guest-egress 2>/dev/null || true
       iptables -F garnix-guest-egress 2>/dev/null || true
       iptables -X garnix-guest-egress 2>/dev/null || true
@@ -264,6 +269,9 @@ in
       # and ahead of the NAT module's `-i bridge -o uplink -j ACCEPT` (which
       # lives in nixos-filter-forward, appended at the FORWARD tail).
       iptables -I FORWARD 2 -i ${cfg.bridge} -j garnix-guest-egress
+      # Only remove the guard after the completed chain is live. If removal
+      # fails, the guard remains and guest egress stays fail-closed.
+      iptables -D FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP
 
       # Guests are IPv4-only (DHCPv4, RA refused): no bridged IPv6 is ever
       # legitimately forwarded, so drop it wholesale instead of mirroring
@@ -277,6 +285,7 @@ in
       iptables  -D FORWARD -i ${cfg.bridge} -j garnix-guest-egress 2>/dev/null || true
       iptables  -F garnix-guest-egress 2>/dev/null || true
       iptables  -X garnix-guest-egress 2>/dev/null || true
+      iptables  -D FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP 2>/dev/null || true
       ip6tables -D FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
     '';
 
