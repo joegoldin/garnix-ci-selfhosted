@@ -9,8 +9,8 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens
 import Data.ByteString.Base64 qualified as Base64
 import Data.String.Interpolate (i)
+import Garnix.API.Auth (selfHostLoginAllowed, selfHostProxyMarkerOk, subscriptionTypeForGroups)
 import Garnix.AccessToken.Types
-import Garnix.API.Auth (selfHostLoginAllowed, subscriptionTypeForGroups)
 import Garnix.Build (buildFlake)
 import Garnix.DB qualified as DB
 import Garnix.Monad
@@ -38,21 +38,41 @@ selfHostDecisionSpec = do
     it "allows any login when self-host mode is off" $ do
       selfHostLoginAllowed False Nothing `shouldBe` True
       selfHostLoginAllowed False (Just "any-groups") `shouldBe` True
-    it "rejects a login without the gateway header in self-host mode" $
-      selfHostLoginAllowed True Nothing `shouldBe` False
-    it "allows a login carrying the gateway header in self-host mode" $
-      selfHostLoginAllowed True (Just "") `shouldBe` True
+    it "rejects a login without the gateway header in self-host mode"
+      $ selfHostLoginAllowed True Nothing
+      `shouldBe` False
+    it "allows a login carrying the gateway header in self-host mode"
+      $ selfHostLoginAllowed True (Just "")
+      `shouldBe` True
+  describe "selfHostProxyMarkerOk" $ do
+    it "always passes outside self-host mode" $ do
+      selfHostProxyMarkerOk False Nothing Nothing `shouldBe` True
+      selfHostProxyMarkerOk False (Just "s") Nothing `shouldBe` True
+    it "passes when the configured secret matches the header"
+      $ selfHostProxyMarkerOk True (Just "s3kr1t") (Just "s3kr1t")
+      `shouldBe` True
+    it "rejects a wrong or missing header" $ do
+      selfHostProxyMarkerOk True (Just "s3kr1t") (Just "nope") `shouldBe` False
+      selfHostProxyMarkerOk True (Just "s3kr1t") Nothing `shouldBe` False
+    it "fails closed when no secret is configured" $ do
+      selfHostProxyMarkerOk True Nothing (Just "anything") `shouldBe` False
+      selfHostProxyMarkerOk True (Just "") (Just "") `shouldBe` False
   describe "subscriptionTypeForGroups" $ do
-    it "grants admin when the admin group is present" $
-      subscriptionTypeForGroups "garnix-admins" (Just "users,garnix-admins,staff") `shouldBe` Admin
-    it "trims surrounding whitespace around group names" $
-      subscriptionTypeForGroups "garnix-admins" (Just " users , garnix-admins ") `shouldBe` Admin
-    it "grants free when the admin group is absent" $
-      subscriptionTypeForGroups "garnix-admins" (Just "users,staff") `shouldBe` FreeSubscription
-    it "grants free when there is no groups header" $
-      subscriptionTypeForGroups "garnix-admins" Nothing `shouldBe` FreeSubscription
-    it "does not treat a substring match as membership" $
-      subscriptionTypeForGroups "admin" (Just "administrators,users") `shouldBe` FreeSubscription
+    it "grants admin when the admin group is present"
+      $ subscriptionTypeForGroups "garnix-admins" (Just "users,garnix-admins,staff")
+      `shouldBe` Admin
+    it "trims surrounding whitespace around group names"
+      $ subscriptionTypeForGroups "garnix-admins" (Just " users , garnix-admins ")
+      `shouldBe` Admin
+    it "grants free when the admin group is absent"
+      $ subscriptionTypeForGroups "garnix-admins" (Just "users,staff")
+      `shouldBe` FreeSubscription
+    it "grants free when there is no groups header"
+      $ subscriptionTypeForGroups "garnix-admins" Nothing
+      `shouldBe` FreeSubscription
+    it "does not treat a substring match as membership"
+      $ subscriptionTypeForGroups "admin" (Just "administrators,users")
+      `shouldBe` FreeSubscription
 
 authServerSpec :: Spec
 authServerSpec = inM $ beforeM_ truncateDBM $ aroundM_ suppressLogs $ do

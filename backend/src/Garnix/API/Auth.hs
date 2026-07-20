@@ -2,6 +2,7 @@ module Garnix.API.Auth where
 
 import Control.Lens
 import Data.Text qualified as T
+import Data.Time.Clock (secondsToDiffTime)
 import Garnix.AccessToken
 import Garnix.AccessToken.Types
 import Garnix.DB qualified as DB
@@ -15,6 +16,7 @@ import Servant.Auth.Server
   ( Auth,
     AuthResult (Authenticated),
     Cookie,
+    CookieSettings (..),
     JWT,
     acceptLogin,
     clearSession,
@@ -44,6 +46,7 @@ whoAmIAPI (Authenticated ((^. #user) -> user)) = do
 whoAmIAPI _ = pure Nothing
 
 -- * Self-host mode login gate + admin mapping
+
 --
 -- In self-host mode the backend listens on 127.0.0.1 only and sits behind an
 -- authenticating gateway (oauth2-proxy/Authentik) that injects the
@@ -68,12 +71,32 @@ subscriptionTypeForGroups adminGroup mGroupsHeader =
       | adminGroup `elem` map T.strip (T.splitOn "," groups) -> Admin
     _ -> FreeSubscription
 
+-- | Whether the request provably traversed the authenticating gateway: in
+-- self-host mode the gateway injects @X-Garnix-Proxy-Auth: <secret>@ on every
+-- request it forwards (and strips any client-supplied value), and the backend
+-- compares it against its own copy of the secret. Fail-closed in self-host
+-- mode: no configured secret, or a missing/wrong header, rejects. Outside
+-- self-host mode it always passes. Defense-in-depth: the CI sandbox is already
+-- network-isolated (bwrap --unshare-net + nix sandbox), so this guards other
+-- local/loopback reachability of the backend.
+selfHostProxyMarkerOk :: Bool -> Maybe Text -> Maybe Text -> Bool
+selfHostProxyMarkerOk selfHost mConfiguredSecret mMarkerHeader
+  | not selfHost = True
+  | otherwise = case (mConfiguredSecret, mMarkerHeader) of
+      (Just secret, Just marker) -> not (T.null secret) && secret == marker
+      _ -> False
+
 -- | Reject a login that did not come through the authenticating gateway when
--- running in self-host mode. A no-op otherwise.
-requireSelfHostAuth :: Maybe Text -> M ()
-requireSelfHostAuth mGroupsHeader = do
+-- running in self-host mode: the gateway must have injected both the groups
+-- header and the shared-secret marker. A no-op outside self-host mode.
+requireSelfHostAuth :: Maybe Text -> Maybe Text -> M ()
+requireSelfHostAuth mGroupsHeader mProxyAuthHeader = do
   selfHost <- view #selfHostMode
-  unless (selfHostLoginAllowed selfHost mGroupsHeader)
+  mSecret <- view #proxySharedSecret
+  unless
+    ( selfHostLoginAllowed selfHost mGroupsHeader
+        && selfHostProxyMarkerOk selfHost mSecret mProxyAuthHeader
+    )
     $ throw
     $ ForbiddenWithMessage "Login requires the authentication gateway."
 
@@ -159,6 +182,7 @@ data LoginAPI route = LoginAPI
         :- "cb"
         :> QueryParam "code" OAuthCode
         :> Header "X-Auth-Request-Groups" Text
+        :> Header "X-Garnix-Proxy-Auth" Text
         :> Get
              '[JSON]
              ( Headers
@@ -177,6 +201,7 @@ data SignupAPI route = SignupAPI
         :- "fill"
         :> QueryParam "code" OAuthCode
         :> Header "X-Auth-Request-Groups" Text
+        :> Header "X-Garnix-Proxy-Auth" Text
         :> Get
              '[JSON]
              ( Headers
@@ -190,6 +215,7 @@ data SignupAPI route = SignupAPI
         :- Auth '[Cookie] (CreatingUser GhToken)
         :> ReqBody '[JSON] CreateUser
         :> Header "X-Auth-Request-Groups" Text
+        :> Header "X-Garnix-Proxy-Auth" Text
         :> Post
              '[JSON]
              ( Headers
@@ -234,6 +260,28 @@ logout = do
   cookieSettings' <- view #cookieSettings
   return $ clearSession cookieSettings' ()
 
+-- | TTL of a freshly minted browser session: both the JWT @exp@ claim and the
+-- cookie Max-Age. Upstream leaves 'cookieExpires' at 'Nothing', which mints
+-- session JWTs with NO expiry — a captured cookie stays valid until the JWT
+-- key rotates, and the admin/subscription snapshot inside it never refreshes.
+-- 30 minutes bounds both; the oauth2-proxy in front re-checks Authentik group
+-- membership on its own cookie refresh independently.
+sessionJwtTtl :: NominalDiffTime
+sessionJwtTtl = 30 * 60
+
+-- | The Env cookie settings with expiry stamped relative to now.
+-- servant-auth-server's 'acceptLogin' uses 'cookieExpires' verbatim as the
+-- JWT @exp@, so this must be computed per login rather than at startup.
+sessionCookieSettings :: M CookieSettings
+sessionCookieSettings = do
+  cookieSettings' <- view #cookieSettings
+  now <- liftIO getCurrentTime
+  pure
+    $ cookieSettings'
+      { cookieExpires = Just (addUTCTime sessionJwtTtl now),
+        cookieMaxAge = Just (secondsToDiffTime (round sessionJwtTtl))
+      }
+
 signup :: M SignupLinks
 signup = do
   oaState <- OA.newOAuthState
@@ -247,15 +295,16 @@ signup = do
 loginCallback ::
   Maybe OAuthCode ->
   Maybe Text ->
+  Maybe Text ->
   M
     ( Headers
         '[Header "Set-Cookie" SetCookie, Header "Set-Cookie" SetCookie]
         GhLogin
     )
-loginCallback code mGroupsHeader = do
-  requireSelfHostAuth mGroupsHeader
+loginCallback code mGroupsHeader mProxyAuth = do
+  requireSelfHostAuth mGroupsHeader mProxyAuth
   (login', _, token) <- callbackHelper githubOauthLogin code
-  cookieSettings' <- view #cookieSettings
+  cookieSettings' <- sessionCookieSettings
   jwtSettings' <- view #jwtSettings
   user <- DB.getUser login' <?> "calling getUser"
   user' <- applySelfHostSubscription user mGroupsHeader
@@ -273,13 +322,14 @@ loginCallback code mGroupsHeader = do
 signupCallback ::
   Maybe OAuthCode ->
   Maybe Text ->
+  Maybe Text ->
   M
     ( Headers
         '[Header "Set-Cookie" SetCookie, Header "Set-Cookie" SetCookie]
         (CreatingUser ())
     )
-signupCallback code mGroupsHeader = do
-  requireSelfHostAuth mGroupsHeader
+signupCallback code mGroupsHeader mProxyAuth = do
+  requireSelfHostAuth mGroupsHeader mProxyAuth
   (login', email', token) <- callbackHelper githubOauthSignup code
   eUser <- try $ DB.getUser login' <?> "calling getUser"
   creatingUser <- case eUser of
@@ -300,7 +350,7 @@ signupCallback code mGroupsHeader = do
             _creatingUserGithubToken = token
           }
     Left e -> throwError e
-  cookieSettings' <- view #cookieSettings
+  cookieSettings' <- sessionCookieSettings
   jwtSettings' <- view #jwtSettings
   mApplyCookies <- case eUser of
     Right user -> do
@@ -348,9 +398,10 @@ finishSignup ::
   AuthResult (CreatingUser GhToken) ->
   CreateUser ->
   Maybe Text ->
+  Maybe Text ->
   M (Headers '[Header "Set-Cookie" SetCookie, Header "Set-Cookie" SetCookie] GhLogin)
-finishSignup (Authenticated cUser) addenda mGroupsHeader = do
-  requireSelfHostAuth mGroupsHeader
+finishSignup (Authenticated cUser) addenda mGroupsHeader mProxyAuth = do
+  requireSelfHostAuth mGroupsHeader mProxyAuth
   -- The things in AuthResult we can trust, because we put them there
   user <-
     DB.newUser
@@ -359,13 +410,13 @@ finishSignup (Authenticated cUser) addenda mGroupsHeader = do
       (addenda ^. subscriptionType)
       (addenda ^. agreeToEmails)
   user' <- applySelfHostSubscription user mGroupsHeader
-  cookieSettings' <- view #cookieSettings
+  cookieSettings' <- sessionCookieSettings
   jwtSettings' <- view #jwtSettings
   mApplyCookies <- liftIO $ acceptLogin cookieSettings' jwtSettings' (WebSession user' (cUser ^. githubToken))
   case mApplyCookies of
     Nothing -> throw Unauthorized
     Just applyCookies -> return $ applyCookies $ user' ^. githubLogin
-finishSignup _ _ _ = throw $ OtherError "Did not receive expected user info"
+finishSignup _ _ _ _ = throw $ OtherError "Did not receive expected user info"
 
 githubOauthLogin :: M OA.OAuth2
 githubOauthLogin = do
