@@ -187,107 +187,111 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # ── Bridge (scripted networking; no physical ports — guests attach taps) ──
-    networking.bridges.${cfg.bridge}.interfaces = [ ];
-    networking.interfaces.${cfg.bridge} = {
-      useDHCP = false;
-      ipv4.addresses = [
-        {
-          address = hostAddr;
-          prefixLength = hostPrefixLength;
-        }
-      ];
+    networking = {
+      # ── Bridge (scripted networking; no physical ports — guests attach taps) ──
+      bridges.${cfg.bridge}.interfaces = [ ];
+      interfaces.${cfg.bridge} = {
+        useDHCP = false;
+        ipv4.addresses = [
+          {
+            address = hostAddr;
+            prefixLength = hostPrefixLength;
+          }
+        ];
+      };
+      # If NetworkManager is enabled on the host, keep its hands off the bridge.
+      networkmanager.unmanaged = [ "interface-name:${cfg.bridge}" ];
+
+      # ── NAT guest -> internet ─────────────────────────────────────────────────
+      nat = {
+        enable = true;
+        internalInterfaces = [ cfg.bridge ];
+        externalInterface = cfg.uplinkInterface;
+      };
+
+      firewall = {
+        # ── Firewall ──────────────────────────────────────────────────────────────
+        # Guests run deployed (potentially untrusted) code, so the bridge is NOT
+        # trusted wholesale — that would let a guest reach every host service bound
+        # to 0.0.0.0 (postgres, the garnix backend/API, sshd, …) at the host's
+        # bridge address, a guest→host pivot. Host→guest still works without
+        # trusting the interface: the backend's ssh/nix-copy-closure and Traefik's
+        # proxying are host-initiated, so their return traffic is allowed as
+        # established/related. Guests only need DHCP inbound to the host (dnsmasq);
+        # everything else guest→host is dropped by the default policy. Guest egress
+        # to the internet goes through NAT (above), not the host firewall's INPUT.
+        interfaces.${cfg.bridge}.allowedUDPPorts = [ 67 ];
+
+        # Open the DNAT exposure range on the uplink. The DNAT itself (added per-VM
+        # by the daemon's `expose` action in PREROUTING) rewrites the destination to
+        # a guest IP before the routing decision, so these ports reach guests via
+        # FORWARD (also opened per-VM) rather than the host — this range opening is
+        # belt-and-suspenders for host firewalls that filter the uplink strictly.
+        interfaces.${cfg.uplinkInterface}.allowedTCPPortRanges = [
+          {
+            from = cfg.exposePortRange.from;
+            to = cfg.exposePortRange.to;
+          }
+        ];
+
+        # Isolate guests from one another: drop forwarding between two ports of the
+        # guest bridge, so a compromised guest can't reach its neighbours (the pool
+        # VM, another tenant's app). Host<->guest is INPUT/OUTPUT (unaffected) and
+        # guest->internet is `-i bridge -o uplink` (see the egress ACL below).
+        # Primary guest<->guest isolation is bridge PORT ISOLATION (the
+        # microvm-tap-interfaces@ hook above); this FORWARD rule and the pinned
+        # bridge-nf-call-* sysctls are belt.
+        extraCommands = ''
+          # delete-then-insert so a reload can't accumulate duplicates
+          iptables  -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+          iptables  -I FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP
+          ip6tables -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+          ip6tables -I FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+
+          # Guest egress ACL (H5): guests may reach the internet but not the LAN,
+          # RFC1918/link-local space, or configured internal hosts. Replies to
+          # host-/DNAT-initiated inbound connections stay allowed via conntrack
+          # (so a LAN client using an exposed DNAT port still gets answers).
+          # A dedicated chain, flushed and rebuilt every reload, stays idempotent.
+          # Establish a uniquely-commented DROP guard before removing the live jump:
+          # if any chain/CIDR command fails, the guard stays and egress fails closed.
+          # Reuse a guard left by a prior failed reload instead of duplicating it.
+          iptables -C FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP 2>/dev/null || \
+            iptables -I FORWARD 2 -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP
+          iptables -D FORWARD -i ${cfg.bridge} -j garnix-guest-egress 2>/dev/null || true
+          iptables -F garnix-guest-egress 2>/dev/null || true
+          iptables -X garnix-guest-egress 2>/dev/null || true
+          iptables -N garnix-guest-egress
+          iptables -A garnix-guest-egress -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          ${lib.concatMapStrings (cidr: ''
+            iptables -A garnix-guest-egress -d ${cidr} -j DROP
+          '') cfg.guestEgressBlocklist}
+          iptables -A garnix-guest-egress -j RETURN
+          # Position 2: after the bridge<->bridge DROP just inserted at position 1,
+          # and ahead of the NAT module's `-i bridge -o uplink -j ACCEPT` (which
+          # lives in nixos-filter-forward, appended at the FORWARD tail).
+          iptables -I FORWARD 2 -i ${cfg.bridge} -j garnix-guest-egress
+          # Only remove the guard after the completed chain is live. If removal
+          # fails, the guard remains and guest egress stays fail-closed.
+          iptables -D FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP
+
+          # Guests are IPv4-only (DHCPv4, RA refused): no bridged IPv6 is ever
+          # legitimately forwarded, so drop it wholesale instead of mirroring
+          # the v4 ACL.
+          ip6tables -D FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
+          ip6tables -I FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
+        '';
+        extraStopCommands = ''
+          iptables  -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+          ip6tables -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
+          iptables  -D FORWARD -i ${cfg.bridge} -j garnix-guest-egress 2>/dev/null || true
+          iptables  -F garnix-guest-egress 2>/dev/null || true
+          iptables  -X garnix-guest-egress 2>/dev/null || true
+          iptables  -D FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP 2>/dev/null || true
+          ip6tables -D FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
+        '';
+      };
     };
-    # If NetworkManager is enabled on the host, keep its hands off the bridge.
-    networking.networkmanager.unmanaged = [ "interface-name:${cfg.bridge}" ];
-
-    # ── NAT guest -> internet ─────────────────────────────────────────────────
-    networking.nat = {
-      enable = true;
-      internalInterfaces = [ cfg.bridge ];
-      externalInterface = cfg.uplinkInterface;
-    };
-
-    # ── Firewall ──────────────────────────────────────────────────────────────
-    # Guests run deployed (potentially untrusted) code, so the bridge is NOT
-    # trusted wholesale — that would let a guest reach every host service bound
-    # to 0.0.0.0 (postgres, the garnix backend/API, sshd, …) at the host's
-    # bridge address, a guest→host pivot. Host→guest still works without
-    # trusting the interface: the backend's ssh/nix-copy-closure and Traefik's
-    # proxying are host-initiated, so their return traffic is allowed as
-    # established/related. Guests only need DHCP inbound to the host (dnsmasq);
-    # everything else guest→host is dropped by the default policy. Guest egress
-    # to the internet goes through NAT (above), not the host firewall's INPUT.
-    networking.firewall.interfaces.${cfg.bridge}.allowedUDPPorts = [ 67 ];
-
-    # Open the DNAT exposure range on the uplink. The DNAT itself (added per-VM
-    # by the daemon's `expose` action in PREROUTING) rewrites the destination to
-    # a guest IP before the routing decision, so these ports reach guests via
-    # FORWARD (also opened per-VM) rather than the host — this range opening is
-    # belt-and-suspenders for host firewalls that filter the uplink strictly.
-    networking.firewall.interfaces.${cfg.uplinkInterface}.allowedTCPPortRanges = [
-      {
-        from = cfg.exposePortRange.from;
-        to = cfg.exposePortRange.to;
-      }
-    ];
-
-    # Isolate guests from one another: drop forwarding between two ports of the
-    # guest bridge, so a compromised guest can't reach its neighbours (the pool
-    # VM, another tenant's app). Host<->guest is INPUT/OUTPUT (unaffected) and
-    # guest->internet is `-i bridge -o uplink` (see the egress ACL below).
-    # Primary guest<->guest isolation is bridge PORT ISOLATION (the
-    # microvm-tap-interfaces@ hook above); this FORWARD rule and the pinned
-    # bridge-nf-call-* sysctls are belt.
-    networking.firewall.extraCommands = ''
-      # delete-then-insert so a reload can't accumulate duplicates
-      iptables  -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
-      iptables  -I FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP
-      ip6tables -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
-      ip6tables -I FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
-
-      # Guest egress ACL (H5): guests may reach the internet but not the LAN,
-      # RFC1918/link-local space, or configured internal hosts. Replies to
-      # host-/DNAT-initiated inbound connections stay allowed via conntrack
-      # (so a LAN client using an exposed DNAT port still gets answers).
-      # A dedicated chain, flushed and rebuilt every reload, stays idempotent.
-      # Establish a uniquely-commented DROP guard before removing the live jump:
-      # if any chain/CIDR command fails, the guard stays and egress fails closed.
-      # Reuse a guard left by a prior failed reload instead of duplicating it.
-      iptables -C FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP 2>/dev/null || \
-        iptables -I FORWARD 2 -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP
-      iptables -D FORWARD -i ${cfg.bridge} -j garnix-guest-egress 2>/dev/null || true
-      iptables -F garnix-guest-egress 2>/dev/null || true
-      iptables -X garnix-guest-egress 2>/dev/null || true
-      iptables -N garnix-guest-egress
-      iptables -A garnix-guest-egress -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-      ${lib.concatMapStrings (cidr: ''
-        iptables -A garnix-guest-egress -d ${cidr} -j DROP
-      '') cfg.guestEgressBlocklist}
-      iptables -A garnix-guest-egress -j RETURN
-      # Position 2: after the bridge<->bridge DROP just inserted at position 1,
-      # and ahead of the NAT module's `-i bridge -o uplink -j ACCEPT` (which
-      # lives in nixos-filter-forward, appended at the FORWARD tail).
-      iptables -I FORWARD 2 -i ${cfg.bridge} -j garnix-guest-egress
-      # Only remove the guard after the completed chain is live. If removal
-      # fails, the guard remains and guest egress stays fail-closed.
-      iptables -D FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP
-
-      # Guests are IPv4-only (DHCPv4, RA refused): no bridged IPv6 is ever
-      # legitimately forwarded, so drop it wholesale instead of mirroring
-      # the v4 ACL.
-      ip6tables -D FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
-      ip6tables -I FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
-    '';
-    networking.firewall.extraStopCommands = ''
-      iptables  -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
-      ip6tables -D FORWARD -i ${cfg.bridge} -o ${cfg.bridge} -j DROP 2>/dev/null || true
-      iptables  -D FORWARD -i ${cfg.bridge} -j garnix-guest-egress 2>/dev/null || true
-      iptables  -F garnix-guest-egress 2>/dev/null || true
-      iptables  -X garnix-guest-egress 2>/dev/null || true
-      iptables  -D FORWARD -i ${cfg.bridge} -m comment --comment garnix-guest-egress-rebuild -j DROP 2>/dev/null || true
-      ip6tables -D FORWARD -i ${cfg.bridge} -j DROP 2>/dev/null || true
-    '';
 
     # Pin bridge-nf-call-*: the FORWARD DROP above only sees bridged
     # guest<->guest traffic while br_netfilter routes it through iptables, and
@@ -328,18 +332,86 @@ in
     # L2, independent of the bridge-nf-call-* sysctls. Ordering is race-free:
     # microvm@%i is After= this oneshot, which only completes once
     # ExecStartPost has run. Non-garnix microVMs on the host are untouched.
-    systemd.services."microvm-tap-interfaces@".serviceConfig.ExecStartPost = [
-      "${pkgs.writeShellScript "garnix-tap-isolate" ''
-        set -euo pipefail
-        case "$1" in
-          garnix-*) ;;
-          *) exit 0 ;;
-        esac
-        tap="gx''${1#garnix-}"
-        ${pkgs.iproute2}/bin/ip link set dev "$tap" master ${cfg.bridge}
-        ${pkgs.iproute2}/bin/ip link set dev "$tap" type bridge_slave isolated on
-      ''} %i"
-    ];
+    systemd = {
+      services."microvm-tap-interfaces@".serviceConfig.ExecStartPost = [
+        "${pkgs.writeShellScript "garnix-tap-isolate" ''
+          set -euo pipefail
+          case "$1" in
+            garnix-*) ;;
+            *) exit 0 ;;
+          esac
+          tap="gx''${1#garnix-}"
+          ${pkgs.iproute2}/bin/ip link set dev "$tap" master ${cfg.bridge}
+          ${pkgs.iproute2}/bin/ip link set dev "$tap" type bridge_slave isolated on
+        ''} %i"
+      ];
+
+      # ── State ─────────────────────────────────────────────────────────────────
+      tmpfiles.rules = [
+        "d ${stateDir} 0755 root root -"
+        "d ${stateDir}/specs 0755 root root -"
+        "d ${stateDir}/exposed 0755 root root -"
+        "f ${stateDir}/dnsmasq-hosts 0644 root root -"
+      ];
+
+      # ── The daemon ────────────────────────────────────────────────────────────
+      services.garnix-provisionerd = {
+        description = "garnix local microVM provisioner";
+        wantedBy = [ "multi-user.target" ];
+        after = [
+          "network.target"
+          "dnsmasq.service"
+        ];
+        # `microvm` and `systemctl` come from the running system profile; nix and
+        # ssh-keygen are pinned so the daemon works even before the first switch.
+        path = [
+          pkgs.nix
+          pkgs.openssh
+          pkgs.iptables
+          "/run/current-system/sw"
+        ];
+        environment = {
+          PROVISIONER_SOCKET = cfg.socketPath;
+          PROVISIONER_SOCKET_GROUP = cfg.backendGroup;
+          PROVISIONER_STATE_DIR = stateDir;
+          PROVISIONER_BRIDGE = cfg.bridge;
+          PROVISIONER_SUBNET_PREFIX = subnetPrefix;
+          PROVISIONER_NIXPKGS = cfg.nixpkgsFlake;
+          PROVISIONER_MICROVM = cfg.microvmFlake;
+          PROVISIONER_GUEST_PROFILE = "${./guest-profile.nix}";
+          PROVISIONER_SSH_PUBKEY_FILE = pubkeyPath;
+          PROVISIONER_TERMINAL_CA_PUBKEY_FILE = terminalCaPubkeyPath;
+          PROVISIONER_PORT_RANGE_END = toString cfg.exposePortRange.to;
+          PROVISIONER_GUEST_CPU = if cfg.guestCpuModel == null then "" else cfg.guestCpuModel;
+          PROVISIONER_UPLINK = cfg.uplinkInterface;
+          PROVISIONER_SSH_PORT_BASE = toString cfg.sshExposePortBase;
+          PROVISIONER_TCP_PORT_BASE = toString cfg.tcpExposePortBase;
+          PROVISIONER_STATS_URL = cfg.statsReportUrl;
+        };
+        serviceConfig = {
+          ExecStartPre = pkgs.writeShellScript "garnix-provisioner-pubkey" ''
+            set -euo pipefail
+            ${pkgs.openssh}/bin/ssh-keygen -y -f ${cfg.sshPrivateKeyPath} > ${pubkeyPath}
+            chmod 0644 ${pubkeyPath}
+            # Dedicated web-terminal CA public key (finding H3): guests trust THIS
+            # as TrustedUserCAKeys, not the hosting key. Fall back to the hosting
+            # pubkey if the terminal-CA secret isn't installed, so the daemon still
+            # starts and guests stay evaluable (the Python side mirrors this).
+            if ${pkgs.openssh}/bin/ssh-keygen -y -f ${cfg.terminalCaPrivateKeyPath} > ${terminalCaPubkeyPath} 2>/dev/null; then
+              :
+            else
+              cp ${pubkeyPath} ${terminalCaPubkeyPath}
+            fi
+            chmod 0644 ${terminalCaPubkeyPath}
+          '';
+          ExecStart = "${pkgs.python3}/bin/python3 ${./provisionerd.py}";
+          RuntimeDirectory = "garnix-provisioner";
+          Restart = "always";
+          RestartSec = 5;
+        };
+        unitConfig.StartLimitIntervalSec = 0;
+      };
+    };
 
     # ── dnsmasq: DHCP-only, per-MAC reservations from the daemon ─────────────
     services.dnsmasq = {
@@ -358,72 +430,6 @@ in
           "option:dns-server,9.9.9.9"
         ];
       };
-    };
-
-    # ── State ─────────────────────────────────────────────────────────────────
-    systemd.tmpfiles.rules = [
-      "d ${stateDir} 0755 root root -"
-      "d ${stateDir}/specs 0755 root root -"
-      "d ${stateDir}/exposed 0755 root root -"
-      "f ${stateDir}/dnsmasq-hosts 0644 root root -"
-    ];
-
-    # ── The daemon ────────────────────────────────────────────────────────────
-    systemd.services.garnix-provisionerd = {
-      description = "garnix local microVM provisioner";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "network.target"
-        "dnsmasq.service"
-      ];
-      # `microvm` and `systemctl` come from the running system profile; nix and
-      # ssh-keygen are pinned so the daemon works even before the first switch.
-      path = [
-        pkgs.nix
-        pkgs.openssh
-        pkgs.iptables
-        "/run/current-system/sw"
-      ];
-      environment = {
-        PROVISIONER_SOCKET = cfg.socketPath;
-        PROVISIONER_SOCKET_GROUP = cfg.backendGroup;
-        PROVISIONER_STATE_DIR = stateDir;
-        PROVISIONER_BRIDGE = cfg.bridge;
-        PROVISIONER_SUBNET_PREFIX = subnetPrefix;
-        PROVISIONER_NIXPKGS = cfg.nixpkgsFlake;
-        PROVISIONER_MICROVM = cfg.microvmFlake;
-        PROVISIONER_GUEST_PROFILE = "${./guest-profile.nix}";
-        PROVISIONER_SSH_PUBKEY_FILE = pubkeyPath;
-        PROVISIONER_TERMINAL_CA_PUBKEY_FILE = terminalCaPubkeyPath;
-        PROVISIONER_PORT_RANGE_END = toString cfg.exposePortRange.to;
-        PROVISIONER_GUEST_CPU = if cfg.guestCpuModel == null then "" else cfg.guestCpuModel;
-        PROVISIONER_UPLINK = cfg.uplinkInterface;
-        PROVISIONER_SSH_PORT_BASE = toString cfg.sshExposePortBase;
-        PROVISIONER_TCP_PORT_BASE = toString cfg.tcpExposePortBase;
-        PROVISIONER_STATS_URL = cfg.statsReportUrl;
-      };
-      serviceConfig = {
-        ExecStartPre = pkgs.writeShellScript "garnix-provisioner-pubkey" ''
-          set -euo pipefail
-          ${pkgs.openssh}/bin/ssh-keygen -y -f ${cfg.sshPrivateKeyPath} > ${pubkeyPath}
-          chmod 0644 ${pubkeyPath}
-          # Dedicated web-terminal CA public key (finding H3): guests trust THIS
-          # as TrustedUserCAKeys, not the hosting key. Fall back to the hosting
-          # pubkey if the terminal-CA secret isn't installed, so the daemon still
-          # starts and guests stay evaluable (the Python side mirrors this).
-          if ${pkgs.openssh}/bin/ssh-keygen -y -f ${cfg.terminalCaPrivateKeyPath} > ${terminalCaPubkeyPath} 2>/dev/null; then
-            :
-          else
-            cp ${pubkeyPath} ${terminalCaPubkeyPath}
-          fi
-          chmod 0644 ${terminalCaPubkeyPath}
-        '';
-        ExecStart = "${pkgs.python3}/bin/python3 ${./provisionerd.py}";
-        RuntimeDirectory = "garnix-provisioner";
-        Restart = "always";
-        RestartSec = 5;
-      };
-      unitConfig.StartLimitIntervalSec = 0;
     };
   };
 }
