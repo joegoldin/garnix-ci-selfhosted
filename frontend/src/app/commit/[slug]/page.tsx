@@ -46,9 +46,16 @@ const matchesStatusFilter = (
   }
 };
 
-// Rows still in progress get a subtle accent so they read at a glance.
-const isInProgress = (status: BuildStatus): boolean =>
-  status === "Running" || status === "Pending";
+// Row background accent by status: very light green while in progress
+// (Running/Pending), light orange for failed/timed-out/cancelled, nothing for
+// finished rows (Success/Skipped).
+const moduleStatusClass = (status: BuildStatus): string => {
+  if (status === "Running" || status === "Pending")
+    return styles.moduleRunning ?? "";
+  if (status === "Failure" || status === "Timeout" || status === "Cancelled")
+    return styles.moduleFailed ?? "";
+  return "";
+};
 
 const Page = ({ params }: { params: { slug: string } }) => {
   const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("All");
@@ -179,9 +186,7 @@ const Page = ({ params }: { params: { slug: string } }) => {
                   return (
                     <Link key={build.id} href={href} variant="wrapper">
                       <div
-                        className={`${styles.module} ${
-                          isInProgress(status) ? styles.moduleActive : ""
-                        }`}
+                        className={`${styles.module} ${moduleStatusClass(status)}`}
                       >
                         <div className={styles.moduleName}>
                           <Text>{formatRunName(build)}</Text>

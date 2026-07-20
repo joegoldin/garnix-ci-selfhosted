@@ -71,7 +71,6 @@
   margin-bottom: 4px;
   background-color: var(--color-stone-50);
   padding: 8px;
-  border-left: 3px solid transparent;
 }
 
 .module:hover {
@@ -82,15 +81,23 @@
   background-color: var(--color-stone-200);
 }
 
-/* In-progress rows (Running/Pending) get a subtle amber accent so they read
-   at a glance against the finished rows around them. */
-.module.moduleActive {
-  border-left-color: #ff8700;
-  background-color: rgba(255, 135, 0, 0.06);
+/* Row background by status: a very light green tint while in progress
+   (Running/Pending), a light orange tint for failed/timed-out/cancelled, and
+   nothing for finished (Success/Skipped) rows. */
+.module.moduleRunning {
+  background-color: rgba(46, 160, 67, 0.05);
 }
 
-.module.moduleActive:hover {
-  background-color: rgba(255, 135, 0, 0.12);
+.module.moduleRunning:hover {
+  background-color: rgba(46, 160, 67, 0.1);
+}
+
+.module.moduleFailed {
+  background-color: rgba(255, 135, 0, 0.045);
+}
+
+.module.moduleFailed:hover {
+  background-color: rgba(255, 135, 0, 0.09);
 }
 
 .moduleName {
