@@ -1,7 +1,7 @@
 # Provisioner Exposure Transaction Design
 
 **Date:** 2026-07-20
-**Status:** Design approved; written specification awaiting review
+**Status:** Approved
 **Parent plan:** `docs/plans/2026-07-20-garnix-hosting-hardening.md`, Tasks 9 and 11
 
 ## Context
@@ -78,6 +78,8 @@ means no recorded exposure. An existing file is valid only when:
 - every rule is an object with integer, non-boolean `host` and `guest` fields;
 - both ports are in `1..65535`;
 - each host port is unique within the file; and
+- there is at most one SSH-range rule and at most one TCP-range rule per guest
+  port; and
 - a host port lies in one of the configured SSH or TCP allocation ranges.
 
 The loader may accept additional object fields for forward compatibility. It
@@ -88,8 +90,10 @@ types, out-of-range ports, and duplicate host ports raise a contextual
 
 Before allocation, load every `*.json` registry file except the current guest's
 file and reject a host port claimed by more than one file. Load and validate the
-current guest separately so its old ports can become preferred candidates.
-Any validation failure occurs before firewall or filesystem mutation.
+current guest separately so its old ports can become preferred candidates. On
+re-exposure, its recorded IP must equal the deterministic IP for that guest;
+an IP mismatch is invalid state. Any validation failure occurs before firewall
+or filesystem mutation.
 
 `write_exposure` writes JSON to a temporary file in `EXPOSED_DIR`, flushes and
 `fsync`s the file, then commits with `os.replace`. An exception before replace
