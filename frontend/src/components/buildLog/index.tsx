@@ -59,27 +59,46 @@ const LogViewer = (props: {
   const toggleLog = (logGroupName: string) => {
     setOpenLog(openLog !== logGroupName ? logGroupName : undefined);
   };
+  const lastLogGroupName = logs[logs.length - 1]?.[0];
   return (
     <>
-      {logs.map(([logGroupName, logs]) => (
-        <div
-          key={logGroupName}
-          className={`${styles.log} ${openLog === logGroupName && styles.open}`}
-        >
+      {logs.map(([logGroupName, logs]) => {
+        // While the stream is still going, only the last (most recent) group
+        // is still live; every earlier group has already finished. Once the
+        // whole stream is finished, every group has too.
+        const isLive =
+          props.logStream.loading && logGroupName === lastLogGroupName;
+        return (
           <div
-            className={styles.logHead}
-            onClick={() => toggleLog(logGroupName)}
+            key={logGroupName}
+            className={`${styles.log} ${openLog === logGroupName && styles.open}`}
           >
-            <Text>{logGroupName || props.defaultLogGroupName}</Text>
-            {openLog === logGroupName ? (
-              <Image src={dashIcon} alt="close" className={styles.icon} />
-            ) : (
-              <Image src={crossIcon} alt="open" className={styles.icon} />
-            )}
+            <div
+              className={styles.logHead}
+              onClick={() => toggleLog(logGroupName)}
+            >
+              <div className={styles.logHeadTitle}>
+                <Text>{logGroupName || props.defaultLogGroupName}</Text>
+                {isLive ? (
+                  <span className={styles.phaseLive} title="Still streaming">
+                    <span className={styles.phaseLiveDot} /> live
+                  </span>
+                ) : (
+                  <span className={styles.phaseFinished} title="Finished">
+                    ✓ finished
+                  </span>
+                )}
+              </div>
+              {openLog === logGroupName ? (
+                <Image src={dashIcon} alt="close" className={styles.icon} />
+              ) : (
+                <Image src={crossIcon} alt="open" className={styles.icon} />
+              )}
+            </div>
+            {openLog === logGroupName && <AnsiLogViewer logs={logs} />}
           </div>
-          {openLog === logGroupName && <AnsiLogViewer logs={logs} />}
-        </div>
-      ))}
+        );
+      })}
       {props.logStream.loading && (
         <div className={styles.loading}>
           <Loading />
