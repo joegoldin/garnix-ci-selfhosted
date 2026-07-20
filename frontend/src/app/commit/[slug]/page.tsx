@@ -28,13 +28,6 @@ import styles from "./styles.module.css";
 // everything; the others partition the terminal + in-progress statuses.
 type StatusFilter = "All" | "Active" | "Complete" | "Failed";
 
-const statusFilterOptions: Array<readonly [StatusFilter, string]> = [
-  ["All", "All"],
-  ["Active", "Active"],
-  ["Complete", "Complete"],
-  ["Failed", "Failed"],
-];
-
 const matchesStatusFilter = (
   filter: StatusFilter,
   status: BuildStatus,
@@ -104,12 +97,54 @@ const Page = ({ params }: { params: { slug: string } }) => {
     <main className={styles.container}>
       {match(commit.data)
         .with(Ok(P.select()), (commit) => {
+          const runningIds = new Set(commit.running_build_ids);
+          const rows = [...commit.builds, ...commit.runs].map((build) => {
+            const status =
+              build.status === "Pending" && runningIds.has(build.id)
+                ? ("Running" as const)
+                : build.status;
+            return { build, status };
+          });
+          // Disable a bucket when no row matches it (All is always enabled).
+          const filterOptions = (
+            ["All", "Active", "Complete", "Failed"] as const
+          ).map(
+            (f): readonly [StatusFilter, string, boolean] => [
+              f,
+              f,
+              f !== "All" &&
+                !rows.some(({ status }) => matchesStatusFilter(f, status)),
+            ],
+          );
+          const visibleRows = rows.filter(({ status }) =>
+            matchesStatusFilter(statusFilter, status),
+          );
+          const artifactTotal = Object.values(artifactCountByBuildId).reduce(
+            (sum, n) => sum + n,
+            0,
+          );
           return (
             <>
               <div className={styles.header}>
-                <Text type="h1" className={styles.h1}>
-                  Commit [{formatCommitSha(commit.summary)}]
-                </Text>
+                <div className={styles.headerLeft}>
+                  <Text type="h1" className={styles.h1}>
+                    Commit [{formatCommitSha(commit.summary)}]
+                  </Text>
+                  <Select
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                    options={filterOptions}
+                  />
+                  {artifactTotal > 0 && (
+                    <Link
+                      href={`/repo/${commit.summary.repoUser}/${commit.summary.repoName}/artifacts?commit=${params.slug}`}
+                      className={styles.headerArtifactBadge}
+                    >
+                      <ArtifactIcon width={14} height={14} />
+                      {artifactTotal} artifact{artifactTotal === 1 ? "" : "s"}
+                    </Link>
+                  )}
+                </div>
                 <div className={styles.headerActions}>
                   {commit.summary.failed > 0 && (
                     <RestartFailedButton
@@ -130,65 +165,46 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 </div>
               </div>
               <CommitBuildsSummary commit={commit.summary} />
-            <div className={styles.moduleToolbar}>
-              <Select
-                value={statusFilter}
-                onChange={setStatusFilter}
-                options={statusFilterOptions}
-              />
-            </div>
-            <div className={styles.modules}>
-              {(() => {
-                const runningIds = new Set(commit.running_build_ids);
-                return [...commit.builds, ...commit.runs]
-                  .map((build) => {
-                    const status =
-                      build.status === "Pending" && runningIds.has(build.id)
-                        ? ("Running" as const)
-                        : build.status;
-                    return { build, status };
-                  })
-                  .filter(({ status }) => matchesStatusFilter(statusFilter, status))
-                  .map(({ build, status }) => {
-                    // Only `Build` rows (packages) can have artifacts.
-                    const artifactCount =
-                      build.tag === "Build"
-                        ? artifactCountByBuildId[build.id]
-                        : undefined;
-                    const href =
-                      artifactCount != null && artifactCount > 0
-                        ? `${runUrl(build)}#artifacts`
-                        : runUrl(build);
-                    return (
-                      <Link key={build.id} href={href} variant="wrapper">
-                        <div
-                          className={`${styles.module} ${
-                            isInProgress(status) ? styles.moduleActive : ""
-                          }`}
-                        >
-                          <div className={styles.moduleName}>
-                            <Text>{formatRunName(build)}</Text>
-                            {artifactCount != null && artifactCount > 0 && (
-                              <span
-                                className={styles.artifactBadge}
-                                title={`${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`}
-                              >
-                                <ArtifactIcon width={12} height={12} />
-                                {artifactCount}
-                              </span>
-                            )}
-                          </div>
-                          <div className={styles.status}>
-                            <StatusIcon status={status} />
-                            <Text className={styles.statusText}>
-                              {getStatusText(status)}
-                            </Text>
-                          </div>
+              <div className={styles.modules}>
+                {visibleRows.map(({ build, status }) => {
+                  // Only `Build` rows (packages) can have artifacts.
+                  const artifactCount =
+                    build.tag === "Build"
+                      ? artifactCountByBuildId[build.id]
+                      : undefined;
+                  const href =
+                    artifactCount != null && artifactCount > 0
+                      ? `${runUrl(build)}#artifacts`
+                      : runUrl(build);
+                  return (
+                    <Link key={build.id} href={href} variant="wrapper">
+                      <div
+                        className={`${styles.module} ${
+                          isInProgress(status) ? styles.moduleActive : ""
+                        }`}
+                      >
+                        <div className={styles.moduleName}>
+                          <Text>{formatRunName(build)}</Text>
+                          {artifactCount != null && artifactCount > 0 && (
+                            <span
+                              className={styles.artifactBadge}
+                              title={`${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`}
+                            >
+                              <ArtifactIcon width={12} height={12} />
+                              {artifactCount}
+                            </span>
+                          )}
                         </div>
-                      </Link>
-                    );
-                  });
-              })()}
+                        <div className={styles.status}>
+                          <StatusIcon status={status} />
+                          <Text className={styles.statusText}>
+                            {getStatusText(status)}
+                          </Text>
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
               </div>
             </>
           );

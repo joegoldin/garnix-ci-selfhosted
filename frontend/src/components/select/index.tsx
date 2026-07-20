@@ -13,7 +13,9 @@ type Stringifyable =
 type Props<T> = {
   value: T;
   onChange: (s: T) => void;
-  options: Array<readonly [T, string]>;
+  // Each option is [value, label, disabled?]; a disabled option is greyed out
+  // and non-selectable in the dropdown.
+  options: Array<readonly [T, string, boolean?]>;
 };
 
 export const Select = <T extends Stringifyable>({
@@ -27,8 +29,12 @@ export const Select = <T extends Stringifyable>({
       value={JSON.stringify(value)}
       onChange={(e) => onChange(JSON.parse(e.target.value))}
     >
-      {options.map(([v, label]) => (
-        <option key={JSON.stringify(v)} value={JSON.stringify(v)}>
+      {options.map(([v, label, disabled]) => (
+        <option
+          key={JSON.stringify(v)}
+          value={JSON.stringify(v)}
+          disabled={disabled}
+        >
           {label}
         </option>
       ))}

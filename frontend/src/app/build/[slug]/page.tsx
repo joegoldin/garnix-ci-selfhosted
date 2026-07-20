@@ -26,6 +26,7 @@ import cubeIcon from "@/components/icons/cube.svg";
 import terminalIcon from "@/components/icons/terminal.svg";
 import statusIcon from "@/components/icons/status.svg";
 import { DownloadIcon } from "@/components/icons/download";
+import { ArtifactIcon } from "@/components/icons/artifact";
 import { Build, getBuild } from "@/services/build";
 import { Link } from "@/components/link";
 import { forgeBranchUrl } from "@/utils/forge";
@@ -158,9 +159,12 @@ const Page = ({ params }: { params: { slug: string } }) => {
       {match(build.data)
         .with(Ok(P.select()), (build) => (
           <>
-            <Text type="h1" className={styles.h1}>
-              {formatRunName(build)}
-            </Text>
+            <div className={styles.titleRow}>
+              <Text type="h1" className={styles.h1}>
+                {formatRunName(build)}
+              </Text>
+              <BuildArtifactBadge buildId={params.slug} />
+            </div>
             <div className={`${styles.section} ${styles.summary}`}>
               {createHeaderProps(build, giteaUrl).map(
                 ({ icon, label, url, external, value }) => (
@@ -236,6 +240,29 @@ const whoamiSchema = z
   .nullable();
 
 const getWhoami = () => fetchFromAPI(whoamiSchema, "GET", "whoami");
+
+// A compact "N artifacts" chip next to the build title, deep-linking to the
+// Artifacts section below, so a build's artifacts are visible at a glance
+// without scrolling. Renders nothing when the build has no published artifacts
+// or the artifact store isn't configured (404 -> not ok).
+const BuildArtifactBadge = ({ buildId }: { buildId: string }) => {
+  const artifacts = useLoading(
+    useCallback(() => getBuildArtifacts(buildId), [buildId]),
+  );
+  if (
+    artifacts.loading ||
+    !artifacts.data.ok ||
+    artifacts.data.data.length === 0
+  )
+    return null;
+  const count = artifacts.data.data.length;
+  return (
+    <a href="#artifacts" className={styles.titleArtifactBadge}>
+      <ArtifactIcon width={14} height={14} />
+      {count} artifact{count === 1 ? "" : "s"}
+    </a>
+  );
+};
 
 const ArtifactsSection = ({ buildId }: { buildId: string }) => {
   const artifacts = useLoading(

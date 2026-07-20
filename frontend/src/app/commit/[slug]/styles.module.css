@@ -14,6 +14,33 @@
   margin-bottom: 0;
 }
 
+/* Title + status filter, grouped on the left of the header line. */
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* Compact "N artifacts" chip in the commit header (links to the repo's
+   artifacts page filtered to this commit). */
+.headerArtifactBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+  color: var(--color-stone-700);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.headerArtifactBadge:hover {
+  background: var(--color-stone-200);
+}
+
 .headerActions {
   display: flex;
   align-items: center;
@@ -28,12 +55,6 @@
 
 .modalText {
   line-height: 22px;
-}
-
-.moduleToolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 8px;
 }
 
 .modules {
