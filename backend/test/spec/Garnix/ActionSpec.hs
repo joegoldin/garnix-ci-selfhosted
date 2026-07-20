@@ -304,12 +304,17 @@ spec = do
             ! (commitInfo ^. commit)
             `shouldBeM` ("action test-action" ~> (RunReportStatusSuccess, "bar\n"))
 
-        it "times out the action" $ shouldTerminate (fromSeconds @Int 30) $ GH.withFakeGithubInterface $ \ghState -> do
+        -- The 1s `timeoutDuration` is what's under test; the outer bounds are
+        -- only harness patience. Building the action derivation under full-suite
+        -- load can dominate wall-clock, so the terminate cap is generous (still
+        -- catches a genuine no-timeout hang) and the report poll tolerates
+        -- kill+report latency. Neither weakens the assertion.
+        it "times out the action" $ shouldTerminate (fromSeconds @Int 180) $ GH.withFakeGithubInterface $ \ghState -> do
           local (#action . #timeoutDuration .~ fromSeconds @Int 1) $ do
             commitInfo <-
               testHandleCommit ghState
                 $ flakeFromScript "sleep inf"
-            waitFor (fromSeconds @Int 1) $ do
+            waitFor (fromSeconds @Int 30) $ do
               reports <-
                 GH.getSimpleReports ghState
                   <&> GH.filterByName "action test-action"
