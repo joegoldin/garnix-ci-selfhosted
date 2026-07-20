@@ -4,12 +4,26 @@ enableFetchMocks();
 import endent from "endent";
 import userEvent, { UserEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import { act, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  configure,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { AgeWasm } from "@/age-wasm-compiled";
 import { match, P } from "ts-pattern";
 import { AvailableModulesReply, ModuleSchema } from "@/services/modules";
 import { Entry } from "./page";
 import { _normalize } from "./moduleInputs/nixPath";
+
+// This suite (mocked fetch + age-wasm + many re-renders per interaction) runs
+// tens of seconds under full-suite worker contention on a loaded CI machine.
+// The library defaults — 1s findBy*/waitFor, 5s per test — flake there, so
+// give every wait in this file load-tolerant headroom.
+jest.setTimeout(120_000);
+configure({ asyncUtilTimeout: 15_000 });
 
 let searchParams = new URLSearchParams();
 jest.mock("next/navigation", () => ({
@@ -346,14 +360,7 @@ beforeEach(() => {
 });
 
 const selectTestRepo = async () => {
-  // The repo list loads via a mocked fetch + several re-renders; under
-  // full-suite worker contention the default 1s find timeout is too tight
-  // (this heavy age-wasm test can run tens of seconds), so allow longer.
-  const selectButton = await screen.findByText(
-    "Select",
-    {},
-    { timeout: 15000 },
-  );
+  const selectButton = await screen.findByText("Select");
   await user.click(selectButton);
 };
 
@@ -489,7 +496,8 @@ describe("modules config page", () => {
     await user.clear(portField);
     await user.type(portField, "8080");
     await simulateUserSave();
-    expect(savedConfig).toEqual(postgresModuleConfig);
+    // The PUT persisting the config is async; poll instead of asserting once.
+    await waitFor(() => expect(savedConfig).toEqual(postgresModuleConfig));
     expectNoErrors();
   });
 
@@ -500,7 +508,8 @@ describe("modules config page", () => {
     const portField = within(
       await findModuleField("PostgreSQL", "Port"),
     ).getByRole("spinbutton");
-    expect(portField).toHaveValue(8080);
+    // The field can render before the saved-config fetch populates it.
+    await waitFor(() => expect(portField).toHaveValue(8080));
     expectNoErrors();
   });
 
@@ -911,7 +920,7 @@ describe("modules config page", () => {
       await simulateUserSave();
       const expectedRequestBody: any = postgresAndRustConfig();
       delete expectedRequestBody["modules"];
-      expect(savedConfig).toEqual(expectedRequestBody);
+      await waitFor(() => expect(savedConfig).toEqual(expectedRequestBody));
     });
 
     it("allows unselecting a module", async () => {
@@ -1079,14 +1088,18 @@ describe("modules config page", () => {
       // encrypted state to render before submitting, or the form saves early.
       await screen.findByText(/Encrypted for/);
       await simulateUserSave();
-      expect(getSavedConfigTestModuleValue().password.value).toEqual({
-        encryptedFor: {
-          repoUser: "test-user",
-          repoName: "test-repo",
-        },
-        encryptedValue:
-          "<MOCK_ENCRYPTED_FOR <REPO_KEY_FOR test-user/test-repo> hunter2>",
-      });
+      // The PUT persisting the config is async (and may land after an
+      // intermediate write); poll until the saved config carries the secret.
+      await waitFor(() =>
+        expect(getSavedConfigTestModuleValue().password.value).toEqual({
+          encryptedFor: {
+            repoUser: "test-user",
+            repoName: "test-repo",
+          },
+          encryptedValue:
+            "<MOCK_ENCRYPTED_FOR <REPO_KEY_FOR test-user/test-repo> hunter2>",
+        }),
+      );
       expectNoErrors();
     });
   });
