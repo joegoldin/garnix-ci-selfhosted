@@ -52,6 +52,12 @@ instance ToJSON ManifestFile where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 
+-- | Parses the same @manifest.json@ shape 'ToJSON' produces: used to read a
+-- manifest back after fetching its bytes from storage (see
+-- @Garnix.API.Artifacts@'s inline @manifest.json@ route).
+instance FromJSON ManifestFile where
+  parseJSON = ourParseJSON
+
 -- | The @manifest.json@ uploaded next to an artifact's files and @all.zip@.
 data ArtifactManifest = ArtifactManifest
   { _artifactManifestFiles :: [ManifestFile],
@@ -64,6 +70,9 @@ data ArtifactManifest = ArtifactManifest
 instance ToJSON ArtifactManifest where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
+
+instance FromJSON ArtifactManifest where
+  parseJSON = ourParseJSON
 
 -- | Publish the artifacts a repo's garnix.yaml declares, from the finished
 -- builds of one commit. A no-op when no 'ArtifactStore' is configured. A

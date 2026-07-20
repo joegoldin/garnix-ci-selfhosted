@@ -225,7 +225,12 @@ data ArtifactStore = ArtifactStore
     -- | @presignGet bucket key@ returns a short-lived (10 minutes) GET URL.
     _artifactStorePresignGet :: ArtifactBucket -> Text -> M Text,
     -- | @publicUrl key@ is the stable URL of a public-bucket object.
-    _artifactStorePublicUrl :: Text -> Text
+    _artifactStorePublicUrl :: Text -> Text,
+    -- | @getBytes bucket key@ reads a (small) object's raw bytes. Used to
+    -- serve content inline instead of via redirect — e.g. the artifact
+    -- manifest, so the web UI's @fetch@ doesn't have to follow a
+    -- cross-origin redirect that CORS would block.
+    _artifactStoreGetBytes :: ArtifactBucket -> Text -> M BSL.ByteString
   }
   deriving (Generic)
 

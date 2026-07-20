@@ -302,9 +302,26 @@ const ArtifactRow = ({
 
   const toggleFiles = () => {
     setExpanded(!expanded);
-    // Fetch the manifest lazily, once, on first expansion.
+    // Fetch the manifest lazily, once, on first expansion. The request
+    // itself can still fail outright (offline, unexpected network error);
+    // without this `.catch` that leaves `manifest` stuck at `null` forever -
+    // an infinite spinner instead of an error message.
     if (manifest == null)
-      void getArtifactManifest(buildId, artifact.name).then(setManifest);
+      void getArtifactManifest(buildId, artifact.name)
+        .then(setManifest)
+        .catch((error: unknown) =>
+          setManifest(
+            Err({
+              path: `artifacts/build/${buildId}/${artifact.name}/manifest.json`,
+              reason: "server-error",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Failed to fetch the file list",
+              status: 0,
+            }),
+          ),
+        );
   };
 
   // Locking is build-level (it flips every artifact of the build).

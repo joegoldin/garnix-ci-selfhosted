@@ -5,6 +5,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Garnix.API.Artifacts
 import Garnix.AccessToken (generateToken)
+import Garnix.Artifacts (ArtifactManifest (..), ManifestFile (..))
 import Garnix.AccessToken.Types (AccessTokenScopes (..), getAccessTokenText)
 import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts qualified as Artifacts
@@ -61,6 +62,27 @@ spec = do
         Artifacts.upsertArtifact b "a" "h" ArtifactPublic "published"
         _artifactsAPIZipByBuild anonymous (b ^. id) "a"
           `shouldThrowM` RedirectFound "public://artifacts/h/all.zip"
+
+      it "manifest.json returns the manifest inline instead of redirecting" $ withManifestStore $ do
+        b <- testBuild identity
+        Artifacts.upsertArtifact b "a" "h" ArtifactPublic "published"
+        _artifactsAPIManifestJsonByBuild anonymous (b ^. id) "a" `shouldReturnM` testManifest
+
+      it "manifest.json applies the same private-bucket authorization as the redirecting route" $ withManifestStore $ do
+        b <- testBuild identity
+        Artifacts.upsertArtifact b "a" "h" ArtifactPrivate "published"
+        _artifactsAPIManifestJsonByBuild anonymous (b ^. id) "a"
+          `shouldThrowM` NoSuchBuild (b ^. id)
+        admin <- sessionAs "manifest-json-admin" Admin
+        _artifactsAPIManifestJsonByBuild admin (b ^. id) "a" `shouldReturnM` testManifest
+
+      it "manifest.json 404s missing and unpublished artifacts" $ withManifestStore $ do
+        b <- testBuild identity
+        Artifacts.upsertArtifact b "failed" "h" ArtifactPublic "failed"
+        _artifactsAPIManifestJsonByBuild anonymous (b ^. id) "nope"
+          `shouldThrowM` NoSuchBuild (b ^. id)
+        _artifactsAPIManifestJsonByBuild anonymous (b ^. id) "failed"
+          `shouldThrowM` NoSuchBuild (b ^. id)
 
       it "hides private-bucket artifacts from anonymous callers (404-shaped)" $ withStore $ do
         b <- testBuild identity
@@ -236,8 +258,30 @@ testArtifactStore =
       _artifactStorePutBytes = \_ _ _ -> notNeeded,
       _artifactStoreDeletePrefix = \_ _ -> notNeeded,
       _artifactStorePresignGet = \_ key -> pure $ "presigned://" <> key,
-      _artifactStorePublicUrl = ("public://" <>)
+      _artifactStorePublicUrl = ("public://" <>),
+      _artifactStoreGetBytes = \_ _ -> notNeeded
     }
   where
     notNeeded :: M a
     notNeeded = throw $ OtherError "testArtifactStore: not needed by the API spec"
+
+-- | A minimal manifest for the manifest.json tests below.
+testManifest :: ArtifactManifest
+testManifest =
+  ArtifactManifest
+    { _artifactManifestFiles = [ManifestFile "f.txt" 3 "deadbeef" False],
+      _artifactManifestTotalSize = 3,
+      _artifactManifestFileCount = 1,
+      _artifactManifestStoreHash = "h"
+    }
+
+-- | 'testArtifactStore' with '_artifactStoreGetBytes' faked to return
+-- 'testManifest', for tests of the inline manifest.json route.
+withManifestStore :: M a -> M a
+withManifestStore =
+  local
+    ( #artifactStore
+        ?~ testArtifactStore
+          { _artifactStoreGetBytes = \_ _ -> pure (Aeson.encode testManifest)
+          }
+    )

@@ -20,11 +20,13 @@ module Garnix.API.Artifacts
   )
 where
 
+import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Garnix.API.Admin (requireAdmin)
 import Garnix.Access (hasAccessToRepo)
 import Garnix.AccessToken (isAccessTokenValid)
 import Garnix.AccessToken.Types (AccessToken (..))
+import Garnix.Artifacts (ArtifactManifest)
 import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts
 import Garnix.Monad
@@ -80,6 +82,17 @@ data ArtifactsAPI route = ArtifactsAPI
           :> Capture "name" Text
           :> "manifest"
           :> Get302,
+    -- | Same manifest as '_artifactsAPIManifestByBuild', returned inline
+    -- (200, JSON body) instead of a 302 to storage. The redirect target is
+    -- cross-origin with no CORS headers, which a browser's @fetch@ can't
+    -- follow; this route exists for the file-browser UI to call directly.
+    _artifactsAPIManifestJsonByBuild ::
+      route
+        :- "build"
+          :> Capture "buildId" BuildId
+          :> Capture "name" Text
+          :> "manifest.json"
+          :> Get '[JSON] ArtifactManifest,
     _artifactsAPIFileByBuild ::
       route
         :- "build"
@@ -211,6 +224,13 @@ artifactsAPI auth authHeader =
         serveByBuild buildId name (pure . artifactZipKey),
       _artifactsAPIManifestByBuild = \buildId name ->
         serveByBuild buildId name (pure . artifactManifestKey),
+      _artifactsAPIManifestJsonByBuild = \buildId name -> do
+        (store, row) <- resolvePublishedBuildArtifact buildId name
+        authorizeArtifact auth authHeader row
+        let key = artifactManifestKey (_artifactRowStoreHash row)
+        bytes <- _artifactStoreGetBytes store (_artifactRowBucket row) key
+        either (throw . OtherError . ("corrupt artifact manifest: " <>) . cs) pure
+          $ Aeson.eitherDecode' bytes,
       _artifactsAPIFileByBuild = \buildId name path ->
         serveByBuild buildId name (`artifactFileKey` path),
       _artifactsAPIZipLatest = \owner repo branch' name ->
@@ -228,13 +248,21 @@ artifactsAPI auth authHeader =
         pure NoContent
     }
   where
-    serveByBuild :: BuildId -> Text -> (Text -> M Text) -> M NoContent
-    serveByBuild buildId name keyFor = do
+    -- | Look up a build's named artifact, requiring the artifact store to be
+    -- configured and the row to be @published@ (404-shaped otherwise, same as
+    -- a missing row — avoids existence leaks for failed publications).
+    resolvePublishedBuildArtifact :: BuildId -> Text -> M (ArtifactStore, ArtifactRow)
+    resolvePublishedBuildArtifact buildId name = do
       store <- requireArtifactStore
       mRow <- getArtifactByBuildAndName buildId name
       row <- case mRow of
         Just row | _artifactRowStatus row == "published" -> pure row
         _ -> throw $ NoSuchBuild buildId
+      pure (store, row)
+
+    serveByBuild :: BuildId -> Text -> (Text -> M Text) -> M NoContent
+    serveByBuild buildId name keyFor = do
+      (store, row) <- resolvePublishedBuildArtifact buildId name
       serveRow store row keyFor
 
     serveLatest :: GhRepoOwner -> GhRepoName -> Branch -> Text -> (Text -> M Text) -> M NoContent

@@ -282,7 +282,10 @@ withFakeStore action = do
               modifyIORef' bytesRef (Map.insert key bytes),
             _artifactStoreDeletePrefix = \_ _ -> pure (),
             _artifactStorePresignGet = \_ key -> pure key,
-            _artifactStorePublicUrl = identity
+            _artifactStorePublicUrl = identity,
+            _artifactStoreGetBytes = \_ key ->
+              liftIO (readIORef bytesRef)
+                >>= maybe (throw $ OtherError $ "getBytes: no such object " <> key) pure . Map.lookup key
           }
   local (#artifactStore ?~ store) $ action store uploadsRef bytesRef
 

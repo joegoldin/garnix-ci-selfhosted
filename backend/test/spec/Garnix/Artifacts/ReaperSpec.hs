@@ -115,7 +115,8 @@ spec = do
                 _artifactStoreDeletePrefix = \bucket prefix ->
                   liftIO $ modifyIORef' deletedPrefixes ((bucket, prefix) :),
                 _artifactStorePresignGet = \_ _ -> error "presignGet: unused in test",
-                _artifactStorePublicUrl = \_ -> error "publicUrl: unused in test"
+                _artifactStorePublicUrl = \_ -> error "publicUrl: unused in test",
+                _artifactStoreGetBytes = \_ _ -> error "getBytes: unused in test"
               }
       local (#artifactStore ?~ store) Reaper.reapOnce
       -- only the orphan's prefix is deleted from storage...

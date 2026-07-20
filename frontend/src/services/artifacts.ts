@@ -83,8 +83,10 @@ export const getArtifactCommitCounts = async (
     `artifacts/repo/${owner}/${repo}/commit-counts`,
   );
 
-// The manifest endpoint 302s to storage; fetch follows the redirect and
-// returns the manifest JSON from the bucket.
+// `.../manifest` 302s to storage, which a cross-origin `fetch` can't follow
+// (no CORS headers on the bucket response) - it would just reject. Use the
+// `.../manifest.json` route instead: the backend reads the manifest from
+// storage itself and returns it inline as a normal 200 JSON response.
 export const getArtifactManifest = async (
   buildId: string,
   name: string,
@@ -92,7 +94,7 @@ export const getArtifactManifest = async (
   await fetchFromAPI(
     manifestSchema,
     "GET",
-    `artifacts/build/${buildId}/${encodeURIComponent(name)}/manifest`,
+    `artifacts/build/${buildId}/${encodeURIComponent(name)}/manifest.json`,
   );
 
 // Lock/unlock return NoContent (empty body); accept anything.
