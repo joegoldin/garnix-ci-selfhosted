@@ -2,10 +2,14 @@ module Garnix.API.Hosts
   ( getHostsForTraefik,
     postHostsHeartbeat,
     postHostsStats,
+    postHostsStatsGuarded,
+    statsSourceAllowed,
     hostsAPI,
     HostsAPI,
     getHosts,
     HostList (..),
+    -- exported for tests (SpecHook clears it between specs)
+    __onDemandDomainsCache,
   )
 where
 
@@ -14,9 +18,11 @@ import Data.Aeson.Lens (key, values, _Integer, _String)
 import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text qualified as T
 import Garnix.DB qualified as DB
+import Garnix.Duration
+import Garnix.ExpiringCache
 import Garnix.GithubInterface.Types
 import Garnix.Hosting.Deploy (stopServer)
 import Garnix.Hosting.Helpers
@@ -25,7 +31,10 @@ import Garnix.Monad.Concurrency (forkM)
 import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
 import Garnix.Types
+import Network.Socket (SockAddr (..), hostAddress6ToTuple, hostAddressToTuple)
+import Servant.API.RemoteHost (RemoteHost)
 import Servant.Auth.Server
+import System.IO.Unsafe qualified
 
 data HostsAPI route = HostsAPI
   { _hostsAPIGetHostsForTraefik :: route :- "traefik" :> Get '[JSON] HostList,
@@ -36,7 +45,7 @@ data HostsAPI route = HostsAPI
     -- gate must expose /api/hosts/stats ungated (like /api/keys/*) so the
     -- guest can reach it over the public API domain — see the provisioner's
     -- statsReportUrl option.
-    _hostsAPIPostStats :: route :- "stats" :> ReqBody '[JSON] HostStatsReport :> Post '[JSON] NoContent,
+    _hostsAPIPostStats :: route :- "stats" :> RemoteHost :> Header "X-Forwarded-For" Text :> ReqBody '[JSON] HostStatsReport :> Post '[JSON] NoContent,
     _hostsAPIGetIPsForDns :: route :- "dns" :> Get '[JSON] DnsHosts,
     _hostsAPIGetDomainsForOnDemandResolver :: route :- "on-demand-resolver" :> Get '[JSON] OnDemandResolverDomainNames,
     -- | Caddy on_demand_tls "ask" contract: 200 iff the queried domain is a
@@ -60,7 +69,7 @@ hostsAPI =
   HostsAPI
     { _hostsAPIGetHostsForTraefik = getHostsForTraefik,
       _hostsAPIHeartbeat = postHostsHeartbeat,
-      _hostsAPIPostStats = postHostsStats,
+      _hostsAPIPostStats = postHostsStatsGuarded,
       _hostsAPIGetIPsForDns = getHostsForDns,
       _hostsAPIGetDomainsForOnDemandResolver = getDomainsForOnDemandResolver,
       _hostsAPIOnDemandCheck = onDemandCheck,
@@ -195,6 +204,54 @@ postHostsStats report = do
   matched <- DB.upsertServerStats report
   unless matched $ throw NotFound
   pure NoContent
+
+-- | Source gate for guest stats pushes, active in self-host mode only. The
+-- backend listens on 127.0.0.1 behind Caddy, so the TCP peer of a proxied
+-- request is always loopback; the guest's real address is what Caddy saw,
+-- delivered in X-Forwarded-For (Caddy replaces any client-supplied value with
+-- the actual peer address, and only Caddy can reach the loopback listener).
+-- Accept a sample iff the effective client is in the guest bridge subnet:
+-- either the peer itself (a direct bridge listener), or a loopback peer whose
+-- X-Forwarded-For client is.
+postHostsStatsGuarded :: SockAddr -> Maybe Text -> HostStatsReport -> M NoContent
+postHostsStatsGuarded peer mForwardedFor report = do
+  selfHost <- view #selfHostMode
+  when selfHost $ do
+    prefix <- view #guestSubnetPrefix
+    unless (statsSourceAllowed prefix peer mForwardedFor)
+      $ throw
+      $ ForbiddenWithMessage "stats: source address not in the guest subnet"
+  postHostsStats report
+
+-- | Pure decision for 'postHostsStatsGuarded'; exported for tests. The
+-- forwarded client is the LAST X-Forwarded-For entry — the one appended by
+-- the proxy we trust (Caddy strips untrusted inbound values entirely, so in
+-- practice it is the only entry).
+statsSourceAllowed :: Text -> SockAddr -> Maybe Text -> Bool
+statsSourceAllowed guestPrefix peer mForwardedFor =
+  inGuestSubnet peerIp || (isLoopback peerIp && inGuestSubnet forwardedClientIp)
+  where
+    peerIp = sockAddrIPv4 peer
+    forwardedClientIp = do
+      xff <- mForwardedFor
+      listToMaybe (reverse (map T.strip (T.splitOn "," xff)))
+    inGuestSubnet = maybe False (guestPrefix `T.isPrefixOf`)
+    isLoopback = maybe False ("127." `T.isPrefixOf`)
+
+-- | Render an IPv4 (or IPv4-mapped IPv6) socket address as dotted decimal.
+sockAddrIPv4 :: SockAddr -> Maybe Text
+sockAddrIPv4 = \case
+  SockAddrInet _ addr ->
+    let (a, b, c, d) = hostAddressToTuple addr
+     in Just $ T.intercalate "." (map (cs . show) [a, b, c, d])
+  SockAddrInet6 _ _ addr _ ->
+    case hostAddress6ToTuple addr of
+      (0, 0, 0, 0, 0, 0xffff, hi, lo) ->
+        Just
+          $ T.intercalate "."
+          $ map (cs . show) [hi `div` 256, hi `mod` 256, lo `div` 256, lo `mod` 256]
+      _ -> Nothing
+  _ -> Nothing
 
 -- | Current sample + the rolling window of samples for one server, keyed by
 -- ServerId. 'current' is the most recent sample; 'samples' is oldest-first.
@@ -332,9 +389,26 @@ getDomainsForOnDemandResolver = do
             runningHosts
       }
 
+-- | Process-local memo of the routable-domain set for the Caddy on_demand_tls
+-- "ask" endpoint. Every unknown-SNI TLS handshake hits 'onDemandCheck', so an
+-- SNI flood would otherwise amplify into three DB queries per handshake; the
+-- 10s TTL mirrors the on-demand-resolver sidecar's FETCH_INTERVAL
+-- (hosting-gateway/on-demand-resolver/src/lib.ts). Module-level
+-- (unsafePerformIO + NOINLINE) is the codebase's established cache pattern —
+-- see Garnix.API.Cache.Permissions.__getRepoPermissionsCache. Unnamed so a
+-- flood doesn't also amplify into per-request cache log lines.
+type OnDemandDomainsCache = ExpiringCache () OnDemandResolverDomainNames
+
+{-# NOINLINE __onDemandDomainsCache #-}
+__onDemandDomainsCache :: OnDemandDomainsCache
+__onDemandDomainsCache =
+  System.IO.Unsafe.unsafePerformIO
+    $ mkCache Nothing (fromSeconds @Int 10) (fromSeconds @Int 2)
+
 onDemandCheck :: Maybe Text -> M NoContent
 onDemandCheck mDomain = do
-  OnDemandResolverDomainNames names <- getDomainsForOnDemandResolver
+  OnDemandResolverDomainNames names <-
+    lookupCache __onDemandDomainsCache () getDomainsForOnDemandResolver
   case mDomain of
     Just d | d `elem` names -> pure NoContent
     _ -> throw NotFound

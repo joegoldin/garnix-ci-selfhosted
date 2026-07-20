@@ -11,6 +11,7 @@ import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.API.Hosts
 import Garnix.DB qualified as DB
 import Garnix.Duration
+import Garnix.ExpiringCache (clearCache)
 import Garnix.GithubInterface.Types
 import Garnix.Monad
 import Garnix.Prelude
@@ -19,12 +20,33 @@ import Garnix.TestHelpers.GithubInterface qualified as GH
 import Garnix.TestHelpers.Monad
 import Garnix.TestHelpers.WithServer
 import Garnix.Types
+import Network.Socket (SockAddr (..), tupleToHostAddress)
 import Network.Wreq.Lens
 import Test.Hspec hiding (shouldReturn)
 import Test.Hspec.Golden (defaultGolden)
 
 spec :: Spec
 spec = do
+  describe "statsSourceAllowed" $ do
+    let guestPeer = SockAddrInet 5555 (tupleToHostAddress (10, 111, 0, 82))
+        loopback = SockAddrInet 5555 (tupleToHostAddress (127, 0, 0, 1))
+        outside = SockAddrInet 5555 (tupleToHostAddress (203, 0, 113, 7))
+    it "accepts a direct bridge peer"
+      $ statsSourceAllowed "10.111.0." guestPeer Nothing
+      `shouldBe` True
+    it "accepts a proxied guest via X-Forwarded-For"
+      $ statsSourceAllowed "10.111.0." loopback (Just "10.111.0.82")
+      `shouldBe` True
+    it "uses the last (proxy-appended) forwarded entry"
+      $ statsSourceAllowed "10.111.0." loopback (Just "10.111.0.9, 203.0.113.7")
+      `shouldBe` False
+    it "rejects a loopback peer without a forwarded client"
+      $ statsSourceAllowed "10.111.0." loopback Nothing
+      `shouldBe` False
+    it "rejects an outside peer with a forged header"
+      $ statsSourceAllowed "10.111.0." outside (Just "10.111.0.82")
+      `shouldBe` False
+
   inM $ beforeM_ truncateDBM $ aroundM_ suppressLogsWhenPassing $ do
     describe "/api/hosts" $ do
       it "responds with 401 when logged out" $ withServer $ \testServer -> do
@@ -456,6 +478,26 @@ spec = do
                 "repo.owner.garnix.me"
               ]
 
+    describe "/api/hosts/on-demand-check" $ do
+      it "200s for a routable domain and 404s otherwise" $ do
+        user <- testUser
+        void
+          $ createServer
+            (GhRepoOwner $ GhLogin "owner")
+            (GhRepoName "repo")
+            (Branch "branch")
+            Nothing
+            (PackageName "foo")
+            Nothing
+            user
+            identity
+        clearCache __onDemandDomainsCache
+        withServer $ \testServer -> do
+          ok <- testServer.get "/api/hosts/on-demand-check?domain=foo.branch.repo.owner.garnix.me"
+          ok `shouldHaveStatusCode` 200
+          bad <- testServer.get "/api/hosts/on-demand-check?domain=nope.example.com"
+          bad `shouldHaveStatusCode` 404
+
     beforeM_ truncateDBM $ describe "delete host" $ do
       it "responds with 401 when logged out" $ withServer $ \testServer -> do
         result <- testServer.delete "/api/hosts/vBV73Z9e"
@@ -512,7 +554,7 @@ spec = do
 
       it "drops samples for an unknown provisioner id" $ withServer $ \testServer -> do
         _user <- testServer.login
-        void $ postHostsStats (HostStatsReport (ProvisionedServerId 999) 5.0 10 20)
+        postHostsStats (HostStatsReport (ProvisionedServerId 999) 5.0 10 20) `shouldThrowM` NotFound
         latest <- DB.getLatestServerStats
         liftIO $ latest `shouldBe` []
 

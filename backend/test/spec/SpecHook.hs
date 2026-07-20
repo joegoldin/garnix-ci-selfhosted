@@ -4,6 +4,7 @@ import Cradle
 import GHC.Conc (getNumProcessors, setNumCapabilities)
 import Garnix.API.Cache.Auth qualified
 import Garnix.API.Cache.Permissions qualified
+import Garnix.API.Hosts qualified
 import Garnix.ExpiringCache (clearCache)
 import Garnix.Prelude
 import Test.Hspec
@@ -14,6 +15,7 @@ hook spec =
     $ before_
       ( clearCache Garnix.API.Cache.Permissions.__getRepoPermissionsCache
           >> clearCache Garnix.API.Cache.Auth.__accessTokenValidCache
+          >> clearCache Garnix.API.Hosts.__onDemandDomainsCache
       )
     $ do
       runIO (getNumProcessors >>= setNumCapabilities)
