@@ -68,6 +68,10 @@ const LogViewer = (props: {
         // whole stream is finished, every group has too.
         const isLive =
           props.logStream.loading && logGroupName === lastLogGroupName;
+        // FOD checks (and similar) annotate a skipped phase in the group name,
+        // e.g. "<drv> (skipped: source unavailable)". Label those "skipped"
+        // rather than "finished" (same gray finished styling).
+        const isSkipped = !isLive && logGroupName.includes("(skipped");
         return (
           <div
             key={logGroupName}
@@ -82,6 +86,10 @@ const LogViewer = (props: {
                 {isLive ? (
                   <span className={styles.phaseLive} title="Still streaming">
                     <span className={styles.phaseLiveDot} /> live
+                  </span>
+                ) : isSkipped ? (
+                  <span className={styles.phaseFinished} title="Skipped">
+                    ✓ skipped
                   </span>
                 ) : (
                   <span className={styles.phaseFinished} title="Finished">

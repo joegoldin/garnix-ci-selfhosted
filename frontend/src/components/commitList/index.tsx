@@ -44,27 +44,50 @@ export const CommitList = (props: {
     null,
   );
 
-  // Per-commit published-artifact counts for the row badges, repo pages
-  // only (there's no cross-repo counts endpoint for the reqUser dashboard).
-  // Tolerates a 404 (no artifact store configured) by simply showing no
-  // badges.
+  const loadingCommits = useLoading(getCommitsFn, { poll: fromSecs(5) });
+
+  // Distinct repos among the loaded commits (for a repo page it's just that
+  // repo; for the reqUser dashboard, every repo the commits span). Empty until
+  // commits load. `reposKey` stabilizes it so the counts fetch below only
+  // re-runs when the SET of repos changes, not on every poll.
+  const repos: Array<{ owner: string; repo: string }> = React.useMemo(() => {
+    if (props.for !== "reqUser") return [props.for];
+    if (loadingCommits.loading || !loadingCommits.data.ok) return [];
+    const seen = new Set<string>();
+    const out: Array<{ owner: string; repo: string }> = [];
+    for (const c of loadingCommits.data.data) {
+      const key = `${c.repoUser}/${c.repoName}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ owner: c.repoUser, repo: c.repoName });
+      }
+    }
+    return out;
+  }, [props.for, loadingCommits]);
+  const reposKey = repos.map((r) => `${r.owner}/${r.repo}`).join(",");
+
+  // Per-(repo, commit) published-artifact counts for the row badges. The counts
+  // endpoint is per-repo, so fetch it for each distinct repo shown and key by
+  // `owner/repo/commit` (works for both a single repo page and the cross-repo
+  // dashboard). Tolerates a 404 (no artifact store configured) -> no badges.
   const loadArtifactCounts = React.useCallback(
     () =>
-      props.for === "reqUser"
-        ? Promise.resolve({} as Record<string, number>)
-        : getArtifactCommitCounts(props.for.owner, props.for.repo).then(
-            (result) =>
-              result.ok
-                ? Object.fromEntries(
-                    result.data.map((c) => [c.commit, c.count]),
-                  )
-                : {},
+      Promise.all(
+        repos.map((r) =>
+          getArtifactCommitCounts(r.owner, r.repo).then((result) =>
+            result.ok
+              ? result.data.map(
+                  (c) => [`${r.owner}/${r.repo}/${c.commit}`, c.count] as const,
+                )
+              : [],
           ),
-    [props.for],
+        ),
+      ).then((entries) => Object.fromEntries(entries.flat())),
+    // `reposKey` stabilizes `repos`; refetch only when the repo set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [reposKey],
   );
   const artifactCounts = useLoading(loadArtifactCounts);
-
-  const loadingCommits = useLoading(getCommitsFn, { poll: fromSecs(5) });
   if (loadingCommits.loading) return null;
   if (!loadingCommits.data.ok) {
     return (
@@ -75,7 +98,7 @@ export const CommitList = (props: {
   const shown = statusFilter
     ? commits.filter((c) => commitStatus(c) === statusFilter)
     : commits;
-  const artifactCountByCommit = artifactCounts.loading
+  const artifactCountByKey = artifactCounts.loading
     ? {}
     : artifactCounts.data;
   return commits.length > 0 ? (
@@ -105,7 +128,11 @@ export const CommitList = (props: {
             className={styles.build}
             key={commit.gitCommit}
             commit={commit}
-            artifactCount={artifactCountByCommit[commit.gitCommit]}
+            artifactCount={
+              artifactCountByKey[
+                `${commit.repoUser}/${commit.repoName}/${commit.gitCommit}`
+              ]
+            }
             link
           />
         ))}
