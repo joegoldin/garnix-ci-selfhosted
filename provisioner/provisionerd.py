@@ -40,10 +40,17 @@ NIXPKGS_FLAKE = os.environ["PROVISIONER_NIXPKGS"]
 MICROVM_FLAKE = os.environ["PROVISIONER_MICROVM"]
 GUEST_PROFILE = os.environ["PROVISIONER_GUEST_PROFILE"]
 SSH_PUBKEY_FILE = os.environ["PROVISIONER_SSH_PUBKEY_FILE"]
+# Dedicated web-terminal CA public key (finding H3). Guests trust THIS as their
+# TrustedUserCAKeys, not the hosting key. Optional: if unset/absent/empty we
+# fall back to the hosting pubkey in write_spec, so guests stay evaluable and
+# keep trusting the hosting key as CA (pre-H3 behaviour / ExecStartPre fallback).
+TERMINAL_CA_PUBKEY_FILE = os.environ.get("PROVISIONER_TERMINAL_CA_PUBKEY_FILE", "")
 # Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats). Empty
 # by default; when set, guests push their CPU/RAM there every ~20s. Injected
 # into each guest's config so the reporter knows where to POST.
 STATS_URL = os.environ.get("PROVISIONER_STATS_URL", "")
+# Optional fixed QEMU CPU model for guests (microvm.cpu). Empty = -cpu host.
+GUEST_CPU = os.environ.get("PROVISIONER_GUEST_CPU", "")
 
 DNSMASQ_HOSTS = os.path.join(STATE_DIR, "dnsmasq-hosts")
 SPECS_DIR = os.path.join(STATE_DIR, "specs")
@@ -58,6 +65,8 @@ SSH_PORT_BASE = int(os.environ.get("PROVISIONER_SSH_PORT_BASE", "22000"))
 TCP_PORT_BASE = int(os.environ.get("PROVISIONER_TCP_PORT_BASE", "32000"))
 # Each VM gets a contiguous block of this many host ports for tcp exposure.
 TCP_PORTS_PER_VM = 20
+# Inclusive top of the host DNAT port range (exposePortRange.to on the host).
+PORT_RANGE_END = int(os.environ.get("PROVISIONER_PORT_RANGE_END", "41999"))
 
 SSH_WAIT_SECONDS = 120
 
@@ -100,6 +109,18 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
     """Write the per-VM flake (flake.nix + guest.nix) and return the spec dir."""
     with open(SSH_PUBKEY_FILE) as f:
         pubkey = f.read().strip()
+    # Web-terminal CA pubkey (H3). Fall back to the hosting pubkey if the
+    # dedicated CA pubkey file is unset/absent/empty, so guests stay evaluable
+    # and keep trusting the hosting key as CA until the pool is recycled.
+    terminal_ca_pubkey = pubkey
+    if TERMINAL_CA_PUBKEY_FILE:
+        try:
+            with open(TERMINAL_CA_PUBKEY_FILE) as f:
+                _tca = f.read().strip()
+            if _tca:
+                terminal_ca_pubkey = _tca
+        except FileNotFoundError:
+            pass
     spec_dir = os.path.join(SPECS_DIR, name)
     os.makedirs(spec_dir, exist_ok=True)
     # Copy the shared guest profile into the flake tree and import it
@@ -125,16 +146,23 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
 """
         )
     with open(os.path.join(spec_dir, "guest.nix"), "w") as f:
+        # `type = "tap"` (not "bridge"): the bridge-helper netdev creates an
+        # anonymous kernel-named tap the host can't target. A named tap
+        # (gx<id>, created by microvm-tap-interfaces@) lets the host enslave
+        # it to the bridge as an ISOLATED port (see nixos-module.nix), which
+        # blocks guest<->guest at L2 regardless of bridge-nf-call-* sysctls.
+        cpu_line = f"  microvm.cpu = {nix_str(GUEST_CPU)};\n" if GUEST_CPU else ""
         f.write(
             f"""{{
   imports = [ ./guest-profile.nix ];
   networking.hostName = {nix_str(name)};
   microvm.vcpu = {vcpu};
   microvm.mem = {mem};
-  microvm.interfaces = [
-    {{ type = "bridge"; id = {nix_str(f"gx{vm_id}")}; mac = {nix_str(vm_mac(vm_id))}; bridge = {nix_str(BRIDGE)}; }}
+{cpu_line}  microvm.interfaces = [
+    {{ type = "tap"; id = {nix_str(f"gx{vm_id}")}; mac = {nix_str(vm_mac(vm_id))}; }}
   ];
   garnix.guest.sshPublicKey = {nix_str(pubkey)};
+  garnix.guest.terminalCaPublicKey = {nix_str(terminal_ca_pubkey)};
   garnix.guest.statsReportUrl = {nix_str(STATS_URL)};
   garnix.guest.provisionerId = {vm_id};
 }}
@@ -210,6 +238,82 @@ def add_dnat(host_port: int, guest_ip: str, guest_port: int):
 def del_dnat(host_port: int, guest_ip: str, guest_port: int):
     for table, chain, rest in _dnat_specs(host_port, guest_ip, guest_port):
         _iptables("-D", table, chain, rest)
+
+
+def _list_rules(table, chain: str) -> list:
+    """Parse `iptables [-t table] -S <chain>` into arg-lists (['-A', chain, ...])."""
+    cmd = ["iptables"]
+    if table:
+        cmd += ["-t", table]
+    cmd += ["-S", chain]
+    res = run(cmd, check=False)
+    rules = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split()
+        if parts[:2] == ["-A", chain]:
+            rules.append(parts)
+    return rules
+
+
+def flush_host_port_rules(host_port: int):
+    """Delete EVERY uplink PREROUTING rule for this host port, whatever guest
+    it pointed at — stale DNATs from crashed daemons or prior tenants must
+    never linger behind a fresh expose."""
+    for parts in _list_rules("nat", "PREROUTING"):
+        if (
+            "--dport" in parts
+            and parts[parts.index("--dport") + 1] == str(host_port)
+            and "-i" in parts
+            and parts[parts.index("-i") + 1] == UPLINK
+        ):
+            run(["iptables", "-t", "nat", "-D"] + parts[1:], check=False)
+
+
+def flush_forward_accepts(guest_ip: str):
+    """Delete every FORWARD ACCEPT aimed at this guest IP (stale entries from
+    an earlier VM that held the same deterministic IP)."""
+    for parts in _list_rules(None, "FORWARD"):
+        if (
+            "-d" in parts
+            and parts[parts.index("-d") + 1] == f"{guest_ip}/32"
+            and parts[-1] == "ACCEPT"
+        ):
+            run(["iptables", "-D"] + parts[1:], check=False)
+
+
+def allocated_host_ports(exclude: str = "") -> set:
+    """Union of host ports recorded for live guests (the EXPOSED_DIR state
+    files double as the on-disk port registry; destroy deletes a guest's file
+    and thereby frees its ports)."""
+    used = set()
+    try:
+        entries = os.listdir(EXPOSED_DIR)
+    except FileNotFoundError:
+        return used
+    for fn in entries:
+        if not fn.endswith(".json") or fn == f"{exclude}.json":
+            continue
+        try:
+            with open(os.path.join(EXPOSED_DIR, fn)) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for rule in state.get("rules", []):
+            used.add(int(rule["host"]))
+    return used
+
+
+def alloc_host_port(used: set, lo: int, hi: int, preferred=None) -> int:
+    """Lowest free port in [lo, hi], preferring this VM's previous port so
+    re-exposing stays stable. Marks the result used."""
+    if preferred is not None and lo <= preferred <= hi and preferred not in used:
+        used.add(preferred)
+        return preferred
+    for port in range(lo, hi + 1):
+        if port not in used:
+            used.add(port)
+            return port
+    raise RuntimeError(f"no free host port in {lo}-{hi}")
 
 
 def _exposure_path(name: str) -> str:
@@ -303,8 +407,9 @@ def do_status(req: dict) -> dict:
 
 def do_expose(req: dict) -> dict:
     """Publish a guest's SSH and/or tcp ports on the host via DNAT. Host ports
-    are deterministic per VM so re-exposing is stable. Rules are recorded so
-    cleanup_vm can remove them on destroy. Response:
+    come from a free-list over the exposure registry (EXPOSED_DIR), preferring
+    the VM's previous ports so re-exposing is stable; any stale rule on a
+    chosen host port is flushed before the fresh DNAT is added. Response:
       {"ssh_port": Int|null, "tcp_ports": [{"guest": Int, "host": Int}, ...]}."""
     vm_id = int(req["id"])
     name = vm_name(vm_id)
@@ -312,17 +417,35 @@ def do_expose(req: dict) -> dict:
     ssh_expose = bool(req.get("ssh_expose", False))
     tcp_ports = [int(p) for p in req.get("tcp_ports", [])]
     with mutate_lock:
-        # Re-exposing replaces prior rules (idempotent).
+        # Remember this VM's previous allocation before wiping it.
+        preferred = {}
+        prev_ssh = None
+        try:
+            with open(_exposure_path(name)) as f:
+                prev = json.load(f)
+            for rule in prev.get("rules", []):
+                if int(rule["guest"]) == 22:
+                    prev_ssh = int(rule["host"])
+                else:
+                    preferred[int(rule["guest"])] = int(rule["host"])
+        except (FileNotFoundError, ValueError):
+            pass
+        # Re-exposing replaces prior rules (idempotent), including any strays
+        # aimed at this guest IP from an earlier tenant of the same id slot.
         remove_exposure(name)
+        flush_forward_accepts(ip)
+        used = allocated_host_ports(exclude=name)
         rules = []
         ssh_port = None
         if ssh_expose:
-            ssh_port = SSH_PORT_BASE + vm_id % 1000
+            ssh_port = alloc_host_port(used, SSH_PORT_BASE, TCP_PORT_BASE - 1, preferred=prev_ssh)
+            flush_host_port_rules(ssh_port)
             add_dnat(ssh_port, ip, 22)
             rules.append({"host": ssh_port, "guest": 22})
         tcp_result = []
-        for i, guest in enumerate(tcp_ports[:TCP_PORTS_PER_VM]):
-            host_port = TCP_PORT_BASE + (vm_id % 500) * TCP_PORTS_PER_VM + i
+        for guest in tcp_ports[:TCP_PORTS_PER_VM]:
+            host_port = alloc_host_port(used, TCP_PORT_BASE, PORT_RANGE_END, preferred=preferred.get(guest))
+            flush_host_port_rules(host_port)
             add_dnat(host_port, ip, guest)
             rules.append({"host": host_port, "guest": guest})
             tcp_result.append({"guest": guest, "host": host_port})
