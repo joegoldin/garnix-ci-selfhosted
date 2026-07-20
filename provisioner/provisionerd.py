@@ -25,6 +25,7 @@ import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -281,26 +282,86 @@ def flush_forward_accepts(guest_ip: str):
             run(["iptables", "-D"] + parts[1:], check=False)
 
 
-def allocated_host_ports(exclude: str = "") -> set:
-    """Union of host ports recorded for live guests (the EXPOSED_DIR state
-    files double as the on-disk port registry; destroy deletes a guest's file
-    and thereby frees its ports)."""
-    used = set()
+def _exposure_path(name: str) -> str:
+    return os.path.join(EXPOSED_DIR, f"{name}.json")
+
+
+def _is_port(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+
+
+def _exposure_rule_kind(host: int, guest: int, path: str) -> str:
+    if SSH_PORT_BASE <= host < TCP_PORT_BASE:
+        if guest != 22:
+            raise RuntimeError(f"invalid SSH-range rule in {path}: guest port must be 22")
+        return "ssh"
+    if TCP_PORT_BASE <= host <= PORT_RANGE_END:
+        return "tcp"
+    raise RuntimeError(f"host port {host} in {path} is outside the configured exposure ranges")
+
+
+def read_exposure(name: str):
+    path = _exposure_path(name)
     try:
-        entries = os.listdir(EXPOSED_DIR)
+        with open(path) as f:
+            state = json.load(f)
     except FileNotFoundError:
-        return used
-    for fn in entries:
-        if not fn.endswith(".json") or fn == f"{exclude}.json":
+        return None
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"cannot read exposure registry {path}: {error}") from error
+    if not isinstance(state, dict) or not isinstance(state.get("ip"), str):
+        raise RuntimeError(f"invalid exposure registry {path}: expected object with string ip")
+    raw_rules = state.get("rules")
+    if not isinstance(raw_rules, list):
+        raise RuntimeError(f"invalid exposure registry {path}: rules must be a list")
+    rules = []
+    seen_hosts = set()
+    seen_tcp_guests = set()
+    seen_ssh = False
+    for raw in raw_rules:
+        if not isinstance(raw, dict) or not _is_port(raw.get("host")) or not _is_port(raw.get("guest")):
+            raise RuntimeError(f"invalid exposure rule in {path}: host and guest must be integer ports")
+        host = raw["host"]
+        guest = raw["guest"]
+        if host in seen_hosts:
+            raise RuntimeError(f"duplicate host port {host} in {path}")
+        kind = _exposure_rule_kind(host, guest, path)
+        if kind == "ssh":
+            if seen_ssh:
+                raise RuntimeError(f"duplicate SSH exposure in {path}")
+            seen_ssh = True
+        elif guest in seen_tcp_guests:
+            raise RuntimeError(f"duplicate TCP guest port {guest} in {path}")
+        else:
+            seen_tcp_guests.add(guest)
+        seen_hosts.add(host)
+        rules.append({"host": host, "guest": guest})
+    return {"ip": state["ip"], "rules": rules}
+
+
+def allocated_host_ports(exclude: str = "") -> set:
+    owners = {}
+    try:
+        entries = sorted(os.listdir(EXPOSED_DIR))
+    except FileNotFoundError:
+        return set()
+    except OSError as error:
+        raise RuntimeError(f"cannot list exposure registry {EXPOSED_DIR}: {error}") from error
+    for filename in entries:
+        if not filename.endswith(".json") or filename == f"{exclude}.json":
             continue
-        try:
-            with open(os.path.join(EXPOSED_DIR, fn)) as f:
-                state = json.load(f)
-        except (OSError, ValueError):
+        name = filename.removesuffix(".json")
+        state = read_exposure(name)
+        if state is None:
             continue
-        for rule in state.get("rules", []):
-            used.add(int(rule["host"]))
-    return used
+        for rule in state["rules"]:
+            host = rule["host"]
+            if host in owners:
+                raise RuntimeError(
+                    f"host port {host} is claimed by both {owners[host]} and {filename}"
+                )
+            owners[host] = filename
+    return set(owners)
 
 
 def alloc_host_port(used: set, lo: int, hi: int, preferred=None) -> int:
@@ -314,10 +375,6 @@ def alloc_host_port(used: set, lo: int, hi: int, preferred=None) -> int:
             used.add(port)
             return port
     raise RuntimeError(f"no free host port in {lo}-{hi}")
-
-
-def _exposure_path(name: str) -> str:
-    return os.path.join(EXPOSED_DIR, f"{name}.json")
 
 
 def remove_exposure(name: str):
@@ -338,8 +395,21 @@ def remove_exposure(name: str):
 
 def write_exposure(name: str, ip: str, rules: list):
     os.makedirs(EXPOSED_DIR, exist_ok=True)
-    with open(_exposure_path(name), "w") as f:
-        json.dump({"ip": ip, "rules": rules}, f)
+    path = _exposure_path(name)
+    fd, temporary = tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp", dir=EXPOSED_DIR)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"ip": ip, "rules": rules}, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def vm_ip_from_name(name: str) -> str:
