@@ -160,6 +160,48 @@ in
             public hostname). Surfaced via /api/config as ssh_host.
           '';
         };
+        proxySharedSecretFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/run/secrets/garnix_proxy_shared_secret";
+          description = ''
+            File containing the shared secret the trusted reverse proxy injects
+            as the X-Garnix-Proxy-Auth request header. In selfHostMode the
+            backend only honors X-Auth-Request-* identity headers when the
+            request carries this header with the file's (trailing-whitespace-
+            trimmed) contents. Sets GARNIX_PROXY_SHARED_SECRET_FILE when
+            configured. When null, this module sets no file-backed secret; a
+            manually supplied development-only GARNIX_PROXY_SHARED_SECRET can
+            be used instead, otherwise proxy-header authentication fails closed.
+            This option deliberately never places the secret value in the unit
+            environment (unit properties are world-readable via systemctl show).
+          '';
+        };
+        terminalCaKeyPath = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/run/secrets/garnix_terminal_ca";
+          description = ''
+            Path to a dedicated SSH CA private key used ONLY to sign the
+            short-lived web-terminal session certificates (Garnix.API.Terminal).
+            Guests trust its public key as TrustedUserCAKeys, so the
+            hosting/deploy key stops being a certificate mint and this CA key
+            grants no direct login. Sets GARNIX_TERMINAL_CA_KEY; when null the
+            backend falls back to /run/secrets/garnix_terminal_ca. If that file
+            is absent the web terminal fails closed (no hosting-key fallback).
+          '';
+        };
+        terminalSourceAddress = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "10.111.0.1/32";
+          description = ''
+            CIDR the backend bakes into web-terminal certs as
+            `-O source-address` (GARNIX_TERMINAL_SOURCE_ADDRESS): the host's own
+            address on the guest bridge, so a minted cert only authenticates
+            from the backend. null omits the restriction.
+          '';
+        };
         actionHost = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -542,6 +584,15 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.sshHost != null) [
           "GARNIX_SSH_HOST=${config.services.garnixServer.sshHost}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.proxySharedSecretFile != null) [
+          "GARNIX_PROXY_SHARED_SECRET_FILE=${config.services.garnixServer.proxySharedSecretFile}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.terminalCaKeyPath != null) [
+          "GARNIX_TERMINAL_CA_KEY=${config.services.garnixServer.terminalCaKeyPath}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.terminalSourceAddress != null) [
+          "GARNIX_TERMINAL_SOURCE_ADDRESS=${config.services.garnixServer.terminalSourceAddress}"
         ]
         ++ lib.optionals (config.services.garnixServer.defaultAuthentik != null) [
           "GARNIX_DEFAULT_AUTHENTIK_ISSUER=${config.services.garnixServer.defaultAuthentik.issuerUrl}"
