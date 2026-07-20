@@ -81,23 +81,30 @@
   background-color: var(--color-stone-200);
 }
 
-/* Row background by status: a very light green tint while in progress
-   (Running/Pending), a light orange tint for failed/timed-out/cancelled, and
-   nothing for finished (Success/Skipped) rows. */
-.module.moduleRunning {
-  background-color: rgba(46, 160, 67, 0.05);
-}
-
-.module.moduleRunning:hover {
-  background-color: rgba(46, 160, 67, 0.1);
-}
-
+/* Row background by status: red for failed/timed-out/cancelled, green for
+   success (and skipped), orange for pending; running gets no tint. */
 .module.moduleFailed {
-  background-color: rgba(255, 135, 0, 0.045);
+  background-color: rgba(220, 38, 38, 0.05);
 }
 
 .module.moduleFailed:hover {
-  background-color: rgba(255, 135, 0, 0.09);
+  background-color: rgba(220, 38, 38, 0.1);
+}
+
+.module.moduleSuccess {
+  background-color: rgba(46, 160, 67, 0.05);
+}
+
+.module.moduleSuccess:hover {
+  background-color: rgba(46, 160, 67, 0.1);
+}
+
+.module.modulePending {
+  background-color: rgba(255, 135, 0, 0.05);
+}
+
+.module.modulePending:hover {
+  background-color: rgba(255, 135, 0, 0.1);
 }
 
 .moduleName {
