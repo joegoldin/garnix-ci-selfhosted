@@ -51,8 +51,11 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **Admin API + UI** (`/garnix-admin` → "Per-repo config", `/api/admin/repo-config`)
   for per-repo overrides (`skip_private_inputs_check`, `private_cache`).
 - **Configure page** (`/configure`, sidebar → "Configure") — a self-host web UI
-  to set a **default max build time** and **per-repo overrides** (each caps both
-  the eval and build phases), plus quick links to each forge's webhook admin.
+  to set a **default max build time** and **per-repo overrides** (each caps the
+  eval and build phases *and* the pre-build nix commands — garnix-config eval,
+  attribute discovery, flake metadata — so a wedged nix-daemon fails the push
+  with a visible timeout instead of leaving it "Build starting" forever), plus
+  quick links to each forge's webhook admin.
   Timeouts persist in `server_settings` / `repo_config.build_timeout_minutes`
   and are applied on top of the plan at build time (`/api/configure`). The
   synthetic self-host plan is otherwise unlimited on every dimension (CI
@@ -447,7 +450,11 @@ Actions run as the unprivileged `action-runner` user, network-isolated via
 slirp4netns (NAT, no host loopback), with a read-only `/nix` and a fresh
 `/home`. `GARNIX_CI`, `GARNIX_BRANCH`, `GARNIX_COMMIT_SHA`, and the repo's
 action key (`GARNIX_ACTION_PRIVATE_KEY_FILE`) are available to the command; add
-`withRepoContents: true` to bind the checked-out repo at `/tmp/base`.
+`withRepoContents: true` to run the action **inside the checked-out repo**
+(bound read-write at `/tmp/base`, which is also the working directory).
+Actions that exceed their timeout report "The action took too long to complete
+and it was cancelled." for every sandbox type, and the sandbox pins
+`LC_ALL=C.UTF-8` so output ordering doesn't depend on the host locale.
 
 ### Ephemeral GitHub token for actions (`githubToken`)
 
@@ -1053,9 +1060,13 @@ once. Two knobs keep that from swamping the box or the log pipeline:
 
 - **`services.garnixServer.maxConcurrentBuilds`** (default `16`) caps how many
   builds *run* at once. Every build is still created and reported as a pending
-  check immediately — the cap only queues the actual eval+build (round-robin
-  fair by repo owner), so nothing is dropped, work just paces itself. Evals are
-  separately capped at 32. Sets `GARNIX_MAX_CONCURRENT_BUILDS`.
+  check immediately — the cap only queues the actual eval+build, so nothing is
+  dropped, work just paces itself. Queued work is scheduled **round-robin
+  across repos, FIFO within a repo**: one repo's giant fan-out can't monopolize
+  the slots, and within a repo the oldest job always runs first. Evals are
+  separately capped at 32. Sets `GARNIX_MAX_CONCURRENT_BUILDS`. The
+  `garnix_server_*_queue_len` gauges report the number of *waiters* (0 while
+  slots are free).
 - Build logs ship best-effort from the server to a local fluent-bit HTTP input,
   then to OpenSearch. Under a heavy wave fluent-bit's default 128-slot accept
   backlog can saturate and silently drop lines (an empty **Logs** panel on a
@@ -1097,7 +1108,8 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | "Github didn't give us a user token" | trailing `\n` in the GitHub client secret |
 | White page, `/_next` 404s | proxy must serve `/_next/*` from the frontend package |
 | `getInstalledOrgs … 401` | expired 8h user token — re-login; disable token expiry on the App |
-| Jobs stuck "Pending" forever | orphaned by a `garnixServer` restart (deploy) mid-build; cancel them |
+| Jobs stuck "Pending" forever | orphaned by a `garnixServer` restart (deploy) mid-build — the backend cancels these on startup now. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
+| every eval hangs; plain `nix` commands block on the host | nix-daemon deadlock — for us it was `min-free`/`max-free` **auto-GC** deadlocking on `gc.lock` against a concurrent `addToStore`. Don't run auto-GC on the garnix host; use a scheduled `nix-collect-garbage` job instead, and if it happens find the fork holding the `gc.lock` flock in `/proc/locks` and kill it |
 | **Logs** panel empty on a *finished* build | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog |
 | `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |
 | nix build: `can't find source for <new file>` | new files must be `git add`ed before a git-flake build sees them |
@@ -1161,6 +1173,32 @@ npm run dev
 ```
 
 Then point your browser to [localhost:3000](http://localhost:3000).
+
+### Running the backend test suite
+
+CI runs the full suite as the `backend_specs` action on every push (~35–40 min;
+tests tagged `@skip-ci` in their name are skipped there). Locally, give each
+run a throwaway Postgres dir — reusing a shared `pg-tmp` across runs leaves
+zombie postgreses that break the next run:
+
+```bash
+nix develop --command bash -c '
+  set -e
+  DB_DIR=$(mktemp -d /tmp/specdb.XXXXXX)
+  export DB_DIR PGDATA=$DB_DIR/test PGHOST=$DB_DIR/test \
+         TPG_HOST=$DB_DIR/test TPG_SOCK=$DB_DIR/test/.s.PGSQL.9178
+  db new
+  cd backend
+  cabal run spec -- --match "<substring>" --skip @skip-ci
+  db clear; rm -rf $DB_DIR'
+```
+
+Every failure prints its exact `--match` rerun line; multiple `--match` flags
+union. Notes: the deploy specs boot real qemu VMs (KVM strongly recommended)
+via the provisioner mock, and the Action specs boot
+`nixosConfigurations.action-runner2` (`nix/tests/action-runner-vm.nix`);
+`SpecHook` fixes up the committed test SSH keys' permissions at suite start
+(git can't store 0600 modes).
 
 
 # Acknowledgments
