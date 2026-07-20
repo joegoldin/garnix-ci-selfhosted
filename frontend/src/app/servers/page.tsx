@@ -351,12 +351,12 @@ const ServersTable = (props: {
                       Visit
                     </Button>
                   ) : null}
-                  {server.status !== "Ended" ? (
+                  {server.status === "Online" ? (
                     <Button
-                      onClick={() => setDeleteServerModal(server.id)}
-                      style="warning"
+                      href={`/servers/${server.id}/terminal`}
+                      target="_blank"
                     >
-                      Delete
+                      Terminal
                     </Button>
                   ) : null}
                   <Button
@@ -371,12 +371,12 @@ const ServersTable = (props: {
                       onRedeployed={props.onRequestReload}
                     />
                   ) : null}
-                  {server.status === "Online" ? (
+                  {server.status !== "Ended" ? (
                     <Button
-                      href={`/servers/${server.id}/terminal`}
-                      target="_blank"
+                      onClick={() => setDeleteServerModal(server.id)}
+                      style="warning"
                     >
-                      Open Terminal
+                      Delete
                     </Button>
                   ) : null}
                 </td>

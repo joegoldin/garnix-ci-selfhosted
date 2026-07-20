@@ -8,6 +8,7 @@ import { ArtifactIcon } from "@/components/icons/artifact";
 import { Text } from "@/components/text";
 import { Link } from "@/components/link";
 import { Button } from "@/components/button";
+import { Select } from "@/components/select";
 import { FloatingModal, ModalActions, ModalSection } from "@/components/modal";
 import { formatCommitSha, formatRunName, runUrl } from "@/utils/format";
 import { useLoading } from "@/hooks/useLoading";
@@ -23,7 +24,41 @@ import {
 import { getCommitArtifacts } from "@/services/artifacts";
 import styles from "./styles.module.css";
 
+// Buckets the row status filter groups statuses into. "All" shows
+// everything; the others partition the terminal + in-progress statuses.
+type StatusFilter = "All" | "Active" | "Complete" | "Failed";
+
+const statusFilterOptions: Array<readonly [StatusFilter, string]> = [
+  ["All", "All"],
+  ["Active", "Active"],
+  ["Complete", "Complete"],
+  ["Failed", "Failed"],
+];
+
+const matchesStatusFilter = (
+  filter: StatusFilter,
+  status: BuildStatus,
+): boolean => {
+  switch (filter) {
+    case "All":
+      return true;
+    case "Active":
+      return status === "Pending" || status === "Running";
+    case "Complete":
+      return status === "Success" || status === "Skipped";
+    case "Failed":
+      return (
+        status === "Failure" || status === "Timeout" || status === "Cancelled"
+      );
+  }
+};
+
+// Rows still in progress get a subtle accent so they read at a glance.
+const isInProgress = (status: BuildStatus): boolean =>
+  status === "Running" || status === "Pending";
+
 const Page = ({ params }: { params: { slug: string } }) => {
+  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("All");
   const commit = useLoading(
     React.useCallback(() => getCommit(params.slug), [params.slug]),
     {
@@ -95,48 +130,64 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 </div>
               </div>
               <CommitBuildsSummary commit={commit.summary} />
+            <div className={styles.moduleToolbar}>
+              <Select
+                value={statusFilter}
+                onChange={setStatusFilter}
+                options={statusFilterOptions}
+              />
+            </div>
             <div className={styles.modules}>
               {(() => {
                 const runningIds = new Set(commit.running_build_ids);
-                return [...commit.builds, ...commit.runs].map((build) => {
-                  const status =
-                    build.status === "Pending" && runningIds.has(build.id)
-                      ? ("Running" as const)
-                      : build.status;
-                  // Only `Build` rows (packages) can have artifacts.
-                  const artifactCount =
-                    build.tag === "Build"
-                      ? artifactCountByBuildId[build.id]
-                      : undefined;
-                  const href =
-                    artifactCount != null && artifactCount > 0
-                      ? `${runUrl(build)}#artifacts`
-                      : runUrl(build);
-                  return (
-                    <Link key={build.id} href={href} variant="wrapper">
-                      <div className={styles.module}>
-                        <div className={styles.moduleName}>
-                          <Text>{formatRunName(build)}</Text>
-                          {artifactCount != null && artifactCount > 0 && (
-                            <span
-                              className={styles.artifactBadge}
-                              title={`${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`}
-                            >
-                              <ArtifactIcon width={12} height={12} />
-                              {artifactCount}
-                            </span>
-                          )}
+                return [...commit.builds, ...commit.runs]
+                  .map((build) => {
+                    const status =
+                      build.status === "Pending" && runningIds.has(build.id)
+                        ? ("Running" as const)
+                        : build.status;
+                    return { build, status };
+                  })
+                  .filter(({ status }) => matchesStatusFilter(statusFilter, status))
+                  .map(({ build, status }) => {
+                    // Only `Build` rows (packages) can have artifacts.
+                    const artifactCount =
+                      build.tag === "Build"
+                        ? artifactCountByBuildId[build.id]
+                        : undefined;
+                    const href =
+                      artifactCount != null && artifactCount > 0
+                        ? `${runUrl(build)}#artifacts`
+                        : runUrl(build);
+                    return (
+                      <Link key={build.id} href={href} variant="wrapper">
+                        <div
+                          className={`${styles.module} ${
+                            isInProgress(status) ? styles.moduleActive : ""
+                          }`}
+                        >
+                          <div className={styles.moduleName}>
+                            <Text>{formatRunName(build)}</Text>
+                            {artifactCount != null && artifactCount > 0 && (
+                              <span
+                                className={styles.artifactBadge}
+                                title={`${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`}
+                              >
+                                <ArtifactIcon width={12} height={12} />
+                                {artifactCount}
+                              </span>
+                            )}
+                          </div>
+                          <div className={styles.status}>
+                            <StatusIcon status={status} />
+                            <Text className={styles.statusText}>
+                              {getStatusText(status)}
+                            </Text>
+                          </div>
                         </div>
-                        <div className={styles.status}>
-                          <StatusIcon status={status} />
-                          <Text className={styles.statusText}>
-                            {getStatusText(status)}
-                          </Text>
-                        </div>
-                      </div>
-                    </Link>
-                  );
-                });
+                      </Link>
+                    );
+                  });
               })()}
               </div>
             </>

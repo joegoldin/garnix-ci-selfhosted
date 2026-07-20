@@ -1,3 +1,15 @@
+@keyframes phasePulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+
 .log {
   margin-bottom: 4px;
   background-color: var(--color-stone-50);
@@ -8,6 +20,35 @@
     justify-content: space-between;
     align-items: center;
     cursor: pointer;
+  }
+
+  .logHeadTitle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* A phase group still receiving output: a pulsing dot, kept subtle. */
+  .phaseLive {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #b4871c;
+  }
+
+  .phaseLiveDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #ff8700;
+    animation: phasePulse 1.4s ease-in-out infinite;
+  }
+
+  /* A phase group that's done streaming: a muted checkmark. */
+  .phaseFinished {
+    font-size: 12px;
+    color: var(--color-stone-500);
   }
 
   .logBody {

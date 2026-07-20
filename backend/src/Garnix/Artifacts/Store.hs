@@ -14,6 +14,7 @@ import Garnix.Duration
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
+import Network.Wreq qualified as Wreq
 
 -- | @s3ArtifactStore publicEnv privateEnv publicBucket privateBucket publicBaseUrl@
 --
@@ -33,7 +34,8 @@ s3ArtifactStore publicEnv privateEnv publicBucket privateBucket publicBaseUrl =
       _artifactStorePutBytes = putBytes,
       _artifactStoreDeletePrefix = deletePrefix,
       _artifactStorePresignGet = presignGet,
-      _artifactStorePublicUrl = publicUrl
+      _artifactStorePublicUrl = publicUrl,
+      _artifactStoreGetBytes = getBytes
     }
   where
     envFor :: ArtifactBucket -> Amazonka.Env
@@ -92,6 +94,19 @@ s3ArtifactStore publicEnv privateEnv publicBucket privateBucket publicBaseUrl =
 
     publicUrl :: Text -> Text
     publicUrl key = publicBaseUrl <> "/" <> key
+
+    -- Read an object's bytes over HTTP: the public bucket's stable URL, or a
+    -- fresh presigned GET for the private one. Used to serve small objects
+    -- (the artifact manifest) inline rather than redirecting, since a
+    -- redirect to a cross-origin bucket can't be followed by `fetch` without
+    -- CORS.
+    getBytes :: ArtifactBucket -> Text -> M BSL.ByteString
+    getBytes artifactBucket key = do
+      url <- case artifactBucket of
+        ArtifactPublic -> pure $ publicUrl key
+        ArtifactPrivate -> presignGet artifactBucket key
+      resp <- withWreqOptions $ \opts -> Wreq.getWith opts (cs url)
+      pure $ resp ^. Wreq.responseBody
 
 toAmazonkaSeconds :: Duration -> Amazonka.Seconds
 toAmazonkaSeconds = Amazonka.Seconds . realToFrac . toSeconds
