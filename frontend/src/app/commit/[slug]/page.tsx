@@ -47,14 +47,13 @@ const matchesStatusFilter = (
 };
 
 // Row background accent by status: red for failed/timed-out/cancelled, green
-// for success (and skipped), orange for pending, and no tint for running.
+// for running, orange for pending, and no tint for completed rows.
 const moduleStatusClass = (status: BuildStatus): string => {
   if (status === "Failure" || status === "Timeout" || status === "Cancelled")
     return styles.moduleFailed ?? "";
-  if (status === "Success" || status === "Skipped")
-    return styles.moduleSuccess ?? "";
+  if (status === "Running") return styles.moduleRunning ?? "";
   if (status === "Pending") return styles.modulePending ?? "";
-  return ""; // Running (and anything else): no tint
+  return ""; // Success, skipped, and anything else: no tint
 };
 
 const Page = ({ params }: { params: { slug: string } }) => {

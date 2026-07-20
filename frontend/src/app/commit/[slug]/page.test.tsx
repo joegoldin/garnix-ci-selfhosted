@@ -1,0 +1,83 @@
+import "@testing-library/jest-dom";
+import { render, screen } from "@testing-library/react";
+import Page from "./page";
+
+const mockUseLoading = jest.fn();
+
+jest.mock("../../../hooks/useLoading", () => ({
+  useLoading: (...args: Array<unknown>) => mockUseLoading(...args),
+}));
+
+jest.mock("../../../components/build", () => ({
+  CommitBuildsSummary: () => null,
+}));
+
+jest.mock("../../../components/statusIcon", () => ({
+  StatusIcon: ({ status }: { status: string }) => (
+    <span data-testid={`status-${status}`} />
+  ),
+}));
+
+const build = (id: string, status: string) => ({
+  id,
+  tag: "Build",
+  status,
+  package: id,
+  packageType: "nixosConfiguration",
+  system: null,
+});
+
+const rowFor = (name: string): Element => {
+  const row = screen
+    .getByText(`nixosConfiguration ${name}`)
+    .closest("a")?.firstElementChild;
+  if (row == null) throw new Error(`Could not find row for ${name}`);
+  return row;
+};
+
+describe("commit row status colors", () => {
+  it("tints running rows green and leaves completed rows neutral", () => {
+    mockUseLoading
+      .mockReturnValueOnce({
+        loading: false,
+        data: {
+          ok: true,
+          data: {
+            summary: {
+              repoUser: "owner",
+              repoName: "repo",
+              gitCommit: "0123456789abcdef",
+              failed: 0,
+              pending: 0,
+              running: 0,
+            },
+            builds: [
+              build("running", "Pending"),
+              build("success", "Success"),
+              build("skipped", "Skipped"),
+              build("pending", "Pending"),
+              build("failure", "Failure"),
+            ],
+            runs: [],
+            running_build_ids: ["running"],
+          },
+        },
+        reload: jest.fn(),
+      })
+      .mockReturnValueOnce({
+        loading: false,
+        data: {},
+        reload: jest.fn(),
+      });
+
+    render(<Page params={{ slug: "0123456789abcdef" }} />);
+
+    expect(rowFor("running")).toHaveClass("moduleRunning");
+    expect(rowFor("success")).not.toHaveClass("moduleRunning");
+    expect(rowFor("success")).not.toHaveClass("moduleSuccess");
+    expect(rowFor("skipped")).not.toHaveClass("moduleRunning");
+    expect(rowFor("skipped")).not.toHaveClass("moduleSuccess");
+    expect(rowFor("pending")).toHaveClass("modulePending");
+    expect(rowFor("failure")).toHaveClass("moduleFailed");
+  });
+});

@@ -82,7 +82,7 @@
 }
 
 /* Row background by status: red for failed/timed-out/cancelled, green for
-   success (and skipped), orange for pending; running gets no tint. */
+   running, orange for pending; completed rows get no tint. */
 .module.moduleFailed {
   background-color: rgba(220, 38, 38, 0.05);
 }
@@ -91,11 +91,11 @@
   background-color: rgba(220, 38, 38, 0.1);
 }
 
-.module.moduleSuccess {
+.module.moduleRunning {
   background-color: rgba(46, 160, 67, 0.05);
 }
 
-.module.moduleSuccess:hover {
+.module.moduleRunning:hover {
   background-color: rgba(46, 160, 67, 0.1);
 }
 
