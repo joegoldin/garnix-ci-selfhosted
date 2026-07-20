@@ -454,11 +454,15 @@ makeNewBuildForBuildId reqUser buildId evalHost = do
     [] -> throw $ NoSuchBuild buildId
     _ -> throw $ OtherError "Impossible: more than one result"
 
--- | Close out builds and runs left non-terminal by a previous backend process:
--- their driving threads died with it, so they can never finish — without this
--- they show "running" forever in the UI after every deploy/restart. Returns
--- (builds, runs) closed. Self-host only (single backend); a fleet would
--- cancel other servers' in-flight work.
+-- | Close out the builds and runs left non-terminal by a previous backend
+-- process that CANNOT be resumed: their driving threads died with it, and
+-- without a derivation to re-attach to (or, for runs, a process to re-attach
+-- to at all) they can never finish — without this they'd show "running"
+-- forever in the UI after every deploy/restart. Builds that do have a
+-- 'drv_path' are resumable (see 'getResumableOrphanedBuilds') and are
+-- deliberately left alone here; the caller resumes those separately instead
+-- of cancelling them. Returns (builds, runs) closed. Self-host only (single
+-- backend); a fleet would cancel other servers' in-flight work.
 cancelOrphanedWork :: M (Int, Int)
 cancelOrphanedWork = do
   now <- liftIO getCurrentTime
@@ -467,7 +471,7 @@ cancelOrphanedWork = do
       [pgSQL|
         UPDATE builds
         SET status = ${Just Cancelled}, end_time = ${now}
-        WHERE status IS NULL
+        WHERE status IS NULL AND drv_path IS NULL
       |]
   orphanedRuns <-
     pgExec
@@ -477,6 +481,48 @@ cancelOrphanedWork = do
         WHERE status IS NULL
       |]
   pure (orphanedBuilds, orphanedRuns)
+
+-- | Orphaned builds (@status IS NULL@, left running by a previous backend
+-- process that died) which got far enough to have a @drv_path@ — i.e. past
+-- eval, with a derivation to re-realize. These are resumable: the actual
+-- build runs against the nix-daemon, which survives a backend restart, so
+-- re-running @nix build@ on 'drv_path' re-attaches to the daemon's
+-- still-in-progress job (or cache-hits if it already finished) instead of
+-- starting over. Used at startup to resume these in place; the non-resumable
+-- remainder (no 'drv_path', plus all orphaned runs) is cancelled by
+-- 'cancelOrphanedWork'.
+getResumableOrphanedBuilds :: M [Build]
+getResumableOrphanedBuilds =
+  pgQueryPrism
+    _Build
+    [pgSQL|
+    SELECT
+      id,
+      repo_user,
+      repo_name,
+      pr_from_fork,
+      branch,
+      repo_is_public,
+      git_commit,
+      package,
+      package_type,
+      system,
+      req_user,
+      status,
+      start_time,
+      end_time,
+      drv_path,
+      output_paths,
+      github_run_id,
+      persistence_name,
+      wants_incrementalism,
+      eval_host,
+      uploaded_to_cache,
+      already_built,
+      forge
+    FROM builds
+    WHERE status IS NULL AND drv_path IS NOT NULL
+  |]
 
 -- | (runningBuilds, pendingBuilds, runningRuns, pendingRuns) across the whole
 -- instance, for the self-host monitoring page. Running = started but not

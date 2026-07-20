@@ -10,7 +10,7 @@ import Garnix.DB qualified as DB
 import Garnix.Monad (M, throw)
 import Garnix.Nix.Types (DrvPath (..), StoreHash (..), StorePath (..))
 import Garnix.Prelude
-import Garnix.TestHelpers (testBuild, truncateDBM)
+import Garnix.TestHelpers (defaultCommitInfo, testBuild, truncateDBM)
 import Garnix.TestHelpers.Monad (beforeM_, inM, shouldBeM, shouldReturnM)
 import Garnix.Types hiding (context, head)
 import System.Environment (getEnv)
@@ -190,6 +190,42 @@ spec = do
       now <- liftIO getCurrentTime
       build <- testBuild ((gitCommit .~ "aaaa") . (endTime ?~ now))
       DB.getIncrementalTarget (build & repoName .~ "somethingelse") ["aaaa"] `shouldReturnM` []
+
+  -- `truncateDBM` doesn't clear `runs` (it has no FK ties to the tables it
+  -- lists, so nothing forces it in); clear it explicitly so the counts below
+  -- are exact.
+  describe "orphaned build/run resumability" $ inM $ beforeM_ truncateDBM $ do
+    it "getResumableOrphanedBuilds/cancelOrphanedWork split orphaned builds by drv_path, and cancel all orphaned runs" $ do
+      void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+
+      resumable <- testBuild ((status .~ Nothing) . (drvPath ?~ "/nix/store/00000000000000000000000000000000-foo.drv"))
+      unresumable <- testBuild (status .~ Nothing)
+      finished <- testBuild (status ?~ Success)
+      run <- DB.newRun "test-run" defaultCommitInfo
+
+      -- only the build with a drv_path is reported as resumable
+      DB.getResumableOrphanedBuilds `shouldReturnM` [resumable]
+
+      (cancelledBuilds, cancelledRuns) <- DB.cancelOrphanedWork
+      cancelledBuilds `shouldBeM` 1
+      cancelledRuns `shouldBeM` 1
+
+      -- the resumable build is left alone (still orphaned, ready to resume)
+      DB.getBuild (resumable ^. id) `shouldReturnM` resumable
+
+      -- the unresumable build (no drv_path) got cancelled
+      cancelledUnresumable <- DB.getBuild (unresumable ^. id)
+      cancelledUnresumable ^. status `shouldBeM` Just Cancelled
+
+      -- an already-terminal build is untouched
+      DB.getBuild (finished ^. id) `shouldReturnM` finished
+
+      -- the orphaned run (runs have no drv_path to re-attach to, so they're
+      -- always unresumable) got cancelled
+      runAfter <- DB.getRun (run ^. id)
+      case runAfter of
+        Just r -> r ^. status `shouldBeM` Just Cancelled
+        Nothing -> liftIO $ expectationFailure "expected the run row to still exist"
 
   let wrap test = do
         socketPath <- getEnv "TPG_SOCK"

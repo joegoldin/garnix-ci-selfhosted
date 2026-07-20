@@ -34,9 +34,11 @@ import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.LocalProvisioner (localProvisionerInterface)
 import Garnix.Monad
+import Garnix.Monad.Concurrency (forkM)
 import Garnix.Monad.Metrics (registerMetrics, serveMetrics)
 import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig, fromNetRcFile)
+import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
 import Garnix.Types
 import Garnix.UserLogs
@@ -468,10 +470,13 @@ runWith opts = do
     (Garnix.buildLogsReportingPort opts)
     $ \env -> do
       serveMetrics (env ^. #selfHostMode) (Garnix.metricsPort opts) (env ^. #metrics)
-      -- Builds/runs left non-terminal by the previous process can never
-      -- finish (their threads died with it) and would show "running" forever.
-      -- Close them out before serving. Self-host only: with a fleet this
-      -- would cancel other servers' in-flight work.
+      -- Builds/runs left non-terminal by the previous process can never be
+      -- driven further by it (their threads died with it). Most can't finish
+      -- either and would show "running" forever, so cancel those. But a
+      -- build that got far enough to have a drv_path was handed off to the
+      -- nix-daemon, which survives the restart -- resume those in the
+      -- background instead of losing the work. Self-host only: with a fleet
+      -- this would cancel/resume other servers' in-flight work.
       when (env ^. #selfHostMode) $ do
         runM env DB.cancelOrphanedWork >>= \case
           Right (orphanedBuilds, orphanedRuns)
@@ -484,6 +489,22 @@ runWith opts = do
                   <> " runs"
           Right _ -> pure ()
           Left err -> hPutStrLn stderr $ "Failed to cancel orphaned work: " <> show err
+        runM
+          env
+          ( do
+              resumable <- DB.getResumableOrphanedBuilds
+              forM_ resumable $ \build -> forkM $ Orchestrator.resumeBuild (build ^. reqUser) build
+              pure resumable
+          )
+          >>= \case
+            Right resumable
+              | not (null resumable) ->
+                  hPutStrLn stderr
+                    $ "Resuming "
+                    <> show (length resumable)
+                    <> " orphaned build(s) from previous process in the background"
+            Right _ -> pure ()
+            Left err -> hPutStrLn stderr $ "Failed to look up/resume orphaned builds: " <> show err
       -- The heartbeat reaper needs the Traefik heartbeat middleware to be
       -- reporting; in self-host mode servers are torn down by deploy plans
       -- instead, so skip it rather than reap every server.
