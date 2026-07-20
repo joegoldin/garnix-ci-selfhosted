@@ -104,21 +104,23 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
     [] -> pure $ NixConfig mempty
     _
       | isRepoPublic selfRepoPublicity -> do
-          -- In self-host mode the operator owns every repo, so a public repo is
-          -- allowed to depend on private flake inputs without any per-repo
-          -- opt-in. To keep the resulting closures off the unauthenticated
-          -- public cache, we persist that this repo's cache is private (an
-          -- idempotent upsert, so it only writes the first time); S3Cache reads
-          -- private_cache to route the upload to the authenticated bucket.
+          -- A public repo may only depend on private flake inputs with the
+          -- explicit per-repo opt-in (skip_private_inputs_check_for_collaborators,
+          -- settable via the admin API) — the same policy as upstream, including
+          -- in self-host mode. When the opt-in allows it, self-host additionally
+          -- persists that this repo's cache is private (an idempotent upsert, so
+          -- it only writes the first time), keeping the resulting closures off
+          -- the unauthenticated public cache; S3Cache reads private_cache to
+          -- route the upload to the authenticated bucket.
           selfHost <- view #selfHostMode
-          let skipPrivateInputChecks = selfHost || repoConfig ^. skipPrivateInputsCheckForCollaborators
+          let skipPrivateInputChecks = repoConfig ^. skipPrivateInputsCheckForCollaborators
           unless skipPrivateInputChecks $ do
             throw
               $ OtherError
               $ "Public repository has private dependencies, which is not allowed. Private dependencies: "
               <> T.unwords (fmap showPretty privateInputs)
           when (selfHost && not (repoConfig ^. privateCache))
-            $ DB.upsertRepoConfig (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) True True
+            $ DB.upsertRepoConfig (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) (repoConfig ^. skipPrivateInputsCheckForCollaborators) True
           pure $ githubAccessTokenNixConfig $ repoInfo' ^. ghToken
       | isJust $ commitInfo ^. prFromFork ->
           throw
