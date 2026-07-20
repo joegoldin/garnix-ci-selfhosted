@@ -711,7 +711,8 @@ newtype RunId = RunId {getRunId :: HashId}
   deriving newtype
     ( PGColumn "bigint",
       PGParameter "bigint",
-      FromHttpApiData
+      FromHttpApiData,
+      Pretty
     )
 
 -- * User
@@ -1040,6 +1041,7 @@ data Error
   | NameIsNotValidSubdomain SubdomainKind Text
   | TransactionAlreadyStarted
   | BuildAlreadyStopped {buildId :: BuildId}
+  | RunAlreadyStopped {runId :: RunId}
   | InvalidBuildUpdate {buildUpdateBody :: BuildUpdate}
   | FailedToParseDrvFile {drvFile :: FilePath, message :: Text}
   | CachedError {inner :: ErrorWithContext}
@@ -1157,6 +1159,7 @@ instance Pretty Error where
     NameIsNotValidSubdomain kind name -> pretty kind <+> "name" <+> Pretty.squotes (pretty name) <+> "is not a valid subdomain name."
     TransactionAlreadyStarted -> "Internal transaction error."
     BuildAlreadyStopped {buildId} -> "Build with id" <+> pretty buildId <+> "has already been stopped."
+    RunAlreadyStopped {runId} -> "Run with id" <+> pretty runId <+> "has already been stopped."
     InvalidBuildUpdate {buildUpdateBody} -> "Invalid build update:" <+> pretty (decodeUtf8 $ BSL.toStrict (encodePretty buildUpdateBody))
     FailedToParseDrvFile {drvFile, message} -> "Failed to parse " <+> pretty drvFile <+> ": " <+> pretty message
     CachedError inner -> "(cached error)" <+> pretty (err inner)
@@ -1269,6 +1272,8 @@ toErrorDetails e = case err e of
     errorDetails 500 "Internal transaction error"
   BuildAlreadyStopped {} ->
     errorDetails 400 "Build has already been stopped."
+  RunAlreadyStopped {} ->
+    errorDetails 400 "Run has already been stopped."
   InvalidBuildUpdate {} ->
     errorDetails 500 "Invalid build update."
   NoSuchRepo {..} ->

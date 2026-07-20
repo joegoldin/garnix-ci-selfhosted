@@ -1,5 +1,6 @@
 import Image from "next/image";
 import React from "react";
+import { Button } from "@/components/button";
 import { StatusIcon } from "@/components/statusIcon";
 import { Text } from "@/components/text";
 import { formatCommitSha, formatRunName } from "@/utils/format";
@@ -10,7 +11,10 @@ import stopwatchIcon from "@/components/icons/stopwatch.svg";
 import statusIcon from "@/components/icons/status.svg";
 import { Link } from "@/components/link";
 import { ElapsedTime } from "@/components/elapsedTime";
-import { Run } from "@/services/run";
+import { useForm } from "@/hooks/useForm";
+import { Ok } from "@/services";
+import { Run, cancelRun } from "@/services/run";
+import { trackSubmit } from "@/utils/analytics";
 import { RunLog } from "../buildLog";
 import styles from "./styles.module.css";
 
@@ -56,7 +60,19 @@ const createHeaderProps = (module: Run) => {
   ];
 };
 
-export const RunPage = ({ run }: { run: Run }) => {
+export const RunPage = ({
+  run,
+  onChanged,
+}: {
+  run: Run;
+  onChanged?: () => void;
+}) => {
+  const form = useForm({}, async () => {
+    trackSubmit("cancel-run");
+    await cancelRun(run.id);
+    onChanged?.();
+    return Ok(null);
+  });
   return (
     <main className={styles.container}>
       <>
@@ -76,6 +92,15 @@ export const RunPage = ({ run }: { run: Run }) => {
             </div>
           ))}
         </div>
+        {run.status === "Pending" || run.status === "Running" ? (
+          <div className={`${styles.section} ${styles.actions}`}>
+            <form {...form.props}>
+              <Button submit={true} style="warning">
+                Cancel run
+              </Button>
+            </form>
+          </div>
+        ) : null}
         <div className={styles.section}>
           <Text type="h2" className={styles.h2}>
             Logs

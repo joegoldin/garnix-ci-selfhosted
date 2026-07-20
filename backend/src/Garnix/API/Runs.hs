@@ -2,14 +2,17 @@ module Garnix.API.Runs where
 
 import Garnix.API.Builds.Types
 import Garnix.Access (Access (..), getRunWithAccess)
+import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.Types
 import Garnix.UserLogs (getRunLogLines)
+import Servant.API (Put)
 import Servant.Auth.Server (AuthResult (..))
 
 data RunAPI route = RunAPI
   { _runAPIGetRun :: route :- Capture "runId" RunId :> Get '[JSON] RunSummary,
+    _runAPIUpdateRun :: route :- Capture "runId" RunId :> ReqBody '[JSON] BuildUpdate :> Put '[JSON] (),
     _runAPIGetLogs :: route :- Capture "runId" RunId :> "logs" :> QueryParam "after" UTCTime :> Get '[JSON] BuildLogs
   }
   deriving stock (Generic)
@@ -18,11 +21,13 @@ runAPI :: AuthResult AuthJwtPayload -> RunAPI (AsServerT M)
 runAPI (Authenticated ((^. #user) -> user)) =
   RunAPI
     { _runAPIGetRun = getRun (Just user),
+      _runAPIUpdateRun = updateRun (Just user),
       _runAPIGetLogs = getRunLogs (Just user)
     }
 runAPI _ =
   RunAPI
     { _runAPIGetRun = getRun Nothing,
+      _runAPIUpdateRun = updateRun Nothing,
       _runAPIGetLogs = getRunLogs Nothing
     }
 
@@ -30,6 +35,22 @@ getRun :: Maybe User -> RunId -> M RunSummary
 getRun mUser runId = do
   run <- getRunWithAccess Read mUser runId
   pure $ toRunSummary run
+
+-- | Mirrors 'Garnix.API.Builds.updateBuild': the only supported update is
+-- cancellation. Setting the run row to Cancelled is enough — the action
+-- executor polls its row and aborts (see 'abortOnRunCancellation'); runs
+-- without an abort poller (FOD checks) just finish in the background, and
+-- 'DB.setRunStatus' refuses to overwrite the final status.
+updateRun :: Maybe User -> RunId -> BuildUpdate -> M ()
+updateRun mUser runId runUpdate =
+  case runUpdate ^. status of
+    Just Cancelled -> do
+      run <- getRunWithAccess Cancel mUser runId
+      if isJust (run ^. status)
+        then throw (RunAlreadyStopped runId)
+        else DB.setRunStatus runId (Just Cancelled)
+    Just _ -> throw (InvalidBuildUpdate runUpdate)
+    Nothing -> pure ()
 
 getRunLogs :: Maybe User -> RunId -> Maybe UTCTime -> M BuildLogs
 getRunLogs mUser runId mAfter = do

@@ -1022,6 +1022,9 @@ getRun runId = do
     [] -> pure Nothing
     _ -> throw $ OtherError "Impossible: more than one result"
 
+-- | A run's final status is write-once: cancellation (via the run or commit
+-- page) must stick even when the executor has no abort poller (FOD checks)
+-- and reports completion later.
 setRunStatus :: RunId -> Maybe Status -> M ()
 setRunStatus runId status =
   void
@@ -1031,6 +1034,7 @@ setRunStatus runId status =
         SET status = ${status},
             end_time = NOW()
         WHERE id = ${runId}
+          AND status IS NULL
       |]
 
 -- | Mark a run as having produced output (idempotent: only the first call

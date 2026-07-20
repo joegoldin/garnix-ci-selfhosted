@@ -26,7 +26,9 @@ const Page = ({ params }: { params: { slug: string } }) => {
   );
   if (run.loading) return null;
   return match(run.data)
-    .with(Ok(P.select()), (run) => <RunPage run={run} />)
+    .with(Ok(P.select()), (data) => (
+      <RunPage run={data} onChanged={run.reload} />
+    ))
     .with(Err(P._), () => (
       <Text>
         Uh oh! No run matching that description could be found. Either it

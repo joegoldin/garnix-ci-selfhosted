@@ -53,3 +53,9 @@ export type Run = z.infer<typeof runSchema>;
 export const getRun = async (id: string): Promise<APIResult<Run>> => {
   return await fetchFromAPI(runSchema, "GET", `run/${id}`);
 };
+
+export const cancelRun = async (runId: string): Promise<APIResult<null>> => {
+  return await fetchFromAPI(z.null(), "PUT", `run/${runId}`, {
+    body: JSON.stringify({ status: "Cancelled" }),
+  });
+};
