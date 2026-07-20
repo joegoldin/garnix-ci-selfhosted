@@ -6,6 +6,7 @@ module Garnix.Orchestrator
     handleRerun,
     restartBuild,
     restartCommit,
+    resumeBuild,
     listRepoBranches,
     triggerBranchBuild,
     RerunEvent (..),
@@ -149,6 +150,58 @@ restartBuild reqUser' oldBuild = do
     (commitInfo, reporter) <- commitInfoForBuild reqUser' build'
     assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
     withSpan commitInfo $ rerunBuild reporter build' commitInfo
+
+-- | Resume a build orphaned by a backend restart mid-flight (left
+-- @status IS NULL@ with a non-null @drv_path@ -- see
+-- 'DB.getResumableOrphanedBuilds'). Unlike 'restartBuild'/'restartCommit',
+-- this reuses the existing build row rather than cloning a fresh one: the
+-- actual nix realization runs against the nix-daemon, which survives the
+-- backend restart, so re-running 'rerunBuild' on the same row's @drv_path@
+-- either re-attaches to the daemon's still-in-progress job (fast) or
+-- cache-hits if it finished while the backend was down; only a drv the
+-- daemon (and store) has since forgotten forces a full rebuild.
+--
+-- Best-effort: this runs unattended at startup, with nobody to retry it, so
+-- any failure that would otherwise leave the build stuck @status IS NULL@
+-- forever -- forge-auth lookups in 'commitInfoForBuild', or any other
+-- exception before a terminal status gets reported -- cancels it instead.
+-- 'catchEither' rather than plain 'catchAny' because 'commitInfoForBuild'
+-- and 'rerunBuild' report most failures via 'MonadError' ('throwError'), not
+-- thrown 'SomeException's.
+resumeBuild :: (HasCallStack) => GhLogin -> Build -> M ()
+resumeBuild reqUser' build =
+  withSpan (build ^. id) $ resume `catchEither` cancelIfStillOrphaned
+  where
+    resume = do
+      (commitInfo, reporter) <- commitInfoForBuild reqUser' build
+      assertIsAllowedToBuild (build ^. repoUser) (build ^. repoName)
+      withSpan commitInfo $ rerunBuild reporter build commitInfo
+
+    -- rerunBuild already reports a terminal status for failures it observes
+    -- itself (via reportOnError, which rethrows after reporting -- so we
+    -- still land here). Re-fetch the row rather than trusting the stale
+    -- in-memory `build`, so a real Failure it already reported is never
+    -- clobbered with Cancelled; only a row that is genuinely still orphaned
+    -- gets closed out.
+    cancelIfStillOrphaned e = do
+      log Error
+        $ "resumeBuild: failed to resume orphaned build "
+        <> show (build ^. id)
+        <> ", cancelling: "
+        <> either show showDebug e
+      (DB.getBuild (build ^. id) >>= cancelIfNull)
+        `catchEither` \e' ->
+          log Error
+            $ "resumeBuild: failed to cancel orphaned build "
+            <> show (build ^. id)
+            <> " after failed resume: "
+            <> either show showDebug e'
+
+    cancelIfNull fresh
+      | isJust (fresh ^. status) = pure ()
+      | otherwise = do
+          now <- liftIO getCurrentTime
+          DB.reportBuildResultDB (fresh & status ?~ Cancelled & endTime ?~ now)
 
 -- | Re-run the whole commit (fresh eval, then all builds/actions). Used when
 -- the failure is the eval/overall build itself, which has no per-package
