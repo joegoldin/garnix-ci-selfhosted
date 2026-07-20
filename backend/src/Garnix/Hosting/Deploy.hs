@@ -277,13 +277,14 @@ startServer = curry4
         $ copyDefaultAuthentikEnv serverInfo publicHost
         <?> "Copying default Authentik credentials"
       -- Authorize login as the garnix user only when the user opts in, via the
-      -- deployer's GitHub keys and/or explicit authorizedSSHKeys. Otherwise the
+      -- deployer's forge keys and/or explicit authorizedSSHKeys. Otherwise the
       -- garnix user stays login-closed (deploys still work via the hosting key).
       let authorizesGarnixUser =
             serverToSpinUp ^. #authorizeDeployerGithubKeys
               || not (null (serverToSpinUp ^. #authorizedSSHKeys))
       when authorizesGarnixUser
         $ copyAuthorizedKeys
+          (commitInfo ^. repoInfo . forge)
           serverInfo
           (if serverToSpinUp ^. #authorizeDeployerGithubKeys then Just (commitInfo ^. reqUser) else Nothing)
           (serverToSpinUp ^. #authorizedSSHKeys)
@@ -325,6 +326,11 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
     Just storePath -> do
       run <- DB.newRun ("redeployment " <> getPackageName (build ^. package)) commitInfo
       withRunReporter reporter (ReportRun run) $ \runReporter -> do
+        -- /var/garnix/keys is a tmpfs on the guest (see guest-profile.nix), so
+        -- the repo key is RAM-only and vanishes if the VM ever power-cycles.
+        -- Re-deliver it on every redeploy so decrypting services restarted by
+        -- switch-to-configuration always find it. Idempotent on healthy guests.
+        copyKeys (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
         copyClosure (SshUser "garnix") serverInfo storePath <?> "Copying closure for redeployment"
         deploymentLogs <- switchToConfiguration (SshUser "garnix") serverInfo storePath <?> "Switching to redeployment configuration"
         now <- liftIO getCurrentTime
@@ -465,12 +471,12 @@ copyDefaultAuthentikEnv server publicHost = do
 
 -- | Authorize login as the guest's `garnix` user by dropping an authorized_keys
 -- file the guest profile reads via authorizedKeys.keyFiles. Keys are the
--- deployer's GitHub keys (best-effort, only when a deployer is given) plus the
+-- deployer's forge keys (best-effort, only when a deployer is given) plus the
 -- explicit authorizedSSHKeys. No-op with no keys.
-copyAuthorizedKeys :: ServerInfo -> Maybe GhLogin -> [Text] -> M ()
-copyAuthorizedKeys server mDeployer extraKeys = do
-  githubKeys <- maybe (pure []) fetchGithubKeys mDeployer
-  let keys = filter (not . T.null . T.strip) (githubKeys <> extraKeys)
+copyAuthorizedKeys :: Forge -> ServerInfo -> Maybe GhLogin -> [Text] -> M ()
+copyAuthorizedKeys forge' server mDeployer extraKeys = do
+  forgeKeys <- maybe (pure []) (fetchDeployerKeys forge') mDeployer
+  let keys = filter (not . T.null . T.strip) (forgeKeys <> extraKeys)
   unless (null keys) $ do
     (ip, sshArgs) <- ServerPool.sshArgsFor server
     let keyFile = "/var/garnix/keys/authorized_keys" :: Text
@@ -484,15 +490,23 @@ copyAuthorizedKeys server mDeployer extraKeys = do
       ExitSuccess -> pure ()
       ExitFailure _ -> throw $ OtherError "Writing authorized_keys to the server failed"
 
--- | The deployer's public SSH keys, via GitHub's @<login>.keys@ endpoint.
--- Best-effort: any failure (network, non-GitHub forge, 404) yields no keys.
-fetchGithubKeys :: GhLogin -> M [Text]
-fetchGithubKeys login =
+-- | The deployer's public SSH keys, via the forge's @<login>.keys@ endpoint —
+-- github.com for GitHub repos, the configured Gitea instance for Gitea repos
+-- (both forges serve the same URL shape). Best-effort: any failure (network,
+-- 404, a Gitea with REQUIRE_SIGNIN_VIEW, missing Gitea config) yields no keys.
+fetchDeployerKeys :: Forge -> GhLogin -> M [Text]
+fetchDeployerKeys forge' login =
   ( do
-      resp <-
-        withWreqOptions $ \opts ->
-          Wreq.getWith opts (cs ("https://github.com/" <> getGhLogin login <> ".keys"))
-      pure $ filter (not . T.null . T.strip) $ T.lines $ cs (resp ^. Wreq.responseBody)
+      mBaseUrl <- case forge' of
+        ForgeGithub -> pure $ Just "https://github.com"
+        ForgeGitea -> fmap _giteaConfigBaseUrl <$> view #giteaConfig
+      case mBaseUrl of
+        Nothing -> pure []
+        Just baseUrl -> do
+          resp <-
+            withWreqOptions $ \opts ->
+              Wreq.getWith opts (cs (baseUrl <> "/" <> getGhLogin login <> ".keys"))
+          pure $ filter (not . T.null . T.strip) $ T.lines $ cs (resp ^. Wreq.responseBody)
   )
     `catchAny` const (pure [])
 
