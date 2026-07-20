@@ -114,6 +114,24 @@ data Env = Env
     -- garnix.yaml (servers[].authentik = "default").
     defaultAuthentik :: Maybe DefaultAuthentikConfig,
     sshUserHostingKeys :: [FilePath],
+    -- | Private key of the dedicated web-terminal certificate authority
+    -- (GARNIX_TERMINAL_CA_KEY, default /run/secrets/garnix_terminal_ca).
+    -- Guests trust the matching public key via TrustedUserCAKeys; this key
+    -- signs only short-lived per-session terminal certs and is never a
+    -- deploy identity.
+    sshTerminalCaKey :: FilePath,
+    -- | CIDR terminal certs are valid from (@-O source-address@;
+    -- GARNIX_TERMINAL_SOURCE_ADDRESS, e.g. "10.111.0.1/32" — the host's
+    -- address on the guest bridge). 'Nothing' omits the restriction.
+    sshTerminalSourceAddress :: Maybe Text,
+    -- | Shared secret proving a request traversed the authenticating gateway;
+    -- the gateway injects it as X-Garnix-Proxy-Auth. Nothing outside self-host
+    -- mode; in self-host mode an unconfigured secret fails closed.
+    proxySharedSecret :: Maybe Text,
+    -- | Dotted-decimal prefix of the guest bridge subnet (default the local
+    -- provisioner's 10.111.0.1/24 bridge); /api/hosts/stats only accepts
+    -- samples from it in self-host mode. GARNIX_GUEST_SUBNET_PREFIX.
+    guestSubnetPrefix :: Text,
     s3CacheEnv :: S3CacheEnv,
     -- | Storage backend for build artifacts (garnix.yaml @artifacts:@).
     -- 'Nothing' when the S3_ARTIFACTS_* buckets are not configured, which

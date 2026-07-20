@@ -254,6 +254,10 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
     _ -> pure Nothing
   actionServerUrl <- fromMaybe "action-runner2.garnix.io" <$> lookupEnv "GARNIX_ACTION_HOST"
   actionRunnerSshKey <- lookupEnv "GARNIX_ACTION_RUNNER_SSH_KEY" >>= maybe (pure "/run/secrets/garnix_action_runner_ssh") makeAbsolute
+  sshTerminalCaKey' <-
+    lookupEnv "GARNIX_TERMINAL_CA_KEY"
+      >>= maybe (pure "/run/secrets/garnix_terminal_ca") makeAbsolute
+  sshTerminalSourceAddress' <- fmap cs <$> lookupEnv "GARNIX_TERMINAL_SOURCE_ADDRESS"
   curDir <- getCurrentDirectory
   let appPkPem = case readRsaPem appPkPem' of
         Right a -> a
@@ -276,6 +280,14 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
       Nothing -> pure "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
       Just k -> pure (cs k)
   selfHostMode' <- isJust <$> lookupEnv "GARNIX_SELF_HOST_MODE"
+  proxySharedSecret' <-
+    if selfHostMode'
+      then
+        lookupEnv "GARNIX_PROXY_SHARED_SECRET_FILE" >>= \case
+          Just path -> Just . T.strip . cs <$> BSC.readFile path
+          Nothing -> fmap (T.strip . cs) <$> lookupEnv "GARNIX_PROXY_SHARED_SECRET"
+      else pure Nothing
+  guestSubnetPrefix' <- maybe "10.111.0." cs <$> lookupEnv "GARNIX_GUEST_SUBNET_PREFIX"
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
   hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
@@ -428,6 +440,10 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               opensearchQueryUrl = opensearchQueryUrl,
               opensearchPassword = opensearchPass,
               sshUserHostingKeys = sshKeys,
+              sshTerminalCaKey = sshTerminalCaKey',
+              sshTerminalSourceAddress = sshTerminalSourceAddress',
+              proxySharedSecret = proxySharedSecret',
+              guestSubnetPrefix = guestSubnetPrefix',
               s3CacheEnv,
               artifactStore,
               action =
