@@ -1992,7 +1992,7 @@ serverStatsWindow = 60
 -- (best-effort, like the heartbeat). After inserting we prune the server's
 -- samples back to the most recent 'serverStatsWindow' so the table stays a
 -- small per-server ring.
-upsertServerStats :: HostStatsReport -> M ()
+upsertServerStats :: HostStatsReport -> M Bool
 upsertServerStats report = do
   let provisionerId = _hostStatsReportProvisionerId report
       cpuPct = _hostStatsReportCpuPct report
@@ -2026,6 +2026,9 @@ upsertServerStats report = do
             LIMIT ${serverStatsWindow}
           )
         |]
+  -- Report whether a live server row matched, so the ingest endpoint can 404 an
+  -- unmatched (ended/orphaned) push instead of silently accepting it.
+  pure $ not (null serverIds)
 
 -- | The rolling window of samples for one server, oldest-first (so the Monitor
 -- page can plot them left-to-right). Capped at 'serverStatsWindow'.

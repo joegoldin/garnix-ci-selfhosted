@@ -15,9 +15,13 @@
 let
   cfg = config.garnix.guest;
   statsEnabled = cfg.statsReportUrl != "";
-  # Best-effort resource reporter: one /proc read, a short CPU sample, and a
-  # single POST. Never fails the guest — a curl error (garnix unreachable) is
-  # swallowed so the timer just tries again next tick.
+  # Resource reporter: one /proc read, a short CPU sample, and a POST (with a
+  # few retries for transient blips). Unlike the old best-effort version, a
+  # persistent failure is SURFACED rather than swallowed: curl's error goes to
+  # the journal and the unit exits non-zero, so `systemctl status
+  # garnix-stats-reporter` / `journalctl -u garnix-stats-reporter` reveal a
+  # wedged reporter (lost egress, or a 404 for an ended/orphaned server row).
+  # The timer still re-arms every tick regardless of the exit code.
   statsScript = pkgs.writeShellScript "garnix-stats-report" ''
     set -u
     # CPU utilisation from two /proc/stat snapshots ~1s apart.
@@ -38,8 +42,24 @@ let
     memused=$((memtotal - memavail))
     payload=$(printf '{"provisioner_id":%d,"cpu_pct":%s,"mem_used_kb":%d,"mem_total_kb":%d}' \
       "$GARNIX_PROVISIONER_ID" "$cpu" "$memused" "$memtotal")
-    curl -fsS --max-time 10 -H 'Content-Type: application/json' \
-      -X POST -d "$payload" "$GARNIX_STATS_URL" >/dev/null 2>&1 || true
+    # -f => an HTTP error (e.g. a 404 for an ended/orphaned server row) is a
+    # non-zero exit; -sS stays quiet on success but prints the error to stderr,
+    # which systemd captures into the journal. Retry a couple of transient
+    # failures before giving up; a final failure exits non-zero (visible in the
+    # unit state) instead of the old silent `|| true`.
+    attempt=1
+    while :; do
+      if curl -fsS --max-time 10 -H 'Content-Type: application/json' \
+           -X POST -d "$payload" "$GARNIX_STATS_URL" >/dev/null; then
+        exit 0
+      fi
+      if [ "$attempt" -ge 3 ]; then
+        echo "garnix-stats-report: POST to garnix failed after $attempt attempts" >&2
+        exit 1
+      fi
+      attempt=$((attempt + 1))
+      sleep 3
+    done
   '';
 in
 {

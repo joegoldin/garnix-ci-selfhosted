@@ -186,11 +186,15 @@ getHostsForTraefik = do
 postHostsHeartbeat :: [Text] -> M NoContent
 postHostsHeartbeat hosts = NoContent <$ DB.upsertHeartbeat hosts
 
--- | Ingest a resource sample pushed by a deployed guest. Best-effort: an
--- unmatched provisioner id (guest not yet claimed, or server deleted) is
--- silently dropped by 'DB.upsertServerStats'.
+-- | Ingest a resource sample pushed by a deployed guest. An unmatched
+-- provisioner id (server ended/deleted, or the guest orphaned) returns 404
+-- rather than a silent 204, so the guest's reporter surfaces the failure (see
+-- provisioner/guest-profile.nix) instead of believing its pushes land.
 postHostsStats :: HostStatsReport -> M NoContent
-postHostsStats report = NoContent <$ DB.upsertServerStats report
+postHostsStats report = do
+  matched <- DB.upsertServerStats report
+  unless matched $ throw NotFound
+  pure NoContent
 
 -- | Current sample + the rolling window of samples for one server, keyed by
 -- ServerId. 'current' is the most recent sample; 'samples' is oldest-first.
