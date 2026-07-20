@@ -472,23 +472,6 @@ in
         };
     };
 
-    services.garnixServer = {
-      s3Cache = lib.mkMerge [
-        (lib.mkIf config.garnix.devMode.enable {
-          publicBucket = "test-public";
-          publicBaseUrl = "https://pub-aed3ff3b65d444b3aeee39d6ea1767b0.r2.dev";
-          privateBucket = "test-private";
-          host = "79e0f6a031ca6d9650034b607922ba45.r2.cloudflarestorage.com";
-        })
-        (lib.mkIf (!config.garnix.devMode.enable) {
-          publicBucket = "prod-public";
-          publicBaseUrl = "https://garnix-cache.com";
-          privateBucket = "prod-private";
-          host = "79e0f6a031ca6d9650034b607922ba45.r2.cloudflarestorage.com";
-        })
-      ];
-    };
-
     systemd.services.garnixServer = {
       description = "The garnix server";
       # Coreutils is needed so we have the right version of 'tail', allowing
@@ -643,60 +626,81 @@ in
       };
     };
 
-    services.nginx = lib.mkIf config.services.garnixServer.enableNginx {
-      enable = true;
-      recommendedProxySettings = true;
-      recommendedOptimisation = true;
-      recommendedGzipSettings = true;
-      proxyTimeout = "600s";
-      appendConfig = ''
-        worker_processes auto;
-        worker_rlimit_nofile 2048;
-      '';
-      eventsConfig = ''
-        worker_connections 1024;
-      '';
-      virtualHosts."garnix.io" = {
-        default = true;
-        forceSSL = ! config.garnix.devMode.enable;
-        enableACME = ! config.garnix.devMode.enable;
-        locations."/api".proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}";
-        # The web terminal (/api/terminal/<serverId>) is a websocket; nginx
-        # only proxies the upgrade with the Upgrade/Connection headers set.
-        # The endpoint authenticates the garnix session + server ownership
-        # in-app (see Garnix.API.Terminal); when fronting the API with an
-        # additional auth gate (oauth2-proxy/Authentik or similar), keep
-        # /api/terminal behind that gate like the rest of /api — never add it
-        # to a bypass/allow list. See docs/web-terminal.md.
-        locations."/api/terminal/" = {
-          proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}";
-          proxyWebsockets = true;
-        };
-        locations."@frontend".proxyPass = "http://127.0.0.1:${toString config.services.frontend.port}";
-        locations."/" = {
-          root = "${flakePackages.frontend_default}/public";
-          tryFiles = "$uri @frontend";
-        };
+    services = {
+      garnixServer = {
+        s3Cache = lib.mkMerge [
+          (lib.mkIf config.garnix.devMode.enable {
+            publicBucket = "test-public";
+            publicBaseUrl = "https://pub-aed3ff3b65d444b3aeee39d6ea1767b0.r2.dev";
+            privateBucket = "test-private";
+            host = "79e0f6a031ca6d9650034b607922ba45.r2.cloudflarestorage.com";
+          })
+          (lib.mkIf (!config.garnix.devMode.enable) {
+            publicBucket = "prod-public";
+            publicBaseUrl = "https://garnix-cache.com";
+            privateBucket = "prod-private";
+            host = "79e0f6a031ca6d9650034b607922ba45.r2.cloudflarestorage.com";
+          })
+        ];
       };
-      virtualHosts."api.garnix.io" = {
-        default = false;
-        forceSSL = ! config.garnix.devMode.enable;
-        enableACME = ! config.garnix.devMode.enable;
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}/api/";
-          extraConfig = ''
-            if ($http_origin ~* "^https://(app\.)?garnix\.io$") {
-              add_header Access-Control-Allow-Origin "$http_origin";
-            }
-          '';
-        };
-      };
-    };
 
-    services.journald.extraConfig = ''
-      SystemMaxUse=${config.services.garnixServer.journaldMaxUse}
-      SystemMaxFiles=1000
-    '';
+      nginx = lib.mkIf config.services.garnixServer.enableNginx {
+        enable = true;
+        recommendedProxySettings = true;
+        recommendedOptimisation = true;
+        recommendedGzipSettings = true;
+        proxyTimeout = "600s";
+        appendConfig = ''
+          worker_processes auto;
+          worker_rlimit_nofile 2048;
+        '';
+        eventsConfig = ''
+          worker_connections 1024;
+        '';
+        virtualHosts."garnix.io" = {
+          default = true;
+          forceSSL = !config.garnix.devMode.enable;
+          enableACME = !config.garnix.devMode.enable;
+          locations = {
+            "/api".proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}";
+            # The web terminal (/api/terminal/<serverId>) is a websocket; nginx
+            # only proxies the upgrade with the Upgrade/Connection headers set.
+            # The endpoint authenticates the garnix session + server ownership
+            # in-app (see Garnix.API.Terminal); when fronting the API with an
+            # additional auth gate (oauth2-proxy/Authentik or similar), keep
+            # /api/terminal behind that gate like the rest of /api — never add it
+            # to a bypass/allow list. See docs/web-terminal.md.
+            "/api/terminal/" = {
+              proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}";
+              proxyWebsockets = true;
+            };
+            "@frontend".proxyPass = "http://127.0.0.1:${toString config.services.frontend.port}";
+            "/" = {
+              root = "${flakePackages.frontend_default}/public";
+              tryFiles = "$uri @frontend";
+            };
+          };
+        };
+        virtualHosts."api.garnix.io" = {
+          default = false;
+          forceSSL = !config.garnix.devMode.enable;
+          enableACME = !config.garnix.devMode.enable;
+          locations."/" = {
+            proxyPass = "http://127.0.0.1:${toString config.services.garnixServer.port}/api/";
+            extraConfig = ''
+              if ($http_origin ~* "^https://(app\.)?garnix\.io$") {
+                add_header Access-Control-Allow-Origin "$http_origin";
+              }
+            '';
+          };
+        };
+      };
+
+      journald.extraConfig = ''
+        SystemMaxUse=${config.services.garnixServer.journaldMaxUse}
+        SystemMaxFiles=1000
+      '';
+    };
 
     sops.secrets = lib.mkIf config.garnix.manageSecretsWithSops {
       database-password = {
