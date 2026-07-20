@@ -271,11 +271,16 @@ deleteHost (Authenticated (WebSession user ghToken)) serverId = do
     _ -> throw NotFound
 deleteHost _ _ = throw Unauthorized
 
--- | Redeploy a server: re-run the build+deploy pipeline for the commit the
--- server's current configuration was built from. Works for both branch and PR
--- deployments (the commit's own ref is reconstructed from its build row). Same
--- auth + ownership gate as GET /api/hosts/<id>/stats. Runs asynchronously; the
--- pipeline's progress shows on the usual commit/run pages.
+-- | Redeploy a server: kick off a FRESH build+deploy job on a new synthetic
+-- @manual-<timestamp>@ commit, so it gets its own commit page with a single
+-- "eval → build all → deploy once" pass. For a branch deployment this
+-- re-evaluates the branch's current HEAD via 'Orchestrator.triggerBranchBuild'
+-- (the same primitive as the "Trigger Builds" button). We deliberately do NOT
+-- reuse the server's original commit (via 'restartCommit'): that piles the new
+-- runs onto the original push's commit page, which reads as a duplicate deploy.
+-- PR deployments have no manual-branch trigger, so they fall back to re-running
+-- the config's own commit. Same auth + ownership gate as GET
+-- /api/hosts/<id>/stats. Async; progress shows on the new commit/run page.
 redeployHost :: AuthResult AuthJwtPayload -> ServerId -> M ()
 redeployHost (Authenticated (WebSession user ghToken)) serverId = do
   servers <-
@@ -286,7 +291,14 @@ redeployHost (Authenticated (WebSession user ghToken)) serverId = do
   case filter ((== serverId) . _runningServerId) servers of
     (server : _) -> do
       build <- DB.getBuild (_runningServerConfigurationBuildId server)
-      forkM $ Orchestrator.restartCommit (user ^. githubLogin) build
+      let owner = _runningServerRepoOwner server
+          repo = _runningServerRepoName server
+          publicity = build ^. repoIsPublic
+      case _runningServerType server of
+        BranchDeployment branch ->
+          forkM . void $ Orchestrator.triggerBranchBuild (user ^. githubLogin) publicity owner repo branch
+        GhPrDeployment _ ->
+          forkM $ Orchestrator.restartCommit (user ^. githubLogin) build
     [] -> throw NotFound
 redeployHost _ _ = throw Unauthorized
 
