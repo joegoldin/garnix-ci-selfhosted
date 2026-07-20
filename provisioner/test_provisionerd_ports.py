@@ -498,38 +498,37 @@ class GuestSpecTests(unittest.TestCase):
 
 
 class ExposeTests(unittest.TestCase):
-    def expose_without_system_side_effects(self, exposed_dir, req):
-        def noop(*args, **kwargs):
-            return None
-
-        with patched_pd(
-            EXPOSED_DIR=exposed_dir,
-            PORT_RANGE_END=41999,
-            add_dnat=noop,
-            del_dnat=noop,
-            flush_host_port_rules=noop,
-            flush_forward_accepts=noop,
-        ):
-            return required_callable("do_expose")(req)
+    def expose_with_firewall(self, exposed_dir, req, firewall=None, **settings):
+        firewall = firewall or FakeIptables()
+        values = {
+            "EXPOSED_DIR": exposed_dir,
+            "SSH_PORT_BASE": 22000,
+            "TCP_PORT_BASE": 32000,
+            "PORT_RANGE_END": 41999,
+            "UPLINK": "eth0",
+            "run": firewall.run,
+        }
+        values.update(settings)
+        with patched_pd(**values):
+            result = required_callable("do_expose")(req)
+        return result, firewall
 
     def test_do_expose_allocates_lowest_ports_free_in_registry(self):
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "garnix-other.json"), "w") as f:
-                json.dump(
-                    {
-                        "ip": "10.111.0.99",
-                        "rules": [
-                            {"host": 22000, "guest": 22},
-                            {"host": 32000, "guest": 8080},
-                        ],
-                    },
-                    f,
-                )
-            result = self.expose_without_system_side_effects(
+            write_state(
                 d,
-                {"id": 42, "ssh_expose": True, "tcp_ports": [80, 443]},
+                "garnix-other",
+                {
+                    "ip": "10.111.0.99",
+                    "rules": [
+                        {"host": 22000, "guest": 22},
+                        {"host": 32000, "guest": 8080},
+                    ],
+                },
             )
-
+            result, _ = self.expose_with_firewall(
+                d, {"id": 42, "ssh_expose": True, "tcp_ports": [80, 443]}
+            )
         self.assertEqual(
             result,
             {
@@ -542,70 +541,514 @@ class ExposeTests(unittest.TestCase):
         )
 
     def test_do_expose_preserves_this_guests_previous_ports(self):
+        old_nat = [
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "22007",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:22",
+            ],
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "32009",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:80",
+            ],
+        ]
+        old_forward = [
+            [
+                "-A",
+                "FORWARD",
+                "-p",
+                "tcp",
+                "-d",
+                "10.111.0.52/32",
+                "--dport",
+                "22",
+                "-j",
+                "ACCEPT",
+            ],
+            [
+                "-A",
+                "FORWARD",
+                "-p",
+                "tcp",
+                "-d",
+                "10.111.0.52/32",
+                "--dport",
+                "80",
+                "-j",
+                "ACCEPT",
+            ],
+        ]
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "garnix-42.json"), "w") as f:
-                json.dump(
-                    {
-                        "ip": "10.111.0.52",
-                        "rules": [
-                            {"host": 22007, "guest": 22},
-                            {"host": 32009, "guest": 80},
-                        ],
-                    },
-                    f,
-                )
-            result = self.expose_without_system_side_effects(
+            write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [
+                        {"host": 22007, "guest": 22},
+                        {"host": 32009, "guest": 80},
+                    ],
+                },
+            )
+            result, _ = self.expose_with_firewall(
                 d,
                 {"id": 42, "ssh_expose": True, "tcp_ports": [80]},
+                firewall=FakeIptables(nat=old_nat, forward=old_forward),
             )
-
         self.assertEqual(
             result,
-            {
-                "ssh_port": 22007,
-                "tcp_ports": [{"guest": 80, "host": 32009}],
-            },
+            {"ssh_port": 22007, "tcp_ports": [{"guest": 80, "host": 32009}]},
         )
 
-    def test_do_expose_flushes_guest_and_selected_ports_before_adding_dnat(self):
-        events = []
-
-        def noop(*args, **kwargs):
-            return None
-
-        def flush_forward(ip):
-            events.append(("flush-forward", ip))
-
-        def flush_host(port):
-            events.append(("flush-host", port))
-
-        def add_dnat(host, ip, guest):
-            events.append(("add", host, ip, guest))
-
-        with tempfile.TemporaryDirectory() as d, patched_pd(
-            EXPOSED_DIR=d,
-            PORT_RANGE_END=41999,
-            add_dnat=add_dnat,
-            del_dnat=noop,
-            flush_host_port_rules=flush_host,
-            flush_forward_accepts=flush_forward,
-        ):
-            required_callable("do_expose")(
-                {"id": 42, "ssh_expose": True, "tcp_ports": [80, 443]}
+    def test_do_expose_replaces_stale_guest_rules_and_preserves_unrelated_rules(self):
+        unrelated_nat = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "udp",
+            "--dport",
+            "32000",
+            "-j",
+            "ACCEPT",
+        ]
+        stale_nat = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "32999",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:9000",
+        ]
+        unrelated_forward = [
+            "-A",
+            "FORWARD",
+            "-p",
+            "udp",
+            "-d",
+            "10.111.0.52/32",
+            "--dport",
+            "9000",
+            "-j",
+            "ACCEPT",
+        ]
+        stale_forward = [
+            "-A",
+            "FORWARD",
+            "-p",
+            "tcp",
+            "-d",
+            "10.111.0.52/32",
+            "--dport",
+            "9000",
+            "-j",
+            "ACCEPT",
+        ]
+        firewall = FakeIptables(
+            nat=[unrelated_nat, stale_nat],
+            forward=[unrelated_forward, stale_forward],
+        )
+        with tempfile.TemporaryDirectory() as d:
+            _, firewall = self.expose_with_firewall(
+                d,
+                {"id": 42, "ssh_expose": True, "tcp_ports": [80, 443]},
+                firewall=firewall,
             )
+        self.assertIn(unrelated_nat, firewall.rules[("nat", "PREROUTING")])
+        self.assertNotIn(stale_nat, firewall.rules[("nat", "PREROUTING")])
+        self.assertIn(unrelated_forward, firewall.rules[(None, "FORWARD")])
+        self.assertNotIn(stale_forward, firewall.rules[(None, "FORWARD")])
 
+    def test_exhaustion_preflight_preserves_old_state_and_makes_no_firewall_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32000, "guest": 80}],
+                },
+            )
+            with open(path, "rb") as f:
+                before = f.read()
+            firewall = FakeIptables()
+            with patched_pd(
+                EXPOSED_DIR=d,
+                SSH_PORT_BASE=22000,
+                TCP_PORT_BASE=32000,
+                PORT_RANGE_END=32000,
+                UPLINK="eth0",
+                run=firewall.run,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "no free host port"):
+                    required_callable("do_expose")(
+                        {"id": 42, "ssh_expose": False, "tcp_ports": [80, 443]}
+                    )
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), before)
+            self.assertEqual(firewall.calls, [])
+
+    def test_duplicate_tcp_ports_get_one_stable_mapping(self):
+        with tempfile.TemporaryDirectory() as d:
+            first, firewall = self.expose_with_firewall(
+                d,
+                {"id": 42, "ssh_expose": False, "tcp_ports": [80, 80, 443, 80]},
+            )
+            second, firewall = self.expose_with_firewall(
+                d,
+                {"id": 42, "ssh_expose": False, "tcp_ports": [80, 80, 443]},
+                firewall=firewall,
+            )
         self.assertEqual(
-            events,
-            [
-                ("flush-forward", "10.111.0.52"),
-                ("flush-host", 22000),
-                ("add", 22000, "10.111.0.52", 22),
-                ("flush-host", 32000),
-                ("add", 32000, "10.111.0.52", 80),
-                ("flush-host", 32001),
-                ("add", 32001, "10.111.0.52", 443),
-            ],
+            first["tcp_ports"],
+            [{"guest": 80, "host": 32000}, {"guest": 443, "host": 32001}],
         )
+        self.assertEqual(second, first)
+
+    def test_tcp_22_shares_ssh_mapping_when_ssh_is_exposed(self):
+        with tempfile.TemporaryDirectory() as d:
+            result, _ = self.expose_with_firewall(
+                d, {"id": 42, "ssh_expose": True, "tcp_ports": [22, 22]}
+            )
+            with open(os.path.join(d, "garnix-42.json")) as f:
+                state = json.load(f)
+        self.assertEqual(
+            result,
+            {"ssh_port": 22000, "tcp_ports": [{"guest": 22, "host": 22000}]},
+        )
+        self.assertEqual(state["rules"], [{"host": 22000, "guest": 22}])
+
+    def test_tcp_22_uses_tcp_range_without_ssh_exposure(self):
+        with tempfile.TemporaryDirectory() as d:
+            result, _ = self.expose_with_firewall(
+                d, {"id": 42, "ssh_expose": False, "tcp_ports": [22]}
+            )
+        self.assertEqual(
+            result,
+            {"ssh_port": None, "tcp_ports": [{"guest": 22, "host": 32000}]},
+        )
+
+    def test_registry_write_failure_rolls_back_exact_live_rules(self):
+        old_nat = [
+            ["-A", "PREROUTING", "-p", "tcp", "--dport", "9999", "-j", "ACCEPT"],
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "32009",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:80",
+            ],
+            ["-A", "PREROUTING", "-p", "udp", "--dport", "32009", "-j", "ACCEPT"],
+        ]
+        old_forward = [
+            [
+                "-A",
+                "FORWARD",
+                "-p",
+                "tcp",
+                "-d",
+                "10.111.0.52/32",
+                "--dport",
+                "80",
+                "-j",
+                "ACCEPT",
+            ]
+        ]
+        firewall = FakeIptables(nat=old_nat, forward=old_forward)
+        with tempfile.TemporaryDirectory() as d:
+            path = write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32009, "guest": 80}],
+                },
+            )
+            with open(path, "rb") as f:
+                before = f.read()
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run, UPLINK="eth0"):
+                with mock.patch.object(pd, "write_exposure", side_effect=OSError("disk full")):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        required_callable("do_expose")(
+                            {"id": 42, "ssh_expose": False, "tcp_ports": [80]}
+                        )
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), before)
+        self.assertEqual(firewall.rules[("nat", "PREROUTING")], old_nat)
+        self.assertEqual(firewall.rules[(None, "FORWARD")], old_forward)
+
+    def test_add_failure_rolls_back_deleted_rules_in_original_order(self):
+        old_nat = [
+            ["-A", "PREROUTING", "-p", "tcp", "--dport", "9998", "-j", "ACCEPT"],
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "32009",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:80",
+            ],
+            ["-A", "PREROUTING", "-p", "tcp", "--dport", "9999", "-j", "ACCEPT"],
+        ]
+        firewall = FakeIptables(nat=old_nat, fail_when=lambda cmd: "-A" in cmd)
+        with tempfile.TemporaryDirectory() as d:
+            write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32009, "guest": 80}],
+                },
+            )
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run, UPLINK="eth0"):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    required_callable("do_expose")(
+                        {"id": 42, "ssh_expose": False, "tcp_ports": [80]}
+                    )
+        self.assertEqual(firewall.rules[("nat", "PREROUTING")], old_nat)
+
+    def test_invalid_registry_fails_before_firewall_side_effects(self):
+        invalid = [
+            '{"ip":',
+            "[]",
+            '{"ip":"10.111.0.52","rules":[{"guest":80}]}',
+            '{"ip":"10.111.0.52","rules":[{"host":"32000","guest":80}]}',
+            '{"ip":"10.111.0.99","rules":[]}',
+        ]
+        for body in invalid:
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "garnix-42.json")
+                with open(path, "w") as f:
+                    f.write(body)
+                firewall = FakeIptables()
+                with patched_pd(EXPOSED_DIR=d, run=firewall.run):
+                    with self.assertRaises(RuntimeError):
+                        required_callable("do_expose")(
+                            {"id": 42, "ssh_expose": False, "tcp_ports": [80]}
+                        )
+                self.assertEqual(firewall.calls, [])
+                with open(path) as f:
+                    self.assertEqual(f.read(), body)
+
+    def test_delete_failure_aborts_before_new_rule_is_added(self):
+        old = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "32009",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
+        ]
+        firewall = FakeIptables(nat=[old], fail_when=lambda cmd: "-D" in cmd)
+        with tempfile.TemporaryDirectory() as d:
+            write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32009, "guest": 80}],
+                },
+            )
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run, UPLINK="eth0"):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    required_callable("do_expose")(
+                        {"id": 42, "ssh_expose": False, "tcp_ports": [80]}
+                    )
+        mutations = [call[0] for call in firewall.calls if "-S" not in call[0]]
+        self.assertTrue(mutations)
+        self.assertTrue(all("-A" not in cmd for cmd in mutations))
+
+    def test_rollback_failure_reports_both_failures(self):
+        old = [
+            "-A",
+            "PREROUTING",
+            "-i",
+            "eth0",
+            "-p",
+            "tcp",
+            "--dport",
+            "32009",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.111.0.52:80",
+        ]
+        failures = {"add": False}
+
+        def fail_when(cmd):
+            if "-A" in cmd:
+                failures["add"] = True
+                return True
+            return failures["add"] and "-I" in cmd
+
+        firewall = FakeIptables(nat=[old], fail_when=fail_when)
+        with tempfile.TemporaryDirectory() as d:
+            write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32009, "guest": 80}],
+                },
+            )
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run, UPLINK="eth0"):
+                with self.assertRaisesRegex(RuntimeError, "rollback also failed"):
+                    required_callable("do_expose")(
+                        {"id": 42, "ssh_expose": False, "tcp_ports": [80]}
+                    )
+
+    def test_remove_exposure_validates_before_mutating(self):
+        firewall = FakeIptables()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "garnix-42.json")
+            with open(path, "w") as f:
+                f.write('{"ip":')
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run):
+                with self.assertRaises(RuntimeError):
+                    required_callable("remove_exposure")("garnix-42")
+            self.assertEqual(firewall.calls, [])
+            self.assertTrue(os.path.exists(path))
+
+    def test_remove_exposure_commits_rule_and_registry_removal(self):
+        old_nat = [
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "32009",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:80",
+            ]
+        ]
+        old_forward = [
+            [
+                "-A",
+                "FORWARD",
+                "-p",
+                "tcp",
+                "-d",
+                "10.111.0.52/32",
+                "--dport",
+                "80",
+                "-j",
+                "ACCEPT",
+            ]
+        ]
+        firewall = FakeIptables(nat=old_nat, forward=old_forward)
+        with tempfile.TemporaryDirectory() as d:
+            path = write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32009, "guest": 80}],
+                },
+            )
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run, UPLINK="eth0"):
+                required_callable("remove_exposure")("garnix-42")
+            self.assertFalse(os.path.exists(path))
+        self.assertEqual(firewall.rules[("nat", "PREROUTING")], [])
+        self.assertEqual(firewall.rules[(None, "FORWARD")], [])
+
+    def test_remove_exposure_unlink_failure_restores_live_rules(self):
+        old_nat = [
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "32009",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:80",
+            ]
+        ]
+        old_forward = [
+            [
+                "-A",
+                "FORWARD",
+                "-p",
+                "tcp",
+                "-d",
+                "10.111.0.52/32",
+                "--dport",
+                "80",
+                "-j",
+                "ACCEPT",
+            ]
+        ]
+        firewall = FakeIptables(nat=old_nat, forward=old_forward)
+        with tempfile.TemporaryDirectory() as d:
+            path = write_state(
+                d,
+                "garnix-42",
+                {
+                    "ip": "10.111.0.52",
+                    "rules": [{"host": 32009, "guest": 80}],
+                },
+            )
+            with patched_pd(EXPOSED_DIR=d, run=firewall.run, UPLINK="eth0"):
+                with mock.patch.object(pd.os, "unlink", side_effect=OSError("unlink failed")):
+                    with self.assertRaisesRegex(OSError, "unlink failed"):
+                        required_callable("remove_exposure")("garnix-42")
+            self.assertTrue(os.path.exists(path))
+        self.assertEqual(firewall.rules[("nat", "PREROUTING")], old_nat)
+        self.assertEqual(firewall.rules[(None, "FORWARD")], old_forward)
 
 
 if __name__ == "__main__":

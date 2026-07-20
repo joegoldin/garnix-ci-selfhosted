@@ -65,7 +65,6 @@ GCROOTS_DIR = "/nix/var/nix/gcroots/microvm"
 UPLINK = os.environ.get("PROVISIONER_UPLINK", "eth0")
 SSH_PORT_BASE = int(os.environ.get("PROVISIONER_SSH_PORT_BASE", "22000"))
 TCP_PORT_BASE = int(os.environ.get("PROVISIONER_TCP_PORT_BASE", "32000"))
-# Each VM gets a contiguous block of this many host ports for tcp exposure.
 TCP_PORTS_PER_VM = 20
 # Inclusive top of the host DNAT port range (exposePortRange.to on the host).
 PORT_RANGE_END = int(os.environ.get("PROVISIONER_PORT_RANGE_END", "41999"))
@@ -204,16 +203,6 @@ def wait_for_ssh(ip: str, timeout: float):
     raise RuntimeError(f"guest {ip} did not open tcp/22 within {int(timeout)}s")
 
 
-def _iptables(op: str, table, chain: str, rest: list):
-    cmd = ["iptables"]
-    if table:
-        cmd += ["-t", table]
-    cmd += [op, chain] + rest
-    # Deletes may fail (rule absent); adds run only after a delete, so they stay
-    # unique. Never fatal — a failed rule shouldn't abort a deploy.
-    run(cmd, check=False)
-
-
 def _dnat_specs(host_port: int, guest_ip: str, guest_port: int):
     """(table, chain, rest-args) for the PREROUTING DNAT + FORWARD ACCEPT."""
     return [
@@ -229,17 +218,6 @@ def _dnat_specs(host_port: int, guest_ip: str, guest_port: int):
             ["-p", "tcp", "-d", guest_ip, "--dport", str(guest_port), "-j", "ACCEPT"],
         ),
     ]
-
-
-def add_dnat(host_port: int, guest_ip: str, guest_port: int):
-    for table, chain, rest in _dnat_specs(host_port, guest_ip, guest_port):
-        _iptables("-D", table, chain, rest)  # idempotent: clear a stale copy first
-        _iptables("-A", table, chain, rest)
-
-
-def del_dnat(host_port: int, guest_ip: str, guest_port: int):
-    for table, chain, rest in _dnat_specs(host_port, guest_ip, guest_port):
-        _iptables("-D", table, chain, rest)
 
 
 def _list_rules(table, chain: str) -> list:
@@ -332,32 +310,13 @@ def _rollback(journal: list):
         raise RuntimeError("firewall rollback failed: " + "; ".join(failures))
 
 
-def flush_host_port_rules(host_port: int):
-    snapshots = [
-        snapshot
-        for snapshot in _affected_firewall_rules({host_port}, "")
-        if snapshot[0] == "nat"
-    ]
-    journal = []
+def _rollback_after_failure(journal: list, original: BaseException):
     try:
-        _delete_snapshots(snapshots, journal)
-    except BaseException:
         _rollback(journal)
-        raise
-
-
-def flush_forward_accepts(guest_ip: str):
-    snapshots = [
-        snapshot
-        for snapshot in _affected_firewall_rules(set(), guest_ip)
-        if snapshot[0] is None
-    ]
-    journal = []
-    try:
-        _delete_snapshots(snapshots, journal)
-    except BaseException:
-        _rollback(journal)
-        raise
+    except Exception as rollback_error:
+        raise RuntimeError(
+            f"exposure update failed: {original}; rollback also failed: {rollback_error}"
+        ) from original
 
 
 def _exposure_path(name: str) -> str:
@@ -455,20 +414,83 @@ def alloc_host_port(used: set, lo: int, hi: int, preferred=None) -> int:
     raise RuntimeError(f"no free host port in {lo}-{hi}")
 
 
+def _normalize_tcp_ports(values) -> list:
+    ports = []
+    seen = set()
+    for raw in values:
+        if isinstance(raw, bool):
+            raise RuntimeError("TCP guest port must be an integer in 1-65535")
+        try:
+            port = int(raw)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("TCP guest port must be an integer in 1-65535") from error
+        if not 1 <= port <= 65535:
+            raise RuntimeError(f"TCP guest port {port} is outside 1-65535")
+        if port not in seen:
+            seen.add(port)
+            ports.append(port)
+    return ports[:TCP_PORTS_PER_VM]
+
+
+def _plan_exposure(name: str, ip: str, ssh_expose: bool, tcp_values) -> dict:
+    old_state = read_exposure(name)
+    if old_state is not None and old_state["ip"] != ip:
+        raise RuntimeError(
+            f"exposure registry {_exposure_path(name)} has IP {old_state['ip']}, expected {ip}"
+        )
+    used = allocated_host_ports()
+    preferred_ssh = None
+    preferred_tcp = {}
+    if old_state is not None:
+        for rule in old_state["rules"]:
+            used.remove(rule["host"])
+            if _exposure_rule_kind(rule["host"], rule["guest"], _exposure_path(name)) == "ssh":
+                preferred_ssh = rule["host"]
+            else:
+                preferred_tcp[rule["guest"]] = rule["host"]
+    tcp_ports = _normalize_tcp_ports(tcp_values)
+    new_rules = []
+    tcp_result = []
+    ssh_port = None
+    if ssh_expose:
+        ssh_port = alloc_host_port(
+            used, SSH_PORT_BASE, TCP_PORT_BASE - 1, preferred=preferred_ssh
+        )
+        new_rules.append({"host": ssh_port, "guest": 22})
+    for guest in tcp_ports:
+        if guest == 22 and ssh_port is not None:
+            tcp_result.append({"guest": 22, "host": ssh_port})
+            continue
+        host = alloc_host_port(
+            used, TCP_PORT_BASE, PORT_RANGE_END, preferred=preferred_tcp.get(guest)
+        )
+        new_rules.append({"host": host, "guest": guest})
+        tcp_result.append({"guest": guest, "host": host})
+    return {
+        "old_state": old_state,
+        "new_rules": new_rules,
+        "ssh_port": ssh_port,
+        "tcp_result": tcp_result,
+        "response": {"ssh_port": ssh_port, "tcp_ports": tcp_result},
+        "ip": ip,
+    }
+
+
 def remove_exposure(name: str):
-    """Delete any DNAT rules previously added for this VM, and the state file."""
-    try:
-        with open(_exposure_path(name)) as f:
-            state = json.load(f)
-    except (FileNotFoundError, ValueError):
+    state = read_exposure(name)
+    ip = state["ip"] if state is not None else vm_ip_from_name(name)
+    if not ip:
         return
-    ip = state.get("ip", vm_ip_from_name(name))
-    for rule in state.get("rules", []):
-        del_dnat(int(rule["host"]), ip, int(rule["guest"]))
+    host_ports = set() if state is None else {rule["host"] for rule in state["rules"]}
+    snapshots = _affected_firewall_rules(host_ports, ip)
+    journal = []
     try:
-        os.unlink(_exposure_path(name))
-    except FileNotFoundError:
-        pass
+        _delete_snapshots(snapshots, journal)
+        if state is not None:
+            os.unlink(_exposure_path(name))
+    except BaseException as error:
+        _rollback_after_failure(journal, error)
+        raise
 
 
 def write_exposure(name: str, ip: str, rules: list):
@@ -554,52 +576,27 @@ def do_status(req: dict) -> dict:
 
 
 def do_expose(req: dict) -> dict:
-    """Publish a guest's SSH and/or tcp ports on the host via DNAT. Host ports
-    come from a free-list over the exposure registry (EXPOSED_DIR), preferring
-    the VM's previous ports so re-exposing is stable; any stale rule on a
-    chosen host port is flushed before the fresh DNAT is added. Response:
-      {"ssh_port": Int|null, "tcp_ports": [{"guest": Int, "host": Int}, ...]}."""
     vm_id = int(req["id"])
     name = vm_name(vm_id)
     ip = vm_ip(vm_id)
     ssh_expose = bool(req.get("ssh_expose", False))
-    tcp_ports = [int(p) for p in req.get("tcp_ports", [])]
     with mutate_lock:
-        # Remember this VM's previous allocation before wiping it.
-        preferred = {}
-        prev_ssh = None
+        plan = _plan_exposure(name, ip, ssh_expose, req.get("tcp_ports", []))
+        old_rules = [] if plan["old_state"] is None else plan["old_state"]["rules"]
+        affected_ports = {rule["host"] for rule in old_rules + plan["new_rules"]}
+        snapshots = _affected_firewall_rules(affected_ports, ip)
+        journal = []
         try:
-            with open(_exposure_path(name)) as f:
-                prev = json.load(f)
-            for rule in prev.get("rules", []):
-                if int(rule["guest"]) == 22:
-                    prev_ssh = int(rule["host"])
-                else:
-                    preferred[int(rule["guest"])] = int(rule["host"])
-        except (FileNotFoundError, ValueError):
-            pass
-        # Re-exposing replaces prior rules (idempotent), including any strays
-        # aimed at this guest IP from an earlier tenant of the same id slot.
-        remove_exposure(name)
-        flush_forward_accepts(ip)
-        used = allocated_host_ports(exclude=name)
-        rules = []
-        ssh_port = None
-        if ssh_expose:
-            ssh_port = alloc_host_port(used, SSH_PORT_BASE, TCP_PORT_BASE - 1, preferred=prev_ssh)
-            flush_host_port_rules(ssh_port)
-            add_dnat(ssh_port, ip, 22)
-            rules.append({"host": ssh_port, "guest": 22})
-        tcp_result = []
-        for guest in tcp_ports[:TCP_PORTS_PER_VM]:
-            host_port = alloc_host_port(used, TCP_PORT_BASE, PORT_RANGE_END, preferred=preferred.get(guest))
-            flush_host_port_rules(host_port)
-            add_dnat(host_port, ip, guest)
-            rules.append({"host": host_port, "guest": guest})
-            tcp_result.append({"guest": guest, "host": host_port})
-        write_exposure(name, ip, rules)
-    log.info("exposed %s: ssh_port=%s tcp=%s", name, ssh_port, tcp_result)
-    return {"ssh_port": ssh_port, "tcp_ports": tcp_result}
+            _delete_snapshots(snapshots, journal)
+            for rule in plan["new_rules"]:
+                for table, chain, rest in _dnat_specs(rule["host"], ip, rule["guest"]):
+                    _append_rule(table, chain, rest, journal)
+            write_exposure(name, ip, plan["new_rules"])
+        except BaseException as error:
+            _rollback_after_failure(journal, error)
+            raise
+    log.info("exposed %s: ssh_port=%s tcp=%s", name, plan["ssh_port"], plan["tcp_result"])
+    return plan["response"]
 
 
 ACTIONS = {"create": do_create, "destroy": do_destroy, "status": do_status, "expose": do_expose}
