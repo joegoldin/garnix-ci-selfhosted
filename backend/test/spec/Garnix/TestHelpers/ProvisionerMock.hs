@@ -191,7 +191,10 @@ uncachedGetVmScript = do
         & setWorkingDir dir
         & addArgs
           [ "build",
-            ".#nixosConfigurations.provisioner-mock.config.system.build.vm",
+            -- Nix 2.34 can interpret a bare .# reference from a directory
+            -- below /tmp as git+file:///tmp. This fixture is an ordinary
+            -- path flake, so make that explicit.
+            "path:.#nixosConfigurations.provisioner-mock.config.system.build.vm",
             "--json",
             "--no-link" :: String
           ]
