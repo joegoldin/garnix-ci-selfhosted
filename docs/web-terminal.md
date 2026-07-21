@@ -17,17 +17,28 @@ On the backend (`Garnix.API.Terminal`) the connection:
 2. must reference a server **owned by that user** (the exact
    `getRunningAndRecentServersForOwners` membership check that
    `GET /api/hosts/<id>/stats` and `DELETE /api/hosts/<id>` use); otherwise
-   404, and the server must be Online,
+   404; the user must also pass the server repository's normal access check,
+   and the server must be Online,
 3. if a browser `Origin` header is present it must equal the configured
    `GARNIX_URL` origin (cross-site WebSocket hijacking defense; browsers
    always send `Origin` on ws handshakes), otherwise 403.
 
-Only then is a PTY attached to a **fixed argv** — `ssh` with the hosting
-identity keys (the same `sshArgsFor` mechanism deployments use), forwarding
-fully disabled (`ClearAllForwardings=yes`, no agent/X11 forwarding,
-`BatchMode=yes`, `IdentitiesOnly=yes`), to `garnix@<guest ip>` where the
-guest IP is resolved **from the database row**, never from the client. The
-client can only send terminal bytes and (clamped) resize dimensions.
+Only then does the backend create a throwaway Ed25519 keypair and sign its
+public key with the dedicated terminal CA. The 61-minute certificate is scoped
+to the selected, guest-declared non-root login user (plus a per-server
+principal), clears SSH certificate extensions, and restores only `permit-pty`.
+When configured, its `source-address` constraint pins authentication to the
+backend's address on the guest bridge. The CA private key remains on the garnix
+host and the throwaway keypair is removed when the session ends.
+
+A PTY is then attached to a **fixed argv** — `ssh` with that certificate and
+the deploy path's connection/host-key arguments, forwarding fully disabled
+(`ClearAllForwardings=yes`, no agent/X11 forwarding, `BatchMode=yes`,
+`IdentitiesOnly=yes`) — to `<login-user>@<guest ip>`. The guest IP is resolved
+**from the database row**, never from the client. The client can only send
+terminal bytes and (clamped) resize dimensions. The hosting/deploy key is not a
+certificate authority; terminal certificates are signed only by the dedicated
+CA.
 
 Sessions are bounded: at most 4 concurrent sessions per user, a 10-minute
 idle timeout and a 60-minute absolute limit; on every exit path the ssh
@@ -38,6 +49,73 @@ Terminal content is never written to logs — lifecycle events only.
 
 The security model assumes the endpoint sits behind the same reverse-proxy
 auth gate as the rest of `/api`. Concretely:
+
+### Dedicated terminal CA
+
+Generate a dedicated SSH CA keypair and expose only its private-key file to the
+backend and local provisioner. Do not reuse the hosting/deploy key and do not
+put the CA private key in a flake, guest, or Nix store path.
+
+```sh
+ssh-keygen -q -t ed25519 -N '' -C garnix-terminal-ca \
+  -f garnix_terminal_ca
+```
+
+Install the private file with permissions readable by the corresponding
+services, then configure the same path on both sides:
+
+```nix
+services.garnixServer = {
+  terminalCaKeyPath = "/run/secrets/garnix_terminal_ca";
+  # Optional but recommended: the host's address on the guest bridge.
+  terminalSourceAddress = "10.111.0.1/32";
+};
+garnix.local-provisioner.terminalCaPrivateKeyPath =
+  "/run/secrets/garnix_terminal_ca";
+```
+
+The provisioner option defaults to `/run/secrets/garnix_terminal_ca`; when
+`terminalCaKeyPath` is null, the backend uses that same effective default. If
+the backend cannot read the key, opening a terminal fails closed; it never
+signs with the hosting key as a fallback.
+
+### Guest trust and durable handoff
+
+Every deployed repository configuration must import the current
+`garnix-ci.nixosModules.garnix-guest`. The module configures:
+
+```text
+TrustedUserCAKeys /var/lib/garnix/terminal-ca.pub
+```
+
+The public key reaches that durable path in two stages. The provisioner's
+first-boot profile injects the actual CA public key and seeds the file. Before
+every initial activation and persistent redeployment, the backend derives the
+public key from its configured private key and installs it as `root:root` mode
+`0644` over the existing hosting SSH channel. Garnix activates the
+repository-built configuration only after this write succeeds. Consequently,
+repository activation and guest reboot preserve terminal trust, while the CA
+private key never enters the guest.
+
+`garnix.guest.terminalCaPublicKey` defaults to
+`garnix.guest.sshPublicKey` for repository-flake evaluation compatibility. Do
+not treat that fallback as the deployed trust source: the provisioner supplies
+the real first-boot value and the backend refreshes the durable file. Existing
+hosted repositories must bump their `garnix-ci` lock and redeploy once so their
+guest configuration points sshd at the durable path; updating only the host
+services cannot rewrite a stale repository-locked guest module.
+
+### CA rotation
+
+After replacing the CA private key, restart the backend and provisioner and
+redeploy every online server. Each redeploy installs the new public key before
+activation. Between the backend restart and a guest's redeploy, new browser
+terminal connections to that guest fail because it still trusts the old CA;
+existing SSH sessions continue. To avoid that gap, preinstall the new public
+key at `/var/lib/garnix/terminal-ca.pub` on every guest **alongside the old
+public key** (the file accepts multiple CA lines) through the hosting SSH
+channel before restarting the backend. Redeployment then replaces the
+transition file with the new public key alone.
 
 ### Self-host behind Caddy + oauth2-proxy (Authentik)
 
@@ -99,6 +177,9 @@ the rest of `/api`.
   proxy gate is a deliberate second layer.
 * Do not proxy the whole backend at the cache hostname (`X-Auth-Request-*`
   forgery — see the access-control notes in the self-host docs).
-* No IPs, domains or keys are (or may be) hardcoded for this feature: the
-  guest address comes from the `servers` table at connect time and the ssh
-  identity comes from `GARNIX_SERVER_SSH_KEYS`.
+* Do not place the terminal CA private key in a guest, repository, command
+  argument, or Nix store path. Only its public half belongs on guests.
+* No IPs, domains or keys are hardcoded for this feature: the guest address
+  comes from the `servers` table at connect time, the CA path comes from
+  `GARNIX_TERMINAL_CA_KEY`, and a new ephemeral session identity is minted for
+  each connection.

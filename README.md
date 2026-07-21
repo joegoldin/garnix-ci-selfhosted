@@ -72,7 +72,9 @@ NixOS machine. Everything below uses example values — substitute your own:
   `exposeSSH` (public DNAT), `authorizeDeployerGithubKeys`, `authorizedSSHKeys`,
   and `ports`; reach guests via tailscale, ProxyJump, or DNAT, and expose extra
   http/tcp ports. The guest's `garnix` user is login-closed and password auth is
-  off by default. See
+  off by default. The Servers page also provides an authenticated browser
+  terminal using short-lived certificates from a dedicated SSH CA, separate
+  from the hosting/deploy key. See
   [SSH into a deployed server](#ssh-into-a-deployed-server-and-expose-extra-ports).
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
   picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
@@ -168,6 +170,13 @@ via netrc).
     # Optional: authenticate sandboxed builds to extra substituters (attic…).
     # Must be readable by the garnix service user (0440 root:garnix).
     buildNetRcFile = config.age.secrets.build-netrc.path;
+
+    # Dedicated SSH CA used only for short-lived browser-terminal sessions.
+    # The local provisioner must use this same key (its default path matches).
+    terminalCaKeyPath = "/run/secrets/garnix_terminal_ca";
+    # Optional but recommended: restrict terminal certs to this host-side
+    # address on the guest bridge.
+    terminalSourceAddress = "10.111.0.1/32";
   };
 
   # The host is the builder: emulate aarch64 + expose the features garnix wants.
@@ -197,6 +206,7 @@ these with agenix/sops/whatever — **never** in the Nix store:
 | `opensearch-garnix` | opensearch auth |
 | `repo-secrets-key`, `repo-secrets-key-pub` | age keypair for repo secrets |
 | `garnix_action_runner_ssh` | SSH key the backend uses to reach the action runner (only if you run `actions` — see [Actions](#actions-running-actions-on-a-self-host-runner)). **Must be mode 0400** — OpenSSH rejects a group-readable key. |
+| `garnix_terminal_ca` | Dedicated SSH CA private key used only to sign short-lived browser-terminal certificates. Keep it off guests and out of the Nix store; both the backend and local provisioner default to this path. |
 | `s3-artifacts-public-access-key-id`, `s3-artifacts-public-secret-access-key`, `s3-artifacts-private-access-key-id`, `s3-artifacts-private-secret-access-key` | artifact buckets, one key pair each (only if you use `artifacts:` — see [Artifacts](#artifacts)) |
 
 With agenix, the shape is:
@@ -709,6 +719,8 @@ garnix.local-provisioner = {
   uplinkInterface = "eno1";              # your default-route interface
   nixpkgsFlake = "path:${nixpkgs}";      # store-path pins: no network fetch
   microvmFlake = "path:${microvm-nix}";
+  # Matches the backend's effective default CA path.
+  terminalCaPrivateKeyPath = "/run/secrets/garnix_terminal_ca";
 };
 services.garnixServer = {
   hostingDomain = "apps.garnix.example.com";
@@ -753,7 +765,12 @@ Guest contract: every deployed `nixosConfiguration` MUST import
 (fixed volume/share/network conventions — 20 GiB root, 20 GiB writable store
 overlay, virtiofs read-only store, DHCP) and set `garnix.guest.sshPublicKey`
 to the instance's hosting public key (derived at service start into
-`/var/lib/garnix-provisioner/hosting.pub`). See
+`/var/lib/garnix-provisioner/hosting.pub`). Keep the `garnix-ci` input current:
+the guest module must configure `TrustedUserCAKeys` with the durable terminal-CA
+path described below. `garnix.guest.terminalCaPublicKey` defaults to
+`sshPublicKey` only so repository flakes remain evaluable; the provisioner
+injects the actual terminal-CA public key for first boot, and the backend owns
+the durable copy after that. See
 [`examples/hello-server/flake.nix`](examples/hello-server/flake.nix) for a
 complete user repo.
 
@@ -865,14 +882,17 @@ Each row on the **Servers** page has, alongside Visit / Delete / Logs / Monitor:
   redeploys; works for both branch and PR deployments.
 - **Open Terminal** — an in-browser shell to the guest, at
   `/servers/<id>/terminal`. A websocket endpoint (`/api/terminal/<id>`) attaches
-  a PTY running `ssh garnix@<guest-ip>`; the guest IP is resolved from the DB,
-  never the client. It is authenticated (JWT/cookie) and ownership-checked
-  exactly like the stats endpoint, requires the server to be `Online`, and is
-  hardened: fixed command (no client-supplied host/args/options), no
-  port/agent/X11 forwarding, an `Origin` allowlist, a 10-minute idle / 60-minute
-  absolute timeout, and a per-user concurrency cap. Terminal bytes are never
-  logged. **The endpoint must stay behind your authenticated reverse-proxy gate**
-  — never bypass-list `/api/terminal`; see [`docs/web-terminal.md`](docs/web-terminal.md).
+  a PTY running SSH to the guest IP resolved from the DB, never from the client.
+  Each connection gets a throwaway key and a 61-minute user certificate signed
+  by the dedicated terminal CA; the CA private key never leaves the garnix
+  host. It is authenticated (JWT/cookie), repo-access checked, requires the
+  server to be `Online`, and is hardened: fixed command (no client-supplied
+  host/args/options), declared non-root login users only, no port/agent/X11
+  forwarding, an `Origin` allowlist, a 10-minute idle / 60-minute absolute
+  timeout, and a per-user concurrency cap. Terminal bytes are never logged.
+  **The endpoint must stay behind your authenticated reverse-proxy gate** —
+  never bypass-list `/api/terminal`; see
+  [`docs/web-terminal.md`](docs/web-terminal.md).
 
 **Login user.** The terminal defaults to the `garnix` user, but the "Login as"
 picker lets you switch. Its suggestions are the real login accounts on the guest:
@@ -881,8 +901,47 @@ at deploy time garnix reads them from the machine (`getent passwd`, minus
 configuration, and stores them on the server (`servers.ssh_users`, surfaced as
 `ssh_users`). You can also type any username; it is validated
 (`^[a-z_][a-z0-9_-]{0,31}$`) on both sides and passed as a single
-non-interpolated `user@ip` argument. Actual access is still enforced by the
-guest's own sshd (the chosen user must authorize the hosting key).
+non-interpolated `user@ip` argument. The backend only signs a certificate when
+the account was captured from that guest (with `garnix` as the built-in deploy
+user), always refuses `root`, and scopes the certificate to the chosen login
+principal.
+
+#### Terminal CA handoff, upgrades, and rotation
+
+Generate a CA key separately from the standing hosting/deploy key, deliver its
+private half only to the garnix host, and point both
+`services.garnixServer.terminalCaKeyPath` and
+`garnix.local-provisioner.terminalCaPrivateKeyPath` at it. The backend fails
+closed when the private key is absent; it never falls back to signing terminal
+certificates with the hosting key.
+
+The public half crosses into a guest through a compensating transaction:
+
+1. On first boot, the provisioner injects the public key and the guest profile
+   seeds `/var/lib/garnix/terminal-ca.pub`.
+2. Before every initial activation and persistent redeployment, the backend
+   derives the public key from its configured private key and installs it at
+   that durable path over the existing hosting SSH channel.
+3. Only after that write succeeds does garnix activate the repository-built
+   configuration. A failed handoff fails the deployment instead of activating
+   a guest that the browser terminal cannot authenticate to.
+4. The guest module points OpenSSH `TrustedUserCAKeys` at the durable `/var/lib`
+   file, so repository activation and guest reboot do not erase the trust root.
+
+When upgrading an existing deployment to this design, bump the `garnix-ci`
+flake input in every hosted repository and redeploy its servers. Updating only
+the backend/provisioner does not change a repository-locked guest module that
+still points sshd at the old `/etc` path.
+
+To rotate the terminal CA, replace the private key on the garnix host and
+restart the backend and provisioner, then redeploy every online server. The
+redeploy refreshes the durable public key before activation. New browser
+terminal connections to a not-yet-redeployed guest will fail after the backend
+starts signing with the new CA; existing SSH sessions are unaffected. For a
+no-gap rotation, preinstall the new public key on every guest through the
+hosting SSH channel **alongside the old public key** (the file accepts multiple
+CA lines) before restarting the backend. Redeployment then replaces the
+transition file with the new public key alone.
 
 ### Custom & vanity domains
 
