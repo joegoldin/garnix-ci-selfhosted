@@ -42,6 +42,7 @@ jest.mock("../../../age-wasm-compiled/index", () => ({
 let savedConfig: null | unknown = null;
 let user: UserEvent = userEvent.setup();
 let availableModules: AvailableModulesReply = { modules: [] };
+let savedConfigWriteDelayMs = 0;
 
 const setupTestModuleSchema = (
   fields: Record<string, ModuleSchema>,
@@ -319,7 +320,14 @@ const setupApiMocks = () => {
         return { status: 200, body: JSON.stringify(savedConfig) };
       })
       .with(["PUT", "/api/modules"], () => {
-        savedConfig = JSON.parse(req.body!.toString());
+        const config = JSON.parse(req.body!.toString());
+        if (savedConfigWriteDelayMs === 0) {
+          savedConfig = config;
+        } else {
+          setTimeout(() => {
+            savedConfig = config;
+          }, savedConfigWriteDelayMs);
+        }
         return { status: 200 };
       })
       .with(["GET", "/api/account/repos"], () => {
@@ -355,6 +363,7 @@ beforeEach(() => {
   jest.resetAllMocks();
   searchParams = new URLSearchParams();
   savedConfig = null;
+  savedConfigWriteDelayMs = 0;
   setupApiMocks();
   user = userEvent.setup();
 });
@@ -924,6 +933,7 @@ describe("modules config page", () => {
     });
 
     it("allows unselecting a module", async () => {
+      savedConfigWriteDelayMs = 250;
       render(<Entry />);
       await selectTestRepo();
       await selectModule("Rust");
@@ -932,37 +942,13 @@ describe("modules config page", () => {
       expectNoErrors();
       await simulateUserSave();
       expectNoErrors();
-      expect(savedConfig).toMatchInlineSnapshot(`
-{
-  "repo_name": "test-repo",
-  "repo_user": "test-user",
-  "user_config": [
-    {
-      "git_commit": "c534ff50b006663651d6445e3c55e76da7fd9947",
-      "module_name": "PostgreSQL",
-      "values": {
-        "tag": "set",
-        "value": {
-          "postgresql": {
-            "tag": "set",
-            "value": {
-              "postgresql-project": {
-                "tag": "set",
-                "value": {
-                  "port": {
-                    "tag": "int",
-                    "value": 5432,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  ],
-}
-`);
+      const expectedRequestBody: any = postgresAndRustConfig();
+      delete expectedRequestBody["modules"];
+      expectedRequestBody.user_config = expectedRequestBody.user_config.filter(
+        ({ module_name }: { module_name: string }) =>
+          module_name === "PostgreSQL",
+      );
+      await waitFor(() => expect(savedConfig).toEqual(expectedRequestBody));
       expectNoErrors();
     });
 
