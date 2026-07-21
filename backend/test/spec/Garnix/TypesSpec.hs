@@ -13,6 +13,39 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "Types" $ do
+  describe "exportKeysSshArgs" $ do
+    let opts user sudo =
+          ExportKeysOpts
+            { privateKey = error "not evaluated by exportKeysSshArgs",
+              ipAddr = "10.111.0.23",
+              targetPath = "/var/garnix/keys/repo-key",
+              sshArgs = ["-i", "/run/secrets/hosting-key"],
+              sshUser = user,
+              sshSudo = sudo
+            }
+
+    it "uses direct root delivery during first provisioning" $ do
+      exportKeysSshArgs (opts "root" False)
+        `shouldBe` [ "-i",
+                     "/run/secrets/hosting-key",
+                     "root@10.111.0.23",
+                     "tee",
+                     "/var/garnix/keys/repo-key",
+                     ">/dev/null"
+                   ]
+
+    it "uses non-interactive sudo through the garnix account on redeploy" $ do
+      exportKeysSshArgs (opts "garnix" True)
+        `shouldBe` [ "-i",
+                     "/run/secrets/hosting-key",
+                     "garnix@10.111.0.23",
+                     "sudo",
+                     "-n",
+                     "tee",
+                     "/var/garnix/keys/repo-key",
+                     ">/dev/null"
+                   ]
+
   describe "AuthJwtPayload" $ do
     it "correctly serializes to the old User type for backwards compatability" $ do
       now <- getCurrentTime

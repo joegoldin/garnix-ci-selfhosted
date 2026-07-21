@@ -10,6 +10,7 @@ module Garnix.Types.Keys
     RepoSecretsEncryptionPubKey (..),
     unsafeDecryptPrivateKey,
     exportKeys,
+    exportKeysSshArgs,
   )
 where
 
@@ -70,7 +71,9 @@ data ExportKeysOpts = ExportKeysOpts
   { privateKey :: PrivateKey,
     ipAddr :: Text,
     targetPath :: FilePath,
-    sshArgs :: [Text]
+    sshArgs :: [Text],
+    sshUser :: Text,
+    sshSudo :: Bool
   }
 
 exportKeys :: ExportKeysOpts -> RepoSecretsEncryptionKeyPath -> IO (Either Text ())
@@ -84,11 +87,20 @@ exportKeys opts id = do
       (exitCode, _, _) <-
         Proc.readProcessWithExitCode
           "ssh"
-          ( (cs <$> sshArgs opts) <> ["root@" <> cs (ipAddr opts), "cat >" <> targetPath opts]
-          )
+          (exportKeysSshArgs opts)
           (cs privKey)
       case exitCode of
         ExitSuccess -> pure $ Right ()
         ExitFailure _ -> pure $ Left "Exporting keys failed"
+
+-- | Fixed ssh argv for streaming a decrypted repo key to a guest. Exported so
+-- specs can pin the privilege boundary: first provisioning writes as root,
+-- while persistent redeploys use the guest's established garnix + sudo path.
+exportKeysSshArgs :: ExportKeysOpts -> [String]
+exportKeysSshArgs opts =
+  (cs <$> sshArgs opts)
+    <> [cs (sshUser opts) <> "@" <> cs (ipAddr opts)]
+    <> (if sshSudo opts then ["sudo", "-n"] else [])
+    <> ["tee", targetPath opts, ">/dev/null"]
 
 makePrisms ''PublicKey

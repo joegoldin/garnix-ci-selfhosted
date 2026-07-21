@@ -330,7 +330,7 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
         -- the repo key is RAM-only and vanishes if the VM ever power-cycles.
         -- Re-deliver it on every redeploy so decrypting services restarted by
         -- switch-to-configuration always find it. Idempotent on healthy guests.
-        copyKeys (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
+        copyKeys (SshUser "garnix") (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
         copyClosure (SshUser "garnix") serverInfo storePath <?> "Copying closure for redeployment"
         deploymentLogs <- switchToConfiguration (SshUser "garnix") serverInfo storePath <?> "Switching to redeployment configuration"
         now <- liftIO getCurrentTime
@@ -389,7 +389,7 @@ setupServer = curry3
     withStorePath build "out" $ \case
       Nothing -> throw $ OtherError "Store path is missing"
       Just storePath -> do
-        copyKeys repoInfo serverInfo
+        copyKeys (SshUser "root") repoInfo serverInfo
         copyClosure (SshUser "root") serverInfo storePath <?> "Copying closure"
         stderr <- switchToConfiguration (SshUser "root") serverInfo storePath <?> "Switching to configuration"
         return (serverInfo, stderr)
@@ -405,15 +405,16 @@ copyClosure (SshUser user) server storePath = do
       & addArgs ["--to", user <> "@" <> ip, cs storePath]
       & modifyEnvVar "NIX_SSHOPTS" (const $ Just $ cs $ T.intercalate " " sshArgs)
 
-copyKeys :: RepoInfo -> ServerInfo -> M ()
-copyKeys repoInfo server = do
+copyKeys :: SshUser -> RepoInfo -> ServerInfo -> M ()
+copyKeys (SshUser user) repoInfo server = do
   (ip, sshArgs) <- ServerPool.sshArgsFor server
   let keyLocation = "/var/garnix/keys/repo-key"
-  let doRemotely cmd =
+  let sudoArgs = if user == "root" then [] else ["sudo", "-n"]
+  let doRemotely args =
         runSubProcess
           $ Cradle.cmd "ssh"
-          & addArgs (sshArgs <> ["root@" <> cs ip, cmd])
-  doRemotely $ "mkdir -p " <> cs (takeDirectory keyLocation)
+          & addArgs (sshArgs <> [user <> "@" <> cs ip] <> sudoArgs <> args)
+  doRemotely ["mkdir", "-p", cs (takeDirectory keyLocation)]
   (_, privKey) <-
     getRepoKeys (repoInfo ^. ghRepoOwner) (repoInfo ^. ghRepoName)
       <?> "Get private keys"
@@ -425,13 +426,15 @@ copyKeys repoInfo server = do
             { privateKey = privKey,
               ipAddr = ip,
               targetPath = keyLocation,
-              sshArgs
+              sshArgs,
+              sshUser = user,
+              sshSudo = user /= "root"
             }
           repoSecretsKey
       )
       <?> "Export private keys to server"
   whenIs _Left exportResult $ throw . ProvisioningError
-  doRemotely $ "chmod 400 " <> cs keyLocation
+  doRemotely ["chmod", "400", cs keyLocation]
 
 -- | Drop garnix's own OIDC client credentials onto a guest that opted in via
 -- garnix.yaml (servers[].authentik = "default"). Written as oauth2-proxy env
