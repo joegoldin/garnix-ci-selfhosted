@@ -5,6 +5,7 @@ module Garnix.Hosting.Deploy
     stopServer,
     redeployServer,
     checkDeployPlan,
+    statsEnvContents,
   )
 where
 
@@ -21,11 +22,12 @@ import Data.Text.IO qualified as TIO
 import Garnix.API.Keys (getRepoKeys)
 import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
-import Garnix.LocalProvisioner (exposeServer)
 import Garnix.Duration
 import Garnix.Entitlements (getConfiguredEvalTimeout)
+import Garnix.Hosting.Domains qualified as Domains
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
+import Garnix.LocalProvisioner (exposeServer)
 import Garnix.Monad
 import Garnix.Monad.Polling (PollingConfig (PollingConfig), withPolling)
 import Garnix.Monad.SubProcess (runSubProcess)
@@ -35,7 +37,6 @@ import Garnix.Prelude
 import Garnix.Reporters.Utils (withRunReporter)
 import Garnix.Request
 import Garnix.Types
-import Garnix.Hosting.Domains qualified as Domains
 import Garnix.YamlConfig
 import Network.Wreq qualified as Wreq
 import System.Process qualified as Proc
@@ -280,7 +281,8 @@ startServer = curry4
       -- deployer's forge keys and/or explicit authorizedSSHKeys. Otherwise the
       -- garnix user stays login-closed (deploys still work via the hosting key).
       let authorizesGarnixUser =
-            serverToSpinUp ^. #authorizeDeployerGithubKeys
+            serverToSpinUp
+              ^. #authorizeDeployerGithubKeys
               || not (null (serverToSpinUp ^. #authorizedSSHKeys))
       when authorizesGarnixUser
         $ copyAuthorizedKeys
@@ -293,7 +295,8 @@ startServer = curry4
       -- provisioner; persist whatever it (plus the http routers) exposes, but
       -- only when the server actually declares ssh/ports.
       let wantsExposure =
-            serverToSpinUp ^. #exposeSSH
+            serverToSpinUp
+              ^. #exposeSSH
               || not (null (serverToSpinUp ^. #httpPorts))
               || not (null (serverToSpinUp ^. #tcpPorts))
       when wantsExposure $ do
@@ -332,6 +335,7 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
         -- switch-to-configuration always find it. Idempotent on healthy guests.
         copyKeys (SshUser "garnix") (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
         copyTerminalCa (SshUser "garnix") serverInfo <?> "Copying terminal CA public key"
+        copyStatsEnv (SshUser "garnix") serverInfo <?> "Copying guest stats configuration"
         copyClosure (SshUser "garnix") serverInfo storePath <?> "Copying closure for redeployment"
         deploymentLogs <- switchToConfiguration (SshUser "garnix") serverInfo storePath <?> "Switching to redeployment configuration"
         now <- liftIO getCurrentTime
@@ -392,6 +396,7 @@ setupServer = curry3
       Just storePath -> do
         copyKeys (SshUser "root") repoInfo serverInfo
         copyTerminalCa (SshUser "root") serverInfo <?> "Copying terminal CA public key"
+        copyStatsEnv (SshUser "root") serverInfo <?> "Copying guest stats configuration"
         copyClosure (SshUser "root") serverInfo storePath <?> "Copying closure"
         stderr <- switchToConfiguration (SshUser "root") serverInfo storePath <?> "Switching to configuration"
         return (serverInfo, stderr)
@@ -447,16 +452,44 @@ copyTerminalCa (SshUser user) server = do
       >>= either (throw . ProvisioningError) pure
   installResult <-
     liftIO
-      $ installPublicKey
-      $ InstallPublicKeyOpts
-        { installPublicKeyContents = publicKey,
-          installIpAddr = ip,
-          installTargetPath = "/var/lib/garnix/terminal-ca.pub",
-          installSshArgs = sshArgs,
-          installSshUser = user,
-          installSshSudo = user /= "root"
+      $ installPublicFile
+      $ InstallPublicFileOpts
+        { installPublicFileContents = publicKey,
+          installPublicFileIpAddr = ip,
+          installPublicFileTargetPath = "/var/lib/garnix/terminal-ca.pub",
+          installPublicFileSshOptions = sshArgs,
+          installPublicFileSshUser = user,
+          installPublicFileSshSudo = user /= "root"
         }
   either (throw . ProvisioningError) pure installResult
+
+-- | Refresh the non-secret stats endpoint/id before every activation. This is
+-- deliberately deployment-time as well as provisioner-time: existing guests
+-- acquire the durable file on their next redeploy, and endpoint changes do not
+-- require destructive VM recreation.
+copyStatsEnv :: SshUser -> ServerInfo -> M ()
+copyStatsEnv (SshUser user) server = do
+  domain <- view #hostingDomain
+  (ip, sshArgs) <- ServerPool.sshArgsFor server
+  installResult <-
+    liftIO
+      $ installPublicFile
+      $ InstallPublicFileOpts
+        { installPublicFileContents = statsEnvContents domain (server ^. provisionedServerId),
+          installPublicFileIpAddr = ip,
+          installPublicFileTargetPath = "/var/lib/garnix/stats.env",
+          installPublicFileSshOptions = sshArgs,
+          installPublicFileSshUser = user,
+          installPublicFileSshSudo = user /= "root"
+        }
+  either (throw . ProvisioningError) pure installResult
+
+statsEnvContents :: Text -> ProvisionedServerId -> Text
+statsEnvContents domain provisionerId =
+  T.unlines
+    [ "GARNIX_STATS_URL=https://" <> domain <> "/api/hosts/stats",
+      "GARNIX_PROVISIONER_ID=" <> show (getProvisionedServerId provisionerId)
+    ]
 
 -- | Drop garnix's own OIDC client credentials onto a guest that opted in via
 -- garnix.yaml (servers[].authentik = "default"). Written as oauth2-proxy env
@@ -565,12 +598,12 @@ exposedBlob serverToSpinUp authorizesGarnixUser exposeResult =
     hostForGuest = maybe [] _exposeResultTcpPorts exposeResult
     tcpEntries =
       [ Aeson.object ["name" Aeson..= name, "guest" Aeson..= guest, "host" Aeson..= host]
-      | (name, guest) <- serverToSpinUp ^. #tcpPorts,
-        host <- toList (lookup guest hostForGuest)
+        | (name, guest) <- serverToSpinUp ^. #tcpPorts,
+          host <- toList (lookup guest hostForGuest)
       ]
     httpEntries =
       [ Aeson.object ["name" Aeson..= name, "port" Aeson..= port]
-      | (name, port) <- serverToSpinUp ^. #httpPorts
+        | (name, port) <- serverToSpinUp ^. #httpPorts
       ]
 
 switchToConfiguration :: SshUser -> ServerInfo -> StorePath -> M Text

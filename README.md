@@ -1003,6 +1003,20 @@ Documentation) aggregates, via `GET /api/monitoring`:
 - **Jobs** — running/pending builds + actions/deploys and recent build durations.
 - **Deployments** — the live servers (from `/api/hosts`).
 
+Each server's **Monitor** view adds a rolling CPU/memory history reported by
+the guest. The provisioner seeds the non-secret endpoint and VM id into
+`/var/lib/garnix/stats.env`; the shared guest module always consumes that
+durable file, so reporting survives repository configuration activation and
+guest reboot. The reporter accepts only 2xx responses and surfaces redirects
+or HTTP errors in `garnix-stats-reporter.service`. Keep `/api/hosts/stats`
+outside the interactive-login gate; the backend independently restricts it to
+the guest bridge source subnet.
+
+When upgrading an existing deployment, update the repository's `garnix-ci`
+flake input and redeploy it once. The backend refreshes `stats.env` before the
+configuration switch, so the updated guest module starts reporting without VM
+recreation; subsequent redeploys also pick up endpoint changes automatically.
+
 ### Locking a deployed server behind Authentik (or any OIDC provider)
 
 `garnix-ci.nixosModules.garnix-authentik` gates a deployed server behind an

@@ -6,14 +6,14 @@ module Garnix.Types.Keys
     PrivateKey,
     makePrivateKey,
     ExportKeysOpts (..),
-    InstallPublicKeyOpts (..),
+    InstallPublicFileOpts (..),
     RepoSecretsEncryptionKeyPath (..),
     RepoSecretsEncryptionPubKey (..),
     unsafeDecryptPrivateKey,
     exportKeys,
     exportKeysSshArgs,
-    installPublicKey,
-    installPublicKeySshArgs,
+    installPublicFile,
+    installPublicFileSshArgs,
     deriveSshPublicKey,
   )
 where
@@ -81,13 +81,13 @@ data ExportKeysOpts = ExportKeysOpts
     sshSudo :: Bool
   }
 
-data InstallPublicKeyOpts = InstallPublicKeyOpts
-  { installPublicKeyContents :: Text,
-    installIpAddr :: Text,
-    installTargetPath :: FilePath,
-    installSshArgs :: [Text],
-    installSshUser :: Text,
-    installSshSudo :: Bool
+data InstallPublicFileOpts = InstallPublicFileOpts
+  { installPublicFileContents :: Text,
+    installPublicFileIpAddr :: Text,
+    installPublicFileTargetPath :: FilePath,
+    installPublicFileSshOptions :: [Text],
+    installPublicFileSshUser :: Text,
+    installPublicFileSshSudo :: Bool
   }
 
 exportKeys :: ExportKeysOpts -> RepoSecretsEncryptionKeyPath -> IO (Either Text ())
@@ -117,25 +117,25 @@ exportKeysSshArgs opts =
     <> (if sshSudo opts then ["sudo", "-n"] else [])
     <> ["tee", targetPath opts, ">/dev/null"]
 
-installPublicKey :: InstallPublicKeyOpts -> IO (Either Text ())
-installPublicKey opts = do
-  -- Stream only the public key and discard command output so neither the SSH
-  -- transport nor an unexpected remote error can add key material to logs.
+installPublicFile :: InstallPublicFileOpts -> IO (Either Text ())
+installPublicFile opts = do
+  -- Stream only the public contents and discard command output so neither the
+  -- SSH transport nor an unexpected remote error can add them to logs.
   (exitCode, _, _) <-
     Proc.readProcessWithExitCode
       "ssh"
-      (installPublicKeySshArgs opts)
-      (cs (installPublicKeyContents opts <> "\n"))
+      (installPublicFileSshArgs opts)
+      (cs (installPublicFileContents opts <> "\n"))
   case exitCode of
     ExitSuccess -> pure $ Right ()
-    ExitFailure _ -> pure $ Left "Installing public key failed"
+    ExitFailure _ -> pure $ Left "Installing public file failed"
 
-installPublicKeySshArgs :: InstallPublicKeyOpts -> [String]
-installPublicKeySshArgs opts =
-  (cs <$> installSshArgs opts)
-    <> [cs (installSshUser opts) <> "@" <> cs (installIpAddr opts)]
-    <> (if installSshSudo opts then ["sudo", "-n"] else [])
-    <> ["install", "-D", "-m", "0644", "/dev/stdin", installTargetPath opts]
+installPublicFileSshArgs :: InstallPublicFileOpts -> [String]
+installPublicFileSshArgs opts =
+  (cs <$> installPublicFileSshOptions opts)
+    <> [cs (installPublicFileSshUser opts) <> "@" <> cs (installPublicFileIpAddr opts)]
+    <> (if installPublicFileSshSudo opts then ["sudo", "-n"] else [])
+    <> ["install", "-D", "-m", "0644", "/dev/stdin", installPublicFileTargetPath opts]
 
 deriveSshPublicKey :: FilePath -> IO (Either Text Text)
 deriveSshPublicKey privateKeyPath = do

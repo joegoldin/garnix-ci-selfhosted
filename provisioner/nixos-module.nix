@@ -109,11 +109,12 @@ in
       example = "https://garnix.example.com/api/hosts/stats";
       description = ''
         Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats),
-        injected into every guest so its reporter can push CPU/RAM samples
-        (see guest-profile.nix). Guests reach it over the public API domain via
-        the bridge gateway's NAT — the same path they already use for
-        /api/keys/*, so the Caddy gate must expose /api/hosts/stats ungated.
-        Empty (default) disables the per-guest reporter.
+        injected into every guest's durable /var/lib/garnix/stats.env so its
+        reporter keeps pushing CPU/RAM samples after repository activation and
+        reboot (see guest-profile.nix). Guests reach it over the public API
+        domain via the bridge gateway's NAT — the same path they already use
+        for /api/keys/*, so the Caddy gate must expose /api/hosts/stats
+        ungated. Empty (default) leaves the per-guest reporter inert.
       '';
     };
     backendGroup = lib.mkOption {

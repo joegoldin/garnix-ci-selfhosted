@@ -33,7 +33,7 @@ let
     set -u
     # CPU utilisation from two /proc/stat snapshots ~1s apart.
     s1=$(head -n1 /proc/stat)
-    sleep 1
+    sleep "''${GARNIX_STATS_CPU_SAMPLE_DELAY:-1}"
     s2=$(head -n1 /proc/stat)
     cpu=$(awk -v a="$s1" -v b="$s2" 'BEGIN {
       na = split(a, x, " "); nb = split(b, y, " ");
@@ -49,23 +49,26 @@ let
     memused=$((memtotal - memavail))
     payload=$(printf '{"provisioner_id":%d,"cpu_pct":%s,"mem_used_kb":%d,"mem_total_kb":%d}' \
       "$GARNIX_PROVISIONER_ID" "$cpu" "$memused" "$memtotal")
-    # -f => an HTTP error (e.g. a 404 for an ended/orphaned server row) is a
-    # non-zero exit; -sS stays quiet on success but prints the error to stderr,
-    # which systemd captures into the journal. Retry a couple of transient
-    # failures before giving up; a final failure exits non-zero (visible in the
-    # unit state) instead of the old silent `|| true`.
+    # Accept exactly 2xx. curl's --fail only rejects 4xx/5xx, so relying on it
+    # would treat an Authentik 302 as a successful report even though no sample
+    # reached garnix. Retry a couple of transient failures before giving up; a
+    # final failure exits non-zero (visible in the unit state).
     attempt=1
     while :; do
-      if curl -fsS --max-time 10 -H 'Content-Type: application/json' \
-           -X POST -d "$payload" "$GARNIX_STATS_URL" >/dev/null; then
-        exit 0
+      if status=$(curl -sS --max-time 10 --output /dev/null \
+           --write-out '%{http_code}' -H 'Content-Type: application/json' \
+           -X POST -d "$payload" "$GARNIX_STATS_URL"); then
+        case "$status" in
+          2??) exit 0 ;;
+          *) echo "garnix-stats-report: unexpected HTTP status $status" >&2 ;;
+        esac
       fi
       if [ "$attempt" -ge 3 ]; then
         echo "garnix-stats-report: POST to garnix failed after $attempt attempts" >&2
         exit 1
       fi
       attempt=$((attempt + 1))
-      sleep 3
+      sleep "''${GARNIX_STATS_RETRY_DELAY:-3}"
     done
   '';
 in
@@ -92,9 +95,10 @@ in
       default = "";
       description = ''
         Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats).
-        When non-empty, a timer POSTs this guest's CPU/RAM sample there every
-        ~20s (best-effort). Injected by the provisioner at create time from
-        garnix.local-provisioner.statsReportUrl; empty disables the reporter.
+        When non-empty on the provisioned base configuration, it seeds the
+        durable /var/lib/garnix/stats.env consumed by the reporter every ~20s.
+        The reporter remains installed across repository activation; an absent
+        durable file keeps it inert on non-provisioned guests.
       '';
     };
     provisionerId = lib.mkOption {
@@ -180,6 +184,41 @@ in
         "d /var/lib/garnix 0755 root root - -"
         "C /var/lib/garnix/terminal-ca.pub 0644 root root - /etc/ssh/garnix-hosting-ca.pub"
       ];
+      # Keep the reporter installed in repository-built configurations too.
+      # Its provisioner-specific URL/id live in a durable, public runtime file
+      # seeded below on first boot; ConditionPathExists makes this inert on
+      # guests that were not created by garnix's local provisioner.
+      systemd.services.garnix-stats-reporter = {
+        description = "Report guest CPU/RAM to garnix";
+        unitConfig.ConditionPathExists = "/var/lib/garnix/stats.env";
+        # coreutils (head/sleep/printf), gawk, curl for the sampler + POST.
+        path = [
+          pkgs.coreutils
+          pkgs.gawk
+          pkgs.curl
+        ];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = statsScript;
+          DynamicUser = true;
+          EnvironmentFile = "/var/lib/garnix/stats.env";
+          # curl verifies TLS against the guest's system CA bundle.
+          Environment = [
+            "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+          ];
+        };
+      };
+      systemd.timers.garnix-stats-reporter = {
+        description = "Periodic guest CPU/RAM report to garnix";
+        unitConfig.ConditionPathExists = "/var/lib/garnix/stats.env";
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "30s";
+          OnUnitActiveSec = "20s";
+          # Guard against overlap if a report ever runs long.
+          AccuracySec = "1s";
+        };
+      };
       services.openssh = {
         enable = true;
         # Key-only, hardened sshd (no passwords), matching the garnix user-module.
@@ -246,42 +285,19 @@ in
       };
       system.stateVersion = "25.11";
     }
-    # Push-based resource reporter. Guests reach garnix over the public API
-    # domain (the same path provisioned guests already use for /api/keys/*):
-    # egress NATs out via the host bridge gateway, and Caddy serves the
-    # ungated /api/hosts/stats endpoint. Only wired up when the provisioner
-    # injected a stats URL.
+    # The first-boot provisioner knows the guest's id and stats endpoint. Seed
+    # those public values once into /var/lib so repository activation and guest
+    # reboot keep the reporter wired without baking host-specific values into a
+    # repository flake. `C` preserves an existing file for the same reason as
+    # the durable terminal-CA handoff above.
     (lib.mkIf statsEnabled {
-      systemd.services.garnix-stats-reporter = {
-        description = "Report guest CPU/RAM to garnix";
-        # coreutils (head/sleep/printf), gawk, curl for the sampler + POST.
-        path = [
-          pkgs.coreutils
-          pkgs.gawk
-          pkgs.curl
-        ];
-        serviceConfig = {
-          Type = "oneshot";
-          ExecStart = statsScript;
-          DynamicUser = true;
-          # curl verifies TLS against the guest's system CA bundle.
-          Environment = [
-            "GARNIX_STATS_URL=${cfg.statsReportUrl}"
-            "GARNIX_PROVISIONER_ID=${toString cfg.provisionerId}"
-            "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-          ];
-        };
-      };
-      systemd.timers.garnix-stats-reporter = {
-        description = "Periodic guest CPU/RAM report to garnix";
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnBootSec = "30s";
-          OnUnitActiveSec = "20s";
-          # Guard against overlap if a report ever runs long.
-          AccuracySec = "1s";
-        };
-      };
+      environment.etc."garnix/stats.env".text = ''
+        GARNIX_STATS_URL=${lib.escapeShellArg cfg.statsReportUrl}
+        GARNIX_PROVISIONER_ID=${toString cfg.provisionerId}
+      '';
+      systemd.tmpfiles.rules = [
+        "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env"
+      ];
     })
   ];
 }

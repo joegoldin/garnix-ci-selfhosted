@@ -1,9 +1,13 @@
 module Garnix.Hosting.DeploySpec where
 
+import Garnix.Hosting.Deploy (statsEnvContents)
 import Garnix.Prelude
+import Garnix.Types (ProvisionedServerId (ProvisionedServerId))
 import Test.Hspec
 
--- The deploy-cost breakdown (_costBreakdown / DeployCounts) was removed along
--- with billing in this self-hosting fork, so there is nothing left to test here.
 spec :: Spec
-spec = pure ()
+spec =
+  describe "statsEnvContents" $ do
+    it "renders the public endpoint and provisioner id for durable guest delivery" $ do
+      statsEnvContents "garnix.example" (ProvisionedServerId 42)
+        `shouldBe` "GARNIX_STATS_URL=https://garnix.example/api/hosts/stats\nGARNIX_PROVISIONER_ID=42\n"
