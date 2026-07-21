@@ -65,6 +65,7 @@ addTestSecrets test =
         ("GITHUB_APP_PK", githubAppPk),
         ("GITHUB_APP_NAME", "foo"),
         ("GARNIX_SERVER_SSH_KEYS", sshKey),
+        ("GARNIX_TERMINAL_CA_KEY", sshKey),
         ("JWT_KEY", jwtKey),
         -- withEnv requires this even though tests override #provisioner with the
         -- in-memory testProvisioner; the socket itself is never dialed.

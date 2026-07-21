@@ -9,6 +9,7 @@ import Data.Maybe (fromJust)
 import Data.Set qualified as Set
 import Data.String.Interpolate
 import Data.String.Interpolate.Util
+import Data.Text qualified as Text
 import Data.Text.IO qualified as T
 import Data.Tuple.Extra ((&&&))
 import Database.PostgreSQL.Typed (pgSQL)
@@ -165,7 +166,16 @@ spec = do
             resolve =<< buildFlake mempty =<< mkCommitInfo commit
             firstGenServer <- fromSingleton <$> getAllDbServers
 
+            terminalCaKey <- view #sshTerminalCaKey
+            expectedTerminalCa <-
+              liftIO (deriveSshPublicKey terminalCaKey)
+                >>= either (error . cs) pure
+
             void $ sshServer firstGenServer ["sudo", "touch", "/hello"]
+            void
+              $ sshServer
+                firstGenServer
+                ["sudo", "truncate", "-s", "0", "/var/lib/garnix/terminal-ca.pub"]
 
             liftIO $ writeFile (mockGithubRepo </> "flake.nix") (cs $ flakeWithPersistence True "db" "db" "second")
             commit2 <- commitAll mockGithubRepo
@@ -176,12 +186,14 @@ spec = do
             let secondGen = fromSingleton secondGenServers
 
             stdout <- sshServer secondGen ["sudo", "ls", "/hello"]
+            terminalCa <- sshServer secondGen ["cat", "/var/lib/garnix/terminal-ca.pub"]
 
             liftIO $ do
               firstGenServer ^. configurationBuildId `shouldNotBe` secondGen ^. configurationBuildId
               firstGenServer ^. id `shouldBe` secondGen ^. id
               firstGenServer ^. ipv4Addr `shouldBe` secondGen ^. ipv4Addr
               stdout `shouldBe` "/hello\n"
+              Text.strip (cs terminalCa) `shouldBe` expectedTerminalCa
 
           result `shouldBe` Right ()
 
@@ -253,6 +265,24 @@ spec = do
                 (sshArgs <> ["root@" <> cs ip, "cat /var/garnix/keys/repo-key"])
 
           liftIO $ cs result `shouldStartWith` "AGE-SECRET-KEY"
+
+      it "deploys the terminal CA public key to the durable guest path" $ do
+        let event = defaultEvent
+        runTestM $ withContext event $ \repoInfo branch -> do
+          commitInfo <- doABuild simpleFlake event repoInfo
+          writeMatchingConfig branch (PackageName "default")
+          [server] <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+          terminalCaKey <- view #sshTerminalCaKey
+          expected <-
+            liftIO (deriveSshPublicKey terminalCaKey)
+              >>= either (error . cs) pure
+          (ip, sshArgs) <- sshArgsFor server
+          StdoutRaw actual <-
+            run $ cmd "ssh"
+              & addArgs
+                (sshArgs <> ["root@" <> cs ip, "cat /var/lib/garnix/terminal-ca.pub"])
+
+          liftIO $ Text.strip (cs actual) `shouldBe` expected
 
       context "stopUnusedServers" $ do
         let mkCommitInfo c = do

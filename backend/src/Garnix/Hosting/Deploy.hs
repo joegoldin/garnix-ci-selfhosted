@@ -331,6 +331,7 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
         -- Re-deliver it on every redeploy so decrypting services restarted by
         -- switch-to-configuration always find it. Idempotent on healthy guests.
         copyKeys (SshUser "garnix") (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
+        copyTerminalCa (SshUser "garnix") serverInfo <?> "Copying terminal CA public key"
         copyClosure (SshUser "garnix") serverInfo storePath <?> "Copying closure for redeployment"
         deploymentLogs <- switchToConfiguration (SshUser "garnix") serverInfo storePath <?> "Switching to redeployment configuration"
         now <- liftIO getCurrentTime
@@ -390,6 +391,7 @@ setupServer = curry3
       Nothing -> throw $ OtherError "Store path is missing"
       Just storePath -> do
         copyKeys (SshUser "root") repoInfo serverInfo
+        copyTerminalCa (SshUser "root") serverInfo <?> "Copying terminal CA public key"
         copyClosure (SshUser "root") serverInfo storePath <?> "Copying closure"
         stderr <- switchToConfiguration (SshUser "root") serverInfo storePath <?> "Switching to configuration"
         return (serverInfo, stderr)
@@ -435,6 +437,26 @@ copyKeys (SshUser user) repoInfo server = do
       <?> "Export private keys to server"
   whenIs _Left exportResult $ throw . ProvisioningError
   doRemotely ["chmod", "400", cs keyLocation]
+
+copyTerminalCa :: SshUser -> ServerInfo -> M ()
+copyTerminalCa (SshUser user) server = do
+  (ip, sshArgs) <- ServerPool.sshArgsFor server
+  terminalCaKey <- view #sshTerminalCaKey
+  publicKey <-
+    liftIO (deriveSshPublicKey terminalCaKey)
+      >>= either (throw . ProvisioningError) pure
+  installResult <-
+    liftIO
+      $ installPublicKey
+      $ InstallPublicKeyOpts
+        { installPublicKeyContents = publicKey,
+          installIpAddr = ip,
+          installTargetPath = "/var/lib/garnix/terminal-ca.pub",
+          installSshArgs = sshArgs,
+          installSshUser = user,
+          installSshSudo = user /= "root"
+        }
+  either (throw . ProvisioningError) pure installResult
 
 -- | Drop garnix's own OIDC client credentials onto a guest that opted in via
 -- garnix.yaml (servers[].authentik = "default"). Written as oauth2-proxy env

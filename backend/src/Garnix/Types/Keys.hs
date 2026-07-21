@@ -6,15 +6,20 @@ module Garnix.Types.Keys
     PrivateKey,
     makePrivateKey,
     ExportKeysOpts (..),
+    InstallPublicKeyOpts (..),
     RepoSecretsEncryptionKeyPath (..),
     RepoSecretsEncryptionPubKey (..),
     unsafeDecryptPrivateKey,
     exportKeys,
     exportKeysSshArgs,
+    installPublicKey,
+    installPublicKeySshArgs,
+    deriveSshPublicKey,
   )
 where
 
 import Data.ByteString qualified as SBS
+import Data.Text qualified as T
 import Development.Shake qualified as Shake
 import Garnix.Prelude
 import Servant qualified
@@ -76,6 +81,15 @@ data ExportKeysOpts = ExportKeysOpts
     sshSudo :: Bool
   }
 
+data InstallPublicKeyOpts = InstallPublicKeyOpts
+  { installPublicKeyContents :: Text,
+    installIpAddr :: Text,
+    installTargetPath :: FilePath,
+    installSshArgs :: [Text],
+    installSshUser :: Text,
+    installSshSudo :: Bool
+  }
+
 exportKeys :: ExportKeysOpts -> RepoSecretsEncryptionKeyPath -> IO (Either Text ())
 exportKeys opts id = do
   eprivKey <- unsafeDecryptPrivateKey (privateKey opts) id
@@ -102,5 +116,37 @@ exportKeysSshArgs opts =
     <> [cs (sshUser opts) <> "@" <> cs (ipAddr opts)]
     <> (if sshSudo opts then ["sudo", "-n"] else [])
     <> ["tee", targetPath opts, ">/dev/null"]
+
+installPublicKey :: InstallPublicKeyOpts -> IO (Either Text ())
+installPublicKey opts = do
+  -- Stream only the public key and discard command output so neither the SSH
+  -- transport nor an unexpected remote error can add key material to logs.
+  (exitCode, _, _) <-
+    Proc.readProcessWithExitCode
+      "ssh"
+      (installPublicKeySshArgs opts)
+      (cs (installPublicKeyContents opts <> "\n"))
+  case exitCode of
+    ExitSuccess -> pure $ Right ()
+    ExitFailure _ -> pure $ Left "Installing public key failed"
+
+installPublicKeySshArgs :: InstallPublicKeyOpts -> [String]
+installPublicKeySshArgs opts =
+  (cs <$> installSshArgs opts)
+    <> [cs (installSshUser opts) <> "@" <> cs (installIpAddr opts)]
+    <> (if installSshSudo opts then ["sudo", "-n"] else [])
+    <> ["install", "-D", "-m", "0644", "/dev/stdin", installTargetPath opts]
+
+deriveSshPublicKey :: FilePath -> IO (Either Text Text)
+deriveSshPublicKey privateKeyPath = do
+  (exitCode, stdout, _) <-
+    Proc.readProcessWithExitCode
+      "ssh-keygen"
+      ["-y", "-f", privateKeyPath]
+      ""
+  let publicKey = T.strip (cs stdout)
+  case exitCode of
+    ExitSuccess | not (T.null publicKey) -> pure $ Right publicKey
+    _ -> pure $ Left "Deriving SSH public key failed"
 
 makePrisms ''PublicKey

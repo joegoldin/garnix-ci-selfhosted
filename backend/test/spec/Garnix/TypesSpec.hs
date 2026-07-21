@@ -46,6 +46,45 @@ spec = describe "Types" $ do
                      ">/dev/null"
                    ]
 
+  describe "installPublicKeySshArgs" $ do
+    let opts user sudo =
+          InstallPublicKeyOpts
+            { installPublicKeyContents = "ssh-ed25519 TERMINAL terminal",
+              installIpAddr = "10.111.0.23",
+              installTargetPath = "/var/lib/garnix/terminal-ca.pub",
+              installSshArgs = ["-i", "/run/secrets/hosting-key"],
+              installSshUser = user,
+              installSshSudo = sudo
+            }
+
+    it "uses direct root delivery during first provisioning" $ do
+      installPublicKeySshArgs (opts "root" False)
+        `shouldBe` [ "-i",
+                     "/run/secrets/hosting-key",
+                     "root@10.111.0.23",
+                     "install",
+                     "-D",
+                     "-m",
+                     "0644",
+                     "/dev/stdin",
+                     "/var/lib/garnix/terminal-ca.pub"
+                   ]
+
+    it "uses non-interactive sudo through the garnix account on redeploy" $ do
+      installPublicKeySshArgs (opts "garnix" True)
+        `shouldBe` [ "-i",
+                     "/run/secrets/hosting-key",
+                     "garnix@10.111.0.23",
+                     "sudo",
+                     "-n",
+                     "install",
+                     "-D",
+                     "-m",
+                     "0644",
+                     "/dev/stdin",
+                     "/var/lib/garnix/terminal-ca.pub"
+                   ]
+
   describe "AuthJwtPayload" $ do
     it "correctly serializes to the old User type for backwards compatability" $ do
       now <- getCurrentTime
