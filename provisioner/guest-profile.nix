@@ -171,6 +171,15 @@ in
         "net.ipv6.conf.default.accept_ra" = 0;
       };
       environment.etc."ssh/garnix-hosting-ca.pub".text = config.garnix.guest.terminalCaPublicKey + "\n";
+      # The provisioner-specific first boot renders the dedicated terminal CA
+      # above. Seed a durable public copy once so a repository-built NixOS
+      # configuration can trust the same CA after activation and reboot. The
+      # backend refreshes this file before every activation, including rotation;
+      # `C` deliberately leaves an existing authoritative copy untouched.
+      systemd.tmpfiles.rules = [
+        "d /var/lib/garnix 0755 root root - -"
+        "C /var/lib/garnix/terminal-ca.pub 0644 root root - /etc/ssh/garnix-hosting-ca.pub"
+      ];
       services.openssh = {
         enable = true;
         # Key-only, hardened sshd (no passwords), matching the garnix user-module.
@@ -196,11 +205,11 @@ in
         # only mint terminal certs (bounded by the login-user principal the backend
         # sets), and does NOT hand out the standing root/deploy key. The certs are
         # minted on demand by the backend and expire within the terminal-session
-        # window. The file keeps its historical name; its content is now the
-        # terminal CA. terminalCaPublicKey defaults to the hosting key, so guests
-        # deployed before H3 stay evaluable and keep working until recreated.
+        # window. The /etc file keeps its historical name and seeds the durable
+        # copy on first boot. terminalCaPublicKey defaults to the hosting key, so
+        # guests deployed before H3 stay evaluable until recreated.
         extraConfig = ''
-          TrustedUserCAKeys /etc/ssh/garnix-hosting-ca.pub
+          TrustedUserCAKeys /var/lib/garnix/terminal-ca.pub
           Match User garnix
             AuthorizedKeysFile .ssh/authorized_keys /var/garnix/keys/authorized_keys
           Match all

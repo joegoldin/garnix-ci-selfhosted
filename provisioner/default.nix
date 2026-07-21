@@ -3,7 +3,27 @@
 # command/package. Imported by flake.nix's per-system section; the NixOS modules
 # in this dir (nixos-module.nix, guest-profile.nix, authentik-guard.nix) are
 # imported by path elsewhere and are unaffected by this default.nix.
-{ pkgs, ... }:
+{ lib, pkgs, system, ... }:
+let
+  guestProfileConfig =
+    (lib.nixosSystem {
+      inherit system;
+      modules = [
+        ./guest-profile.nix
+        ({ lib, ... }: {
+          options.microvm = lib.mkOption {
+            type = lib.types.attrs;
+            default = { };
+          };
+          config = {
+            garnix.guest.sshPublicKey = "ssh-ed25519 HOSTING hosting";
+            garnix.guest.terminalCaPublicKey = "ssh-ed25519 TERMINAL terminal";
+            system.stateVersion = "25.11";
+          };
+        })
+      ];
+    }).config;
+in
 {
   commands = {
     authentikProvision = pkgs.writeShellApplication {
@@ -36,5 +56,18 @@
           python3 -m unittest test_provisionerd_ports -v
           touch "$out"
         '';
+    guestProfileTerminalCaTests =
+      assert lib.hasInfix
+        "TrustedUserCAKeys /var/lib/garnix/terminal-ca.pub"
+        guestProfileConfig.services.openssh.extraConfig;
+      assert builtins.elem
+        "d /var/lib/garnix 0755 root root - -"
+        guestProfileConfig.systemd.tmpfiles.rules;
+      assert builtins.elem
+        "C /var/lib/garnix/terminal-ca.pub 0644 root root - /etc/ssh/garnix-hosting-ca.pub"
+        guestProfileConfig.systemd.tmpfiles.rules;
+      pkgs.runCommand "guest-profile-terminal-ca-tests" { } ''
+        touch "$out"
+      '';
   };
 }
