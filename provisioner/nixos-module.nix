@@ -10,11 +10,10 @@
 # input-free): the consuming host must itself import
 # microvm.nixosModules.host and set `microvm.host.enable = true` so the
 # `microvm` CLI and the microvm@ service template exist.
-{
-  config,
-  lib,
-  pkgs,
-  ...
+{ config
+, lib
+, pkgs
+, ...
 }:
 let
   cfg = config.garnix.local-provisioner;
@@ -102,20 +101,6 @@ in
       type = lib.types.str;
       example = "path:/nix/store/...-source";
       description = "Flakeref the per-VM flakes pin microvm.nix to (same shape as nixpkgsFlake).";
-    };
-    statsReportUrl = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      example = "https://garnix.example.com/api/hosts/stats";
-      description = ''
-        Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats),
-        injected into every guest's durable /var/lib/garnix/stats.env so its
-        reporter keeps pushing CPU/RAM samples after repository activation and
-        reboot (see guest-profile.nix). Guests reach it over the public API
-        domain via the bridge gateway's NAT — the same path they already use
-        for /api/keys/*, so the Caddy gate must expose /api/hosts/stats
-        ungated. Empty (default) leaves the per-guest reporter inert.
-      '';
     };
     backendGroup = lib.mkOption {
       type = lib.types.str;
@@ -387,7 +372,6 @@ in
           PROVISIONER_UPLINK = cfg.uplinkInterface;
           PROVISIONER_SSH_PORT_BASE = toString cfg.sshExposePortBase;
           PROVISIONER_TCP_PORT_BASE = toString cfg.tcpExposePortBase;
-          PROVISIONER_STATS_URL = cfg.statsReportUrl;
         };
         serviceConfig = {
           ExecStartPre = pkgs.writeShellScript "garnix-provisioner-pubkey" ''

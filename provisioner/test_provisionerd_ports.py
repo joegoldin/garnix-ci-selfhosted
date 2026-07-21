@@ -426,6 +426,107 @@ class IptablesRuleTests(unittest.TestCase):
         self.assertEqual(fake.rules[("nat", "PREROUTING")], original)
 
 
+class CleanupTests(unittest.TestCase):
+    def test_cleanup_stops_path_dependent_units_before_removing_vm_directory(self):
+        events = []
+
+        def fake_run(cmd, check=True, timeout=None):
+            events.append(("run", list(cmd), check))
+            return SimpleNamespace(stdout="", returncode=0)
+
+        def fake_rmtree(path, ignore_errors=False):
+            events.append(("rmtree", path, ignore_errors))
+
+        def fake_unlink(path):
+            events.append(("unlink", path))
+
+        with patched_pd(
+            run=fake_run,
+            remove_exposure=lambda name: events.append(("remove_exposure", name)),
+            dnsmasq_drop=lambda name: events.append(("dnsmasq_drop", name)),
+            MICROVMS_DIR="/microvms",
+            SPECS_DIR="/specs",
+            GCROOTS_DIR="/gcroots",
+        ):
+            with mock.patch.object(pd.shutil, "rmtree", side_effect=fake_rmtree):
+                with mock.patch.object(pd.os, "unlink", side_effect=fake_unlink):
+                    required_callable("cleanup_vm")("garnix-42")
+
+        first_rmtree = next(i for i, event in enumerate(events) if event[0] == "rmtree")
+        before_rmtree = events[:first_rmtree]
+        self.assertIn(
+            ("run", ["systemctl", "stop", "microvm@garnix-42.service"], False),
+            before_rmtree,
+        )
+        self.assertIn(
+            (
+                "run",
+                ["systemctl", "stop", "microvm-tap-interfaces@garnix-42.service"],
+                False,
+            ),
+            before_rmtree,
+        )
+        self.assertIn(
+            (
+                "run",
+                ["systemctl", "stop", "microvm-set-booted@garnix-42.service"],
+                False,
+            ),
+            before_rmtree,
+        )
+        self.assertIn(
+            ("run", ["ip", "link", "delete", "gx42"], False), before_rmtree
+        )
+        self.assertEqual(
+            events[-1],
+            (
+                "run",
+                [
+                    "systemctl",
+                    "reset-failed",
+                    "microvm@garnix-42.service",
+                    "microvm-tap-interfaces@garnix-42.service",
+                    "microvm-set-booted@garnix-42.service",
+                ],
+                False,
+            ),
+        )
+
+    def test_cleanup_repeats_all_idempotent_teardown_attempts(self):
+        calls = []
+
+        def fake_run(cmd, check=True, timeout=None):
+            calls.append(list(cmd))
+            return SimpleNamespace(stdout="", returncode=1)
+
+        with patched_pd(
+            run=fake_run,
+            remove_exposure=lambda _name: None,
+            dnsmasq_drop=lambda _name: None,
+            MICROVMS_DIR="/missing-microvms",
+            SPECS_DIR="/missing-specs",
+            GCROOTS_DIR="/missing-gcroots",
+        ):
+            with mock.patch.object(pd.shutil, "rmtree"):
+                with mock.patch.object(pd.os, "unlink", side_effect=FileNotFoundError):
+                    required_callable("cleanup_vm")("garnix-42")
+                    required_callable("cleanup_vm")("garnix-42")
+
+        self.assertEqual(calls.count(["ip", "link", "delete", "gx42"]), 2)
+        self.assertEqual(
+            calls.count(
+                [
+                    "systemctl",
+                    "reset-failed",
+                    "microvm@garnix-42.service",
+                    "microvm-tap-interfaces@garnix-42.service",
+                    "microvm-set-booted@garnix-42.service",
+                ]
+            ),
+            2,
+        )
+
+
 class GuestSpecTests(unittest.TestCase):
     def render_guest_spec(self, terminal_ca=None, terminal_ca_missing=False, guest_cpu=""):
         with tempfile.TemporaryDirectory() as d:
@@ -466,6 +567,11 @@ class GuestSpecTests(unittest.TestCase):
             'garnix.guest.terminalCaPublicKey = "ssh-ed25519 TERMINAL terminal";',
             guest,
         )
+
+    def test_guest_spec_does_not_embed_stats_configuration_before_claim(self):
+        guest = self.render_guest_spec()
+        self.assertNotIn("garnix.guest.statsReportUrl", guest)
+        self.assertNotIn("garnix.guest.provisionerId", guest)
 
     def test_guest_spec_falls_back_to_hosting_key_for_terminal_ca(self):
         guest = self.render_guest_spec()

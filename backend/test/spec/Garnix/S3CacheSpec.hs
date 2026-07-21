@@ -141,6 +141,7 @@ spec = do
               run $ cmd "nix"
                 & addArgs
                   [ "build",
+                    "path:.#",
                     "--no-link",
                     "--print-out-paths" :: Text
                   ]
@@ -152,6 +153,7 @@ spec = do
               run $ cmd "nix"
                 & addArgs
                   [ "path-info",
+                    "path:.#",
                     "--json" :: Text
                   ]
                 & nixConfDefaults
@@ -222,7 +224,7 @@ spec = do
           liftIO $ T.writeFile "flake.nix" flake
           _ <-
             try $ runSubProcess_ $ cmd "nix"
-              & addArgs ["build", ".#parent" :: Text]
+              & addArgs ["build", "path:.#parent" :: Text]
               & nixConfDefaults
           (parentDrvPath, parentStorePath) <- getFlakePackageDrvAndStorePath "parent"
           (_, goodStorePath) <- getFlakePackageDrvAndStorePath "good"
@@ -604,7 +606,7 @@ localTestBuild mkFlake = do
     runSubProcess_ $ cmd "nix"
       & addArgs
         [ "build",
-          ".#foo" :: Text
+          "path:.#foo" :: Text
         ]
       & nixConfDefaults
     (drvPath, storePath) <- getFlakePackageDrvAndStorePath "foo"
@@ -617,7 +619,7 @@ getFlakePackageDrvAndStorePath packageName = do
       $ cmd "nix"
       & addArgs
         [ "eval",
-          ".#" <> packageName,
+          "path:.#" <> packageName,
           "--apply",
           "x : {storePath = builtins.toString x; drvPath = x.drvPath; }",
           "--json" :: Text
@@ -678,7 +680,7 @@ flakeWithDepWithRandomSnippets fooDrvRandom barDrvRandom =
 
 hashForDerivation :: FilePath -> String -> M Nix.StoreHash
 hashForDerivation flakeDir packageName = do
-  StdoutTrimmed json <- runNix ["build", flakeDir <> "#" <> packageName, "--json", "--dry-run"]
+  StdoutTrimmed json <- runNix ["build", "path:" <> flakeDir <> "#" <> packageName, "--json", "--dry-run"]
   let storePath = json ^?! nth 0 . key "outputs" . key "out" . _String
   pure $ Nix.StoreHash $ T.takeWhile (/= '-') $ fromJust $ T.stripPrefix "/nix/store/" storePath
 

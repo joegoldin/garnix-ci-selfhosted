@@ -4,6 +4,7 @@ import Amazonka qualified
 import Amazonka.Auth qualified as Amazonka
 import Amazonka.S3 qualified as Amazonka
 import Control.Concurrent (forkIO, getNumCapabilities, newMVar)
+import Control.Concurrent.QSem qualified as QSem
 import Control.Exception qualified
 import Control.Exception.Safe qualified as Safe
 import Cradle qualified
@@ -291,6 +292,11 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   adminGroupName' <- maybe "garnix-admins" cs <$> lookupEnv "GARNIX_ADMIN_GROUP"
   modulesOrg' <- maybe "garnix-io" cs <$> lookupEnv "GARNIX_MODULES_ORG"
   hostingDomain' <- maybe "garnix.me" cs <$> lookupEnv "GARNIX_HOSTING_DOMAIN"
+  statsReportUrl' <-
+    maybe
+      (T.dropWhileEnd (== '/') (cs burl) <> "/api/hosts/stats")
+      cs
+      <$> lookupEnv "GARNIX_STATS_REPORT_URL"
   extraHostingDomains' <-
     maybe [] (filter (not . T.null) . T.splitOn "," . cs) <$> lookupEnv "GARNIX_EXTRA_HOSTING_DOMAINS"
   hostingPublicIp' <- fmap cs <$> lookupEnv "GARNIX_HOSTING_PUBLIC_IP"
@@ -313,8 +319,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
       parsePool s =
         catMaybes
           [ (,) <$> parseTier tier <*> readMaybe (cs count)
-          | entry <- T.splitOn "," (cs s),
-            [tier, count] <- [T.splitOn ":" entry]
+            | entry <- T.splitOn "," (cs s),
+              [tier, count] <- [T.splitOn ":" entry]
           ]
       -- Self-host keeps a single default-size (i1x1) local VM warm unless
       -- GARNIX_SERVER_POOL overrides it (format: "i1x1:1,i4x4:0").
@@ -339,7 +345,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
         secret <-
           lookupEnv "GITEA_WEBHOOK_SECRET"
             >>= maybe (BSC.readFile "/run/secrets/gitea-webhook-secret") (pure . cs)
-        pure . Just
+        pure
+          . Just
           $ GiteaConfig
             { _giteaConfigBaseUrl = T.strip (cs url),
               _giteaConfigApiToken = T.strip (cs token),
@@ -392,6 +399,11 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
   fodCheckPool <- Garnix.Monad.Pool.newPool 20 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
+  fodRemoteMaxJobs <-
+    lookupEnv "GARNIX_FOD_REMOTE_MAX_JOBS" >>= \case
+      Just s | Just n <- readMaybe s, n > 0 -> pure n
+      _ -> pure 1
+  fodRemoteJobSlots <- QSem.newQSem fodRemoteMaxJobs
   terminalSessions <- newMVar Map.empty
   withDefaultLogger $ \defaultLogger -> do
     let env =
@@ -423,6 +435,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               manager = mgr,
               baseUrl = cs burl,
               hostingDomain = hostingDomain',
+              statsReportUrl = statsReportUrl',
               extraHostingDomains = extraHostingDomains',
               hostingPublicIp = hostingPublicIp',
               metricsScrapeUrl = metricsScrapeUrl',
@@ -463,6 +476,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               githubLogDebounceDuration = fromSeconds @Int 15,
               featureFlagConfig,
               fodCheckPool,
+              fodRemoteJobSlots,
               terminalSessions
             }
     action env
@@ -525,7 +539,10 @@ runWith opts = do
       -- reporting; in self-host mode servers are torn down by deploy plans
       -- instead, so skip it rather than reap every server.
       unless (env ^. #selfHostMode)
-        $ void . forkIO . void . runM env
+        $ void
+        . forkIO
+        . void
+        . runM env
         $ forever (stopUnusedServers' *> threadDelay (fromMinutes @Int 5))
       if Garnix.provisionServerPool opts
         then void $ runM env ServerPool.initializeProvisioningPool

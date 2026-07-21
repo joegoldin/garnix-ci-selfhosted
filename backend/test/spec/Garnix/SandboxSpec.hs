@@ -101,7 +101,7 @@ spec = inM $ do
             & setWorkingDir dir
             & addArgs
               [ "eval" :: String,
-                ".#foo",
+                "path:.#foo",
                 "--apply",
                 "x : x.lastModifiedDate"
               ]

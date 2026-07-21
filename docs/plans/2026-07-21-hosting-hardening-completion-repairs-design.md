@@ -2,7 +2,7 @@
 
 ## Context and success criteria
 
-The erdtree hardening rollout exposed two implementation regressions and one
+The erdtree hardening rollout exposed four implementation regressions and one
 cleanup defect after the repository test suite had passed:
 
 1. The backend writes a workload-domain URL into a claimed guest's stats
@@ -11,6 +11,12 @@ cleanup defect after the repository test suite had passed:
    can accept their provisioner ID.
 3. Provisioner teardown removes the microVM working directory before all
    path-dependent systemd units have stopped, leaving a tap or failed unit.
+4. FOD verification calls `nix build --rebuild` on a fresh guest whose store
+   does not contain the baseline output, then labels the resulting Nix
+   precondition error as “source unavailable.”
+5. The FOD checker opens up to 20 direct remote-store sessions, bypassing the
+   external builder's Nix `maxJobs = 1` scheduler and causing SSH resets on the
+   2-core/12-GiB machine.
 
 Completion also requires rolling out the already-pushed operator-skill update
 and executing every still-missing runtime and Authentik check in the original
@@ -102,9 +108,32 @@ Every operation is idempotent. A missing unit, link, path, gcroot, or dnsmasq
 entry is not an error. Unit tests assert that all path-dependent stops precede
 the first directory removal and that repeated cleanup remains safe.
 
+### FOD verification on fresh guests
+
+Prepare the FOD output on the selected checker store with an ordinary build,
+then run the strict `--rebuild` on that same store. The prepare phase may use a
+trusted substitute or build the FOD; either way, the second phase ignores the
+baseline output and exposes a lying hash. This matches the sequence already
+used by the test implementation and satisfies Nix's requirement that a checked
+output be valid before `--rebuild`.
+
+Replace the blanket “every non-hash-mismatch is source unavailable” rule with
+a conservative fetch-error classifier. Recognized download/HTTP/mirror/manual
+source failures remain skipped-with-warning because they do not prove a hash.
+Unknown builder, Nix, SSH, or checker errors fail visibly, preventing verifier
+breakage or a deliberately failing builder from becoming a silent bypass.
+
+Direct `--store` operations bypass the Nix daemon scheduler, so add an
+independent `GARNIX_FOD_REMOTE_MAX_JOBS` semaphore (NixOS option
+`services.garnixServer.maxRemoteFodJobs`, default `1`). Hold one slot across the
+copy, prepare, and strict-rebuild sequence so each FOD is an indivisible unit
+of remote load. Retry only recognized SSH transport failures, with a bounded
+jittered backoff; never retry or reclassify a source-fetch or builder failure
+as a transport error.
+
 ### Operator skill rollout
 
-`agent-skills` commit `3e3901a` already contains all Task 22 content. Update the
+`agent-skills` commit `ce670c9` contains all Task 22 content. Update the
 correct dotfiles `agent-skills` lock to a revision containing that commit,
 rebuild, and verify the installed Nix-store skill rather than editing the source
 again.
@@ -130,6 +159,13 @@ The implementation follows red-green cycles for:
 - absence of a pre-claim stats marker in the evaluated guest profile/spec;
 - exact reporter response semantics after the lifecycle change;
 - ordered, idempotent cleanup of VM units, tap, paths, state, and failed units.
+- prepare-then-rebuild behavior for a previously unbuilt FOD, and strict
+  separation of genuine fetch failures from verifier failures.
+- bounded direct remote-store concurrency and selective retry of transient SSH
+  transport failures.
+- isolated real-VM persistence/redeployment scenarios, each with its own pool
+  and database lifecycle so asynchronous refill teardown cannot make them
+  order-dependent under randomized Hspec execution.
 
 Before push, run targeted tests, the complete backend package/spec gates,
 provisioner checks, frontend checks, HLint/import checks, Nix formatting/statix,

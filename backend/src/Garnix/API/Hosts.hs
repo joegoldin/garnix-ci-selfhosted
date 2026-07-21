@@ -41,10 +41,10 @@ data HostsAPI route = HostsAPI
     _hostsAPIHeartbeat :: route :- "heartbeat" :> ReqBody '[JSON] [Text] :> Post '[JSON] NoContent,
     -- | Deployed guests push their own resource samples here (CPU %, memory
     -- used/total). Unauthenticated like the heartbeat: the guest identifies
-    -- itself by the provisioner id injected into it at create time. The Caddy
+    -- itself by the provisioner id the backend installs after claim. The Caddy
     -- gate must expose /api/hosts/stats ungated (like /api/keys/*) so the
-    -- guest can reach it over the public API domain — see the provisioner's
-    -- statsReportUrl option.
+    -- guest can reach it over the public API domain. The backend installs the
+    -- endpoint/id marker after claiming a pre-warm guest.
     _hostsAPIPostStats :: route :- "stats" :> RemoteHost :> Header "X-Forwarded-For" Text :> ReqBody '[JSON] HostStatsReport :> Post '[JSON] NoContent,
     _hostsAPIGetIPsForDns :: route :- "dns" :> Get '[JSON] DnsHosts,
     _hostsAPIGetDomainsForOnDemandResolver :: route :- "on-demand-resolver" :> Get '[JSON] OnDemandResolverDomainNames,
@@ -97,9 +97,9 @@ data HostList = HostList
 parseHttpPorts :: Aeson.Value -> [(Text, Int)]
 parseHttpPorts v =
   [ (name, fromIntegral port)
-  | entry <- v ^.. key "http" . values,
-    name <- toList (entry ^? key "name" . _String),
-    port <- toList (entry ^? key "port" . _Integer)
+    | entry <- v ^.. key "http" . values,
+      name <- toList (entry ^? key "name" . _String),
+      port <- toList (entry ^? key "port" . _Integer)
   ]
 
 instance ToJSON HostList where
@@ -153,8 +153,8 @@ instance ToJSON HostList where
           Map.fromList
             $ [(hostToDomainName h, serviceForUrl ("http://" <> _hostIpV4Addr h)) | h <- hosts]
             <> [ (portDomain h name, serviceForUrl ("http://" <> _hostIpV4Addr h <> ":" <> cs (show port)))
-               | h <- hosts,
-                 (name, port) <- portsFor h
+                 | h <- hosts,
+                   (name, port) <- portsFor h
                ]
      in [aesonQQ|
          {

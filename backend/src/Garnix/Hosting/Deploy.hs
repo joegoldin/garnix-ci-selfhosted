@@ -463,19 +463,18 @@ copyTerminalCa (SshUser user) server = do
         }
   either (throw . ProvisioningError) pure installResult
 
--- | Refresh the non-secret stats endpoint/id before every activation. This is
--- deliberately deployment-time as well as provisioner-time: existing guests
--- acquire the durable file on their next redeploy, and endpoint changes do not
--- require destructive VM recreation.
+-- | Install the non-secret stats endpoint/id after claim and before every
+-- activation. Existing claimed guests refresh the durable file on redeploy, so
+-- endpoint changes do not require destructive VM recreation.
 copyStatsEnv :: SshUser -> ServerInfo -> M ()
 copyStatsEnv (SshUser user) server = do
-  domain <- view #hostingDomain
+  endpoint <- view #statsReportUrl
   (ip, sshArgs) <- ServerPool.sshArgsFor server
   installResult <-
     liftIO
       $ installPublicFile
       $ InstallPublicFileOpts
-        { installPublicFileContents = statsEnvContents domain (server ^. provisionedServerId),
+        { installPublicFileContents = statsEnvContents endpoint (server ^. provisionedServerId),
           installPublicFileIpAddr = ip,
           installPublicFileTargetPath = "/var/lib/garnix/stats.env",
           installPublicFileSshOptions = sshArgs,
@@ -485,9 +484,9 @@ copyStatsEnv (SshUser user) server = do
   either (throw . ProvisioningError) pure installResult
 
 statsEnvContents :: Text -> ProvisionedServerId -> Text
-statsEnvContents domain provisionerId =
+statsEnvContents endpoint provisionerId =
   T.unlines
-    [ "GARNIX_STATS_URL=https://" <> domain <> "/api/hosts/stats",
+    [ "GARNIX_STATS_URL=" <> endpoint,
       "GARNIX_PROVISIONER_ID=" <> show (getProvisionedServerId provisionerId)
     ]
 

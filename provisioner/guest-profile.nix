@@ -13,15 +13,12 @@
 #   - sshd with the hosting public key for root and the garnix user;
 #     passwordless sudo for wheel (redeploys run `sudo switch-to-configuration`
 #     as the garnix user)
-{
-  lib,
-  config,
-  pkgs,
-  ...
+{ lib
+, config
+, pkgs
+, ...
 }:
 let
-  cfg = config.garnix.guest;
-  statsEnabled = cfg.statsReportUrl != "";
   # Resource reporter: one /proc read, a short CPU sample, and a POST (with a
   # few retries for transient blips). Unlike the old best-effort version, a
   # persistent failure is SURFACED rather than swallowed: curl's error goes to
@@ -90,26 +87,6 @@ in
         hosting key as CA. The provisioner injects the real terminal-CA pubkey.
       '';
     };
-    statsReportUrl = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      description = ''
-        Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats).
-        When non-empty on the provisioned base configuration, it seeds the
-        durable /var/lib/garnix/stats.env consumed by the reporter every ~20s.
-        The reporter remains installed across repository activation; an absent
-        durable file keeps it inert on non-provisioned guests.
-      '';
-    };
-    provisionerId = lib.mkOption {
-      type = lib.types.int;
-      default = 0;
-      description = ''
-        This guest's provisioner id (the backend's servers.provisioner_id),
-        injected by the provisioner. Sent with every stats push so garnix maps
-        the sample to the right server row.
-      '';
-    };
   };
   config = lib.mkMerge [
     {
@@ -158,16 +135,63 @@ in
         ];
       };
       networking.useNetworkd = true;
-      systemd.network.networks."10-eth" = {
-        matchConfig.Type = "ether";
-        # IPv4-only: the provisioner's dnsmasq (per-MAC reservations) is the
-        # single source of addressing truth. Never accept router advertisements
-        # — on a shared bridge an RA is how a neighbour impersonates the
-        # gateway (M8). Host-side bridge port isolation already stops
-        # guest->guest RA/DHCP at L2; this is guest-side belt.
-        networkConfig = {
-          DHCP = "ipv4";
-          IPv6AcceptRA = false;
+      systemd = {
+        network.networks."10-eth" = {
+          matchConfig.Type = "ether";
+          # IPv4-only: the provisioner's dnsmasq (per-MAC reservations) is the
+          # single source of addressing truth. Never accept router advertisements
+          # — on a shared bridge an RA is how a neighbour impersonates the
+          # gateway (M8). Host-side bridge port isolation already stops
+          # guest->guest RA/DHCP at L2; this is guest-side belt.
+          networkConfig = {
+            DHCP = "ipv4";
+            IPv6AcceptRA = false;
+          };
+        };
+        # The provisioner-specific first boot renders the dedicated terminal CA
+        # above. Seed a durable public copy once so a repository-built NixOS
+        # configuration can trust the same CA after activation and reboot. The
+        # backend refreshes this file before every activation, including rotation;
+        # `C` deliberately leaves an existing authoritative copy untouched.
+        tmpfiles.rules = [
+          "d /var/lib/garnix 0755 root root - -"
+          "C /var/lib/garnix/terminal-ca.pub 0644 root root - /etc/ssh/garnix-hosting-ca.pub"
+        ];
+        # Keep the reporter installed in repository-built configurations too.
+        # The backend creates the durable, public URL/id file after it claims a
+        # pre-warm guest and before repository activation. ConditionPathExists
+        # keeps an unclaimed pool guest inert while preserving the same reporter
+        # across activation and reboot.
+        services.garnix-stats-reporter = {
+          description = "Report guest CPU/RAM to garnix";
+          unitConfig.ConditionPathExists = "/var/lib/garnix/stats.env";
+          # coreutils (head/sleep/printf), gawk, curl for the sampler + POST.
+          path = [
+            pkgs.coreutils
+            pkgs.gawk
+            pkgs.curl
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = statsScript;
+            DynamicUser = true;
+            EnvironmentFile = "/var/lib/garnix/stats.env";
+            # curl verifies TLS against the guest's system CA bundle.
+            Environment = [
+              "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+            ];
+          };
+        };
+        timers.garnix-stats-reporter = {
+          description = "Periodic guest CPU/RAM report to garnix";
+          unitConfig.ConditionPathExists = "/var/lib/garnix/stats.env";
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            OnBootSec = "30s";
+            OnUnitActiveSec = "20s";
+            # Guard against overlap if a report ever runs long.
+            AccuracySec = "1s";
+          };
         };
       };
       boot.kernel.sysctl = {
@@ -175,50 +199,6 @@ in
         "net.ipv6.conf.default.accept_ra" = 0;
       };
       environment.etc."ssh/garnix-hosting-ca.pub".text = config.garnix.guest.terminalCaPublicKey + "\n";
-      # The provisioner-specific first boot renders the dedicated terminal CA
-      # above. Seed a durable public copy once so a repository-built NixOS
-      # configuration can trust the same CA after activation and reboot. The
-      # backend refreshes this file before every activation, including rotation;
-      # `C` deliberately leaves an existing authoritative copy untouched.
-      systemd.tmpfiles.rules = [
-        "d /var/lib/garnix 0755 root root - -"
-        "C /var/lib/garnix/terminal-ca.pub 0644 root root - /etc/ssh/garnix-hosting-ca.pub"
-      ];
-      # Keep the reporter installed in repository-built configurations too.
-      # Its provisioner-specific URL/id live in a durable, public runtime file
-      # seeded below on first boot; ConditionPathExists makes this inert on
-      # guests that were not created by garnix's local provisioner.
-      systemd.services.garnix-stats-reporter = {
-        description = "Report guest CPU/RAM to garnix";
-        unitConfig.ConditionPathExists = "/var/lib/garnix/stats.env";
-        # coreutils (head/sleep/printf), gawk, curl for the sampler + POST.
-        path = [
-          pkgs.coreutils
-          pkgs.gawk
-          pkgs.curl
-        ];
-        serviceConfig = {
-          Type = "oneshot";
-          ExecStart = statsScript;
-          DynamicUser = true;
-          EnvironmentFile = "/var/lib/garnix/stats.env";
-          # curl verifies TLS against the guest's system CA bundle.
-          Environment = [
-            "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
-          ];
-        };
-      };
-      systemd.timers.garnix-stats-reporter = {
-        description = "Periodic guest CPU/RAM report to garnix";
-        unitConfig.ConditionPathExists = "/var/lib/garnix/stats.env";
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnBootSec = "30s";
-          OnUnitActiveSec = "20s";
-          # Guard against overlap if a report ever runs long.
-          AccuracySec = "1s";
-        };
-      };
       services.openssh = {
         enable = true;
         # Key-only, hardened sshd (no passwords), matching the garnix user-module.
@@ -285,19 +265,5 @@ in
       };
       system.stateVersion = "25.11";
     }
-    # The first-boot provisioner knows the guest's id and stats endpoint. Seed
-    # those public values once into /var/lib so repository activation and guest
-    # reboot keep the reporter wired without baking host-specific values into a
-    # repository flake. `C` preserves an existing file for the same reason as
-    # the durable terminal-CA handoff above.
-    (lib.mkIf statsEnabled {
-      environment.etc."garnix/stats.env".text = ''
-        GARNIX_STATS_URL=${lib.escapeShellArg cfg.statsReportUrl}
-        GARNIX_PROVISIONER_ID=${toString cfg.provisionerId}
-      '';
-      systemd.tmpfiles.rules = [
-        "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env"
-      ];
-    })
   ];
 }

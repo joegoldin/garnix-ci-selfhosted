@@ -47,10 +47,6 @@ SSH_PUBKEY_FILE = os.environ["PROVISIONER_SSH_PUBKEY_FILE"]
 # fall back to the hosting pubkey in write_spec, so guests stay evaluable and
 # keep trusting the hosting key as CA (pre-H3 behaviour / ExecStartPre fallback).
 TERMINAL_CA_PUBKEY_FILE = os.environ.get("PROVISIONER_TERMINAL_CA_PUBKEY_FILE", "")
-# Full URL of the garnix stats-ingest endpoint (POST /api/hosts/stats). Empty
-# by default; when set, guests push their CPU/RAM there every ~20s. Injected
-# into each guest's config so the reporter knows where to POST.
-STATS_URL = os.environ.get("PROVISIONER_STATS_URL", "")
 # Optional fixed QEMU CPU model for guests (microvm.cpu). Empty = -cpu host.
 GUEST_CPU = os.environ.get("PROVISIONER_GUEST_CPU", "")
 
@@ -164,8 +160,6 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
   ];
   garnix.guest.sshPublicKey = {nix_str(pubkey)};
   garnix.guest.terminalCaPublicKey = {nix_str(terminal_ca_pubkey)};
-  garnix.guest.statsReportUrl = {nix_str(STATS_URL)};
-  garnix.guest.provisionerId = {vm_id};
 }}
 """
         )
@@ -520,7 +514,22 @@ def vm_ip_from_name(name: str) -> str:
 def cleanup_vm(name: str):
     """Best-effort teardown of every trace of a guest (idempotent)."""
     remove_exposure(name)
-    run(["systemctl", "stop", f"microvm@{name}.service"], check=False)
+    units = [
+        f"microvm@{name}.service",
+        f"microvm-tap-interfaces@{name}.service",
+        f"microvm-set-booted@{name}.service",
+    ]
+    # The auxiliary microvm units run ExecStop commands from the VM's current
+    # or booted store path and WorkingDirectory. Stop every exact instance
+    # while /var/lib/microvms/<name> still exists; PartOf propagation alone
+    # does not guarantee those path-dependent jobs finish before our rmtree.
+    for unit in units:
+        run(["systemctl", "stop", unit], check=False)
+    match = re.fullmatch(r"garnix-(\d+)", name)
+    if match:
+        # tap-down normally removes this. The exact fallback is safe after a
+        # partial/failed unit stop and keeps repeated cleanup idempotent.
+        run(["ip", "link", "delete", f"gx{match.group(1)}"], check=False)
     shutil.rmtree(os.path.join(MICROVMS_DIR, name), ignore_errors=True)
     shutil.rmtree(os.path.join(SPECS_DIR, name), ignore_errors=True)
     for root in (name, f"booted-{name}"):
@@ -529,6 +538,7 @@ def cleanup_vm(name: str):
         except FileNotFoundError:
             pass
     dnsmasq_drop(name)
+    run(["systemctl", "reset-failed", *units], check=False)
 
 
 def do_create(req: dict) -> dict:

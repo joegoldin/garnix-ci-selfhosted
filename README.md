@@ -369,14 +369,18 @@ builds:
 ```
 
 **Fixed-output derivation (FOD) checks** (opt-in: `fodChecks: true` in
-`garnix.yaml`) — garnix rebuilds FODs (fetchers, `vendorHash`/`cargoHash`
-closures) ignoring the cache so a lying hash surfaces in CI. Only a **hash
-mismatch** fails the run; FODs whose source can't be re-fetched (dead mirrors,
-CDNs blocking automation user-agents) are reported as skipped-with-warning,
-since a failed fetch proves nothing about the hash. The run's conclusion is
-unambiguous: **any FOD failed → failed**; nothing verified and every FOD was
-unfetchable → **skipped** (a distinct grey conclusion, not a green pass);
-anything actually verified (or known-good from a prior build) → **success**.
+`garnix.yaml`) — on the selected checker store, garnix first realizes or
+substitutes each FOD's baseline output, then rebuilds it while ignoring that
+output so a lying hash surfaces in CI. This two-step sequence is required on
+fresh self-hosted guests because Nix refuses `--rebuild` when the output is not
+already valid in that store. A recognized source-fetch failure (dead mirror,
+HTTP error, CDN blocking an automation user-agent) is reported as
+skipped-with-warning because it proves nothing about the hash. Hash mismatches
+and all unrecognized builder, Nix, SSH, or checker failures fail the run rather
+than being mislabeled as source-unavailable. The conclusion is unambiguous:
+**any FOD failed → failed**; nothing verified and every FOD was unfetchable →
+**skipped** (a distinct grey conclusion, not a green pass); anything actually
+verified (or known-good from a prior build) → **success**.
 
 **Check conclusions map to the forge's native ones.** A run/check reports one of
 `success`, `failure`, `timed out`, `cancelled`, or `skipped`. On GitHub these
@@ -706,6 +710,12 @@ provisioner whenever `services.garnixServer.provisionerSocket` is set. The
 SSH deploy path is unchanged: `nix-copy-closure` into the guest, then
 `switch-to-configuration switch`.
 
+Destroy is idempotent and ordered: the daemon removes exposure, stops the VM
+and its path-dependent tap/booted units, deletes the exact `gx<ID>` link, and
+only then removes the VM/spec directories, gcroots, and dnsmasq state. This
+keeps cleanup safe after partial creates and prevents deleted working
+directories from breaking systemd `ExecStop` actions.
+
 Host wiring (the fork stays input-free, so you import microvm.nix yourself):
 
 ```nix
@@ -724,6 +734,7 @@ garnix.local-provisioner = {
 };
 services.garnixServer = {
   hostingDomain = "apps.garnix.example.com";
+  statsReportUrl = "https://garnix.example.com/api/hosts/stats";
   provisionerSocket = "/run/garnix-provisioner/provisioner.sock";
   provisionServerPool = true;            # pre-warm the pool (default: one i1x1)
 };
@@ -1004,10 +1015,14 @@ Documentation) aggregates, via `GET /api/monitoring`:
 - **Deployments** — the live servers (from `/api/hosts`).
 
 Each server's **Monitor** view adds a rolling CPU/memory history reported by
-the guest. The provisioner seeds the non-secret endpoint and VM id into
-`/var/lib/garnix/stats.env`; the shared guest module always consumes that
-durable file, so reporting survives repository configuration activation and
-guest reboot. The reporter accepts only 2xx responses and surfaces redirects
+the guest. A pre-warm guest contains the reporter but no activation marker, so
+it cannot report before the backend has claimed it. During claim the backend
+writes the non-secret endpoint and VM id to the durable
+`/var/lib/garnix/stats.env`; the shared guest module consumes that file after
+repository activation and on later reboots. Configure the backend's full
+control-plane endpoint with `services.garnixServer.statsReportUrl` (or
+`GARNIX_STATS_REPORT_URL`); never derive it from the workload
+`hostingDomain`. The reporter accepts only 2xx responses and surfaces redirects
 or HTTP errors in `garnix-stats-reporter.service`. Keep `/api/hosts/stats`
 outside the interactive-login gate; the backend independently restricts it to
 the guest bridge source subnet.
@@ -1104,7 +1119,18 @@ services.garnixServer.buildMachines = [{
   maxJobs = 4; speedFactor = 1;
   supportedFeatures = [ "big-parallel" ];
 }];
+
+# Direct FOD checker sessions bypass the Nix scheduler, so cap them separately.
+# A 2-core/12-GiB builder should normally stay at one.
+services.garnixServer.maxRemoteFodJobs = 1;
 ```
+
+`buildMachines[*].maxJobs` limits ordinary builds scheduled by the Nix daemon.
+FOD verification uses `nix --store` directly so it can prepare and strictly
+rebuild on one specific store; those sessions are instead limited by
+`maxRemoteFodJobs` (default `1`) and transient SSH transport failures are
+retried with jittered backoff. The cap queues work in Garnix instead of opening
+too many simultaneous SSH sessions against a small builder.
 
 Until a darwin builder is registered, exclude `darwinConfigurations.*` from
 your `garnix.yaml` includes.
@@ -1129,7 +1155,7 @@ services.garnixServer.maxLocalJobs = 8;
 A single push fans out one build per package / `nixosConfiguration`; several
 pushes in quick succession — or bumping a shared flake input that rebuilds
 everything — can mean dozens of concurrent guest builds all streaming logs at
-once. Two knobs keep that from swamping the box or the log pipeline:
+once. These controls keep that from swamping the box or the log pipeline:
 
 - **`services.garnixServer.maxConcurrentBuilds`** (default `16`) caps how many
   builds *run* at once. Every build is still created and reported as a pending
@@ -1140,6 +1166,11 @@ once. Two knobs keep that from swamping the box or the log pipeline:
   separately capped at 32. Sets `GARNIX_MAX_CONCURRENT_BUILDS`. The
   `garnix_server_*_queue_len` gauges report the number of *waiters* (0 while
   slots are free).
+- **`services.garnixServer.maxRemoteFodJobs`** (default `1`) caps direct
+  remote-store FOD sessions. This is separate from each build machine's
+  `maxJobs`, because the FOD checker deliberately targets a store with
+  `--store` and therefore bypasses the Nix daemon scheduler. Sets
+  `GARNIX_FOD_REMOTE_MAX_JOBS`.
 - Build logs ship best-effort from the server to a local fluent-bit HTTP input,
   then to OpenSearch. Under a heavy wave fluent-bit's default 128-slot accept
   backlog can saturate and silently drop lines (an empty **Logs** panel on a
@@ -1187,6 +1218,7 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |
 | nix build: `can't find source for <new file>` | new files must be `git add`ed before a git-flake build sees them |
 | 401s from your private substituter inside builds | set `buildNetRcFile` (the sandbox can't read the host's root-only netrc) |
+| every FOD is skipped as “source unavailable” with `--rebuild and --check error if the derivation was not previously built` | the checker store was fresh and lacked the baseline output; prepare/substitute the FOD on that same store before the strict `--rebuild`. Do not classify this Nix precondition error as a fetch failure |
 
 ---
 

@@ -10,6 +10,7 @@ where
 import Amazonka.Env qualified as Amazonka (Env)
 import Amazonka.S3 qualified as Amazonka
 import Control.Concurrent (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.QSem (QSem)
 import Control.Exception.Safe qualified as SafeException
 import Control.Lens (IndexedTraversal')
 import Control.Lens.Regex.Text qualified as RE
@@ -18,8 +19,8 @@ import Data.Aeson (Value, eitherDecode')
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BSL
-import Data.Map (Map)
 import Data.Containers.ListUtils (nubOrd)
+import Data.Map (Map)
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Text.Format.Numbers (PrettyCfg (PrettyCfg), prettyF)
@@ -87,6 +88,10 @@ data Env = Env
     -- | Base domain under which deployed servers are exposed (upstream:
     -- "garnix.me"). Overridden via GARNIX_HOSTING_DOMAIN for self-hosting.
     hostingDomain :: Text,
+    -- | Full guest stats-ingest endpoint (GARNIX_STATS_REPORT_URL). This is a
+    -- control-plane URL and must not be derived from 'hostingDomain', which is
+    -- the workload-routing domain on self-hosted installations.
+    statsReportUrl :: Text,
     -- | Extra wildcard base domains the operator owns (GARNIX_EXTRA_HOSTING_DOMAINS,
     -- comma-separated). A server domain under any of these is wildcard-routed.
     extraHostingDomains :: [Text],
@@ -159,6 +164,10 @@ data Env = Env
     githubLogDebounceDuration :: Duration,
     featureFlagConfig :: FeatureFlagConfig,
     fodCheckPool :: Garnix.Monad.Pool.Pool (),
+    -- | Slots for direct remote-store FOD operations. Those calls bypass the
+    -- Nix daemon scheduler and therefore do not honor buildMachines.maxJobs.
+    -- GARNIX_FOD_REMOTE_MAX_JOBS sizes this semaphore independently.
+    fodRemoteJobSlots :: QSem,
     -- | Live web-terminal websocket sessions per user (github login), backing
     -- the per-user concurrency cap on /api/terminal (see Garnix.API.Terminal).
     terminalSessions :: MVar (Map Text Int)

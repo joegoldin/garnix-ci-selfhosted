@@ -4,7 +4,7 @@
 
 **Goal:** Repair every failed or missing verification item so the original hosting-hardening plan is implemented, deployed, and supported by requirement-level evidence.
 
-**Architecture:** The backend owns the claim-time stats marker and receives an explicit control-domain URL; pre-warm guests contain inert reporter units but no marker. Provisioner teardown explicitly stops every path-dependent unit and removes the deterministic tap before deleting state. Rollout and verification then cover the complete original plan, including Authentik and operator-skill installation.
+**Architecture:** The backend owns the claim-time stats marker and receives an explicit control-domain URL; pre-warm guests contain inert reporter units but no marker. Provisioner teardown explicitly stops every path-dependent unit and removes the deterministic tap before deleting state. FOD verification prepares its baseline, strictly rebuilds it, and independently caps direct remote-store sessions. Rollout and verification then cover the complete original plan, including Authentik and operator-skill installation.
 
 **Tech Stack:** Haskell/Servant, Hspec, Python 3 `unittest`, NixOS modules, microvm.nix/systemd, Caddy, PostgreSQL, Authentik REST API, GitHub checks.
 
@@ -135,7 +135,41 @@
 - [ ] **Step 5: Run the complete provisioner Python suite.** Expected: all
   allocator, transactional exposure, guest-spec, and cleanup tests pass.
 
-### Task 4: Update docs, format, and run all local gates
+### Task 4: Make FOD checks effective on fresh guests
+
+**Files:**
+- Modify: `backend/src/Garnix/Build/FodCheck.hs`
+- Modify: `backend/test/spec/Garnix/Build/FodCheckSpec.hs`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: an FOD derivation and the checker store selected for its system.
+- Produces: a prepared baseline followed by a strict rebuild on the same store;
+  only recognized source-fetch failures are skippable.
+
+- [ ] **Step 1: Capture the production failure.** Confirm the journal contains
+  `some outputs ... are not valid, so checking is not possible` and Nix's
+  `--rebuild and --check error if the derivation was not previously built`
+  hint, rather than a source-fetch error.
+- [ ] **Step 2: Write failing regressions.** Require a previously unbuilt FOD
+  to pass the real rebuild implementation, and require the Nix precondition
+  error to fail rather than produce a source-unavailable skip.
+- [ ] **Step 3: Prepare then rebuild on one store.** Copy the derivation closure
+  as before, run an ordinary `nix build` on the selected local/remote store,
+  then run `nix build --rebuild` on the same store.
+- [ ] **Step 4: Make skipping conservative.** Recognize explicit
+  download/fetch/HTTP/mirror/manual-source failures; treat unknown builder,
+  Nix, SSH, and checker errors as FOD failures.
+- [ ] **Step 5: Bound and retry direct remote-store work.** Add
+  `services.garnixServer.maxRemoteFodJobs` / `GARNIX_FOD_REMOTE_MAX_JOBS`
+  (default `1`), hold a slot across copy/prepare/check, and retry only
+  recognized SSH transport failures with bounded jittered backoff. Prove a
+  one-job configuration never exceeds one active remote operation.
+- [ ] **Step 6: Run focused and complete FOD/backend tests.** Expected: new
+  unbuilt-FOD and classification regressions pass, genuine 403 tests remain
+  skipped, lying FODs still fail, and remote retry/cap regressions pass.
+
+### Task 5: Update docs, format, and run all local gates
 
 **Files:**
 - Modify: `README.md`
@@ -149,20 +183,26 @@
 - [ ] **Step 1: Update docs for explicit URL, claim-owned marker, and teardown.**
 - [ ] **Step 2: Run `nixfmt` on changed Nix files and `statix check` on them; address every finding.**
 - [ ] **Step 3: Run HLint/import policy, full backend specs/package, frontend tests/lint/knip, provisioner checks, and example guest/NixOS closure builds.**
+- [ ] **Step 3a: Keep multi-activation VM scenarios isolated from the shared,
+  randomized deploy pool; rerun the complete `Garnix.Deploy` group with any
+  captured failure seed after changing their lifecycle.**
 - [ ] **Step 4: Run `git diff --check`, inspect the entire diff, stage only intended files, and commit the repair.**
 
-### Task 5: Wire dotfiles and install the updated skill
+### Task 6: Wire dotfiles and install the updated skill
 
 **Files:**
 - Modify: `~/dotfiles/modules/hosts/erdtree/garnix.nix`
 - Modify: `~/dotfiles/flake.lock`
 
 **Interfaces:**
-- Consumes: new `services.garnixServer.statsReportUrl`; pushed Garnix and agent-skills revisions.
-- Produces: erdtree closure with control-domain stats URL and installed Task 22 runbook.
+- Consumes: new `services.garnixServer.statsReportUrl` and
+  `services.garnixServer.maxRemoteFodJobs`; pushed Garnix and agent-skills revisions.
+- Produces: erdtree closure with control-domain stats URL, a one-job FOD limit
+  for the small external builder, and the installed Task 22 runbook.
 
 - [ ] **Step 1: Replace the local-provisioner stats setting with
-  `services.garnixServer.statsReportUrl = "https://${domains.garnixDomain}/api/hosts/stats"`.**
+  `services.garnixServer.statsReportUrl = "https://${domains.garnixDomain}/api/hosts/stats"`,
+  and set `services.garnixServer.maxRemoteFodJobs = 1`.**
 - [ ] **Step 2: Push the verified Garnix commit.**
 - [ ] **Step 3: Update dotfiles `garnix-ci` and the correct `agent-skills` input; verify both locked revisions.**
 - [ ] **Step 4: Run `nixfmt`, `statix`, flake evaluation, and the complete erdtree toplevel build.**
@@ -170,7 +210,7 @@
 - [ ] **Step 6: Verify active services, backend environment URL, Caddy route,
   and installed skill content.**
 
-### Task 6: Recycle safely and prove first deployment
+### Task 7: Recycle safely and prove first deployment
 
 **Files:**
 - Modify: `~/Development/garnix-hello/flake.lock`
@@ -193,7 +233,7 @@
   health, and no failed units; verify the old live version ends only after the
   replacement is ready.**
 
-### Task 7: Complete the original runtime and security audit
+### Task 8: Complete the original runtime and security audit
 
 **Files:**
 - Modify: `docs/handoffs/2026-07-21-hosting-hardening-review-handoff.md`

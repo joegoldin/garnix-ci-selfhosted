@@ -36,7 +36,7 @@ spec = describe "ProcessLogs" $ do
                 $ cmd "nix"
                 & addArgs
                   [ "build",
-                    mockRemote <> "#packages.x86_64-linux.test-pkg",
+                    "path:" <> mockRemote <> "#packages.x86_64-linux.test-pkg",
                     "--log-lines",
                     "0",
                     "--print-build-logs",

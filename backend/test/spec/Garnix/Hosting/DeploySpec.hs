@@ -8,6 +8,6 @@ import Test.Hspec
 spec :: Spec
 spec =
   describe "statsEnvContents" $ do
-    it "renders the public endpoint and provisioner id for durable guest delivery" $ do
-      statsEnvContents "garnix.example" (ProvisionedServerId 42)
-        `shouldBe` "GARNIX_STATS_URL=https://garnix.example/api/hosts/stats\nGARNIX_PROVISIONER_ID=42\n"
+    it "preserves the configured full endpoint and provisioner id" $ do
+      statsEnvContents "https://control.example/internal/stats" (ProvisionedServerId 42)
+        `shouldBe` "GARNIX_STATS_URL=https://control.example/internal/stats\nGARNIX_PROVISIONER_ID=42\n"

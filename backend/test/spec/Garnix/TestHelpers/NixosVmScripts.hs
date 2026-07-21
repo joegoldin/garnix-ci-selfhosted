@@ -30,7 +30,10 @@ uncachedGetActionRunnerScript = do
       & Cradle.addArgs @Text
         [ "build",
           "-L",
-          ".#nixosConfigurations.action-runner2.config.system.build.vm",
+          -- The spec runner starts in backend/, one directory below the copied
+          -- path flake. Avoid a bare .# reference: an unrelated parent Git
+          -- repository can otherwise capture it on Nix 2.34.
+          "git+file:..#nixosConfigurations.action-runner2.config.system.build.vm",
           "--print-out-paths",
           "--no-link"
         ]

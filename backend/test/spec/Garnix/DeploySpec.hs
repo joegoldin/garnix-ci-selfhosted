@@ -104,10 +104,6 @@ spec = do
             flake = flakeWithPersistence True "db" "db" "local"
             yaml = Just $ getMultiConfig "branch" [PackageName "db"]
             branch = "branch"
-            sshServer serverInfo args = do
-              (ip, sshArgs) <- sshArgsFor serverInfo
-              StdoutRaw stdout <- run $ cmd "ssh" & addArgs (sshArgs <> (("garnix@" <> ip) : args))
-              pure stdout
         context "build" $ around_ Deprecated.addTestSecrets $ do
           it "build fails when persistence is enabled and name is empty" $ do
             (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db" "" "local") yaml branch $ \_mockGithubRepo commit -> do
@@ -159,43 +155,6 @@ spec = do
                 liftIO $ length (plan1 ^. #toSpinDown) `shouldBe` 0
                 liftIO $ length (plan1 ^. #toRedeploy) `shouldBe` 1
             result `shouldBe` Right ()
-
-        it "reuses servers @slow" $ Deprecated.addTestSecrets $ do
-          result <- Deprecated.withMockRepo flake yaml branch $ \mockGithubRepo commit -> do
-
-            resolve =<< buildFlake mempty =<< mkCommitInfo commit
-            firstGenServer <- fromSingleton <$> getAllDbServers
-
-            terminalCaKey <- view #sshTerminalCaKey
-            expectedTerminalCa <-
-              liftIO (deriveSshPublicKey terminalCaKey)
-                >>= either (error . cs) pure
-
-            void $ sshServer firstGenServer ["sudo", "touch", "/hello"]
-            void
-              $ sshServer
-                firstGenServer
-                ["sudo", "truncate", "-s", "0", "/var/lib/garnix/terminal-ca.pub"]
-
-            liftIO $ writeFile (mockGithubRepo </> "flake.nix") (cs $ flakeWithPersistence True "db" "db" "second")
-            commit2 <- commitAll mockGithubRepo
-            resolve =<< buildFlake mempty =<< mkCommitInfo commit2
-            secondGenServers <- getAllDbServers
-
-            liftIO $ length secondGenServers `shouldBe` 1
-            let secondGen = fromSingleton secondGenServers
-
-            stdout <- sshServer secondGen ["sudo", "ls", "/hello"]
-            terminalCa <- sshServer secondGen ["cat", "/var/lib/garnix/terminal-ca.pub"]
-
-            liftIO $ do
-              firstGenServer ^. configurationBuildId `shouldNotBe` secondGen ^. configurationBuildId
-              firstGenServer ^. id `shouldBe` secondGen ^. id
-              firstGenServer ^. ipv4Addr `shouldBe` secondGen ^. ipv4Addr
-              stdout `shouldBe` "/hello\n"
-              Text.strip (cs terminalCa) `shouldBe` expectedTerminalCa
-
-          result `shouldBe` Right ()
 
       it "does not mark server as ready from a failed deployment" $ do
         let event = defaultEvent
@@ -466,22 +425,85 @@ spec = do
               logs' `shouldContain` "Failed to activate server"
               logs' `shouldContain` "activationFailure: command not found"
 
-        it "report redeployment of persistent server" $ do
-          let event = defaultEvent
-          runTestM $ withContext event $ \repoInfo branch -> do
-            let flake = flakeWithPersistenceAndConfig True "db" "db" "local"
-            _ <- doABuild flake event repoInfo
-            let flake2 = flakeWithPersistenceAndConfig True "db" "db" "local2"
-            commitInfo <- doABuild flake2 event repoInfo
-            let builds = DB.getBuildsByCommit (repoInfo ^. ghRepoOwner) (repoInfo ^. ghRepoName) (commitInfo ^. commit)
-            build <- fromSingleton . filter (\p -> p ^. packageType == TypeNixosConfiguration) <$> builds
-            secondGenServers <- getAllDbServers
-            let serverInfo2 = fromSingleton secondGenServers
-            reports <- withTestReporter_ $ \reporter -> do
-              void $ redeployServer reporter commitInfo (BranchDeployment branch) serverInfo2 build
-            let logs' = cs $ (reports Map.! "redeployment db") ^. #logs
-            liftIO $ do
-              logs' `shouldContain` "Server has been successfully redeployed to: https://db.branch.repo.owner.garnix.me"
+  -- These scenarios perform multiple real guest activations against one
+  -- persistent VM. Give each its own pool instead of the randomized describe's
+  -- shared pool: teardown and asynchronous pool replenishment from a previous
+  -- example can otherwise overlap activation and make the tests order-dependent.
+  describe "persistent server reuse @slow"
+    $ before truncateDB
+    $ after_ stopActiveServers
+    $ around_ Deprecated.quietWhenPassing
+    $ aroundAll_ withServerPool
+    $ it "reuses a server"
+    $ Deprecated.addTestSecrets
+    $ do
+      let mkCommitInfo c = do
+            iAuth <- getInstallation $ Github.Data.Id 42
+            pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
+          flake = flakeWithPersistence True "db" "db" "local"
+          yaml = Just $ getMultiConfig "branch" [PackageName "db"]
+          branch = "branch"
+          sshServer serverInfo args = do
+            (ip, sshArgs) <- sshArgsFor serverInfo
+            StdoutRaw stdout <- run $ cmd "ssh" & addArgs (sshArgs <> (("garnix@" <> ip) : args))
+            pure stdout
+      result <- Deprecated.withMockRepo flake yaml branch $ \mockGithubRepo commit -> do
+        resolve =<< buildFlake mempty =<< mkCommitInfo commit
+        firstGenServer <- fromSingleton <$> getAllDbServers
+
+        terminalCaKey <- view #sshTerminalCaKey
+        expectedTerminalCa <-
+          liftIO (deriveSshPublicKey terminalCaKey)
+            >>= either (error . cs) pure
+
+        void $ sshServer firstGenServer ["sudo", "touch", "/hello"]
+        void
+          $ sshServer
+            firstGenServer
+            ["sudo", "truncate", "-s", "0", "/var/lib/garnix/terminal-ca.pub"]
+
+        liftIO $ writeFile (mockGithubRepo </> "flake.nix") (cs $ flakeWithPersistence True "db" "db" "second")
+        commit2 <- commitAll mockGithubRepo
+        resolve =<< buildFlake mempty =<< mkCommitInfo commit2
+        secondGenServers <- getAllDbServers
+
+        liftIO $ length secondGenServers `shouldBe` 1
+        let secondGen = fromSingleton secondGenServers
+
+        stdout <- sshServer secondGen ["sudo", "ls", "/hello"]
+        terminalCa <- sshServer secondGen ["cat", "/var/lib/garnix/terminal-ca.pub"]
+
+        liftIO $ do
+          firstGenServer ^. configurationBuildId `shouldNotBe` secondGen ^. configurationBuildId
+          firstGenServer ^. id `shouldBe` secondGen ^. id
+          firstGenServer ^. ipv4Addr `shouldBe` secondGen ^. ipv4Addr
+          stdout `shouldBe` "/hello\n"
+          Text.strip (cs terminalCa) `shouldBe` expectedTerminalCa
+
+      result `shouldBe` Right ()
+
+  describe "persistent redeployment reporting @slow"
+    $ before truncateDB
+    $ after_ stopActiveServers
+    $ around_ Deprecated.quietWhenPassing
+    $ aroundAll_ withServerPool
+    $ it "reports redeployment of a persistent server"
+    $ do
+      let event = defaultEvent
+      runTestM $ withContext event $ \repoInfo branch -> do
+        let flake = flakeWithPersistenceAndConfig True "db" "db" "local"
+        _ <- doABuild flake event repoInfo
+        let flake2 = flakeWithPersistenceAndConfig True "db" "db" "local2"
+        commitInfo <- doABuild flake2 event repoInfo
+        let builds = DB.getBuildsByCommit (repoInfo ^. ghRepoOwner) (repoInfo ^. ghRepoName) (commitInfo ^. commit)
+        build <- fromSingleton . filter (\p -> p ^. packageType == TypeNixosConfiguration) <$> builds
+        secondGenServers <- getAllDbServers
+        let serverInfo2 = fromSingleton secondGenServers
+        reports <- withTestReporter_ $ \reporter -> do
+          void $ redeployServer reporter commitInfo (BranchDeployment branch) serverInfo2 build
+        let logs' = cs $ (reports Map.! "redeployment db") ^. #logs
+        liftIO $ do
+          logs' `shouldContain` "Server has been successfully redeployed to: https://db.branch.repo.owner.garnix.me"
 
   describe "branch deployments" $ inM $ beforeM_ truncateDBM $ do
     let user = "owner"
@@ -1231,7 +1253,6 @@ startServerAndFailOnAllExcept sync provision (reporter, commitInfo, deploymentTy
     else do
       _ <- liftIO $ readMVar sync
       throw $ ProvisioningError "test error"
-
 
 createBuildsFor :: GhRepoOwner -> GhRepoName -> Branch -> CommitHash -> [(PackageName, Maybe Text)] -> M [Build]
 createBuildsFor user name branchName commit machines = do

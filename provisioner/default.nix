@@ -3,11 +3,10 @@
 # command/package. Imported by flake.nix's per-system section; the NixOS modules
 # in this dir (nixos-module.nix, guest-profile.nix, authentik-guard.nix) are
 # imported by path elsewhere and are unaffected by this default.nix.
-{
-  lib,
-  pkgs,
-  system,
-  ...
+{ lib
+, pkgs
+, system
+, ...
 }:
 let
   mkGuestProfileConfig =
@@ -33,10 +32,6 @@ let
       ];
     }).config;
   guestProfileConfig = mkGuestProfileConfig { };
-  guestProfileWithStatsConfig = mkGuestProfileConfig {
-    garnix.guest.statsReportUrl = "https://garnix.example/api/hosts/stats";
-    garnix.guest.provisionerId = 42;
-  };
   statsHttpStub = pkgs.writeText "garnix-stats-http-stub.py" ''
     import http.server
     import pathlib
@@ -108,26 +103,20 @@ in
     guestProfileStatsTests =
       assert builtins.hasAttr "garnix-stats-reporter" guestProfileConfig.systemd.services;
       assert builtins.hasAttr "garnix-stats-reporter" guestProfileConfig.systemd.timers;
+      assert !(builtins.hasAttr "statsReportUrl" guestProfileConfig.garnix.guest);
+      assert !(builtins.hasAttr "provisionerId" guestProfileConfig.garnix.guest);
       assert
-        guestProfileConfig.systemd.timers.garnix-stats-reporter.unitConfig.ConditionPathExists
-        == "/var/lib/garnix/stats.env";
+      guestProfileConfig.systemd.timers.garnix-stats-reporter.unitConfig.ConditionPathExists
+      == "/var/lib/garnix/stats.env";
       assert
-        guestProfileConfig.systemd.services.garnix-stats-reporter.unitConfig.ConditionPathExists
-        == "/var/lib/garnix/stats.env";
+      guestProfileConfig.systemd.services.garnix-stats-reporter.unitConfig.ConditionPathExists
+      == "/var/lib/garnix/stats.env";
       assert
-        guestProfileConfig.systemd.services.garnix-stats-reporter.serviceConfig.EnvironmentFile
-        == "/var/lib/garnix/stats.env";
+      guestProfileConfig.systemd.services.garnix-stats-reporter.serviceConfig.EnvironmentFile
+      == "/var/lib/garnix/stats.env";
       assert !(builtins.hasAttr "garnix/stats.env" guestProfileConfig.environment.etc);
       assert
-        !(builtins.elem "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env" guestProfileConfig.systemd.tmpfiles.rules);
-      assert builtins.elem "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env"
-        guestProfileWithStatsConfig.systemd.tmpfiles.rules;
-      assert lib.hasInfix "GARNIX_STATS_URL="
-        guestProfileWithStatsConfig.environment.etc."garnix/stats.env".text;
-      assert lib.hasInfix "https://garnix.example/api/hosts/stats"
-        guestProfileWithStatsConfig.environment.etc."garnix/stats.env".text;
-      assert lib.hasInfix "GARNIX_PROVISIONER_ID=42"
-        guestProfileWithStatsConfig.environment.etc."garnix/stats.env".text;
+      !(builtins.elem "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env" guestProfileConfig.systemd.tmpfiles.rules);
       pkgs.runCommand "guest-profile-stats-tests"
         {
           nativeBuildInputs = [

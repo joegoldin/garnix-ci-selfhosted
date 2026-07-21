@@ -1390,7 +1390,6 @@ instance FromJSON AuthJwtPayload where
     token <- obj Aeson..:? "github_token"
     pure $ maybe (ApiSession user) (WebSession user) token
 
-
 data CreatingUser a = CreatingUser
   { _creatingUserExists :: Bool,
     _creatingUserGithubLogin :: GhLogin,
@@ -1742,9 +1741,9 @@ instance ToJSON ServerStatsSample where
 
 -- | An inbound stats push from a deployed guest (POST /api/hosts/stats). The
 -- guest is unauthenticated (like the heartbeat) and identifies itself by its
--- provisioner id — injected into the guest at create time by the provisioner
--- (garnix.guest.provisionerId), which the backend maps to the live server row
--- via servers.provisioner_id. JSON keys are snake_case: provisioner_id,
+-- provisioner id, which the backend writes into the guest's durable reporter
+-- environment after claim and maps to the live server row via
+-- servers.provisioner_id. JSON keys are snake_case: provisioner_id,
 -- cpu_pct, mem_used_kb, mem_total_kb.
 data HostStatsReport = HostStatsReport
   { _hostStatsReportProvisionerId :: ProvisionedServerId,

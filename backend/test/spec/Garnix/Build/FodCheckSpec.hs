@@ -1,12 +1,16 @@
 module Garnix.Build.FodCheckSpec (spec) where
 
+import Control.Concurrent qualified as Concurrent
+import Control.Concurrent.QSem qualified as QSem
 import Control.Lens
 import Control.Monad.Trans.Control (liftBaseOp_)
+import Control.Retry (limitRetries)
 import Cradle
 import Data.Aeson.Key qualified as Aeson
 import Data.Aeson.KeyMap qualified as Aeson
 import Data.Aeson.Lens
 import Data.Containers.ListUtils (nubOrd)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Map ((!))
 import Data.Map qualified as Map
 import Data.String.Interpolate (i)
@@ -210,6 +214,66 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
         pure $ case exitCode of
           ExitFailure _ -> Left $ cs stderr
           ExitSuccess -> Right $ cs stdout
+
+  describe "__rebuildFod" $ do
+    it "prepares an unbuilt FOD before checking it with --rebuild" $ do
+      flake <- mkFodFlake Nothing =<< mkRandomOutput
+      drvPath <- fst <$> testDerivation flake "fod"
+      result <- withUnmock #rebuildFodMock $ __rebuildFod X8664Linux drvPath
+      result `shouldSatisfyM` isRight
+
+  describe "__isSourceUnavailableError" $ do
+    it "recognizes source-fetch failures" $ do
+      __isSourceUnavailableError "curl: (22) The requested URL returned error: 403" `shouldBeM` True
+      __isSourceUnavailableError "Exception: Failed to fetch file from https://crates.io. Status code: 403" `shouldBeM` True
+
+    it "does not hide verifier or builder failures" $ do
+      __isSourceUnavailableError "some outputs are not valid, so checking is not possible" `shouldBeM` False
+      __isSourceUnavailableError "builder failed with exit code 1" `shouldBeM` False
+      __isSourceUnavailableError "ssh: connect to host builder: Connection refused" `shouldBeM` False
+
+  describe "remote-store retries" $ do
+    it "recognizes the production SSH reset without calling it a fetch failure" $ do
+      let stderr =
+            "kex_exchange_identification: read: Connection reset by peer\n"
+              <> "error: failed to start SSH connection to 'farum-azula-builder'"
+      __isRemoteStoreConnectionError stderr `shouldBeM` True
+      __isSourceUnavailableError stderr `shouldBeM` False
+
+    it "retries a transient remote-store reset until it succeeds" $ do
+      attempts <- liftIO $ newIORef (0 :: Int)
+      result <-
+        __retryRemoteStoreOperation (limitRetries 3) $ do
+          attempt <- liftIO $ atomicModifyIORef' attempts $ \n -> (n + 1, n + 1)
+          pure
+            $ if attempt < 3
+              then Left "error: failed to start SSH connection to 'builder'"
+              else Right ("verified" :: Text)
+      result `shouldBeM` Right "verified"
+      liftIO (readIORef attempts) `shouldReturnM` 3
+
+    it "does not retry source-fetch or builder failures" $ do
+      attempts <- liftIO $ newIORef (0 :: Int)
+      result <-
+        __retryRemoteStoreOperation (limitRetries 3) $ do
+          liftIO $ atomicModifyIORef' attempts $ \n -> (n + 1, ())
+          pure (Left "curl: (22) The requested URL returned error: 403" :: Either Text Text)
+      result `shouldBeM` Left "curl: (22) The requested URL returned error: 403"
+      liftIO (readIORef attempts) `shouldReturnM` 1
+
+  describe "remote-store concurrency" $ do
+    it "honors a one-job limit across concurrent FOD operations" $ do
+      slots <- liftIO $ QSem.newQSem 1
+      active <- liftIO $ newIORef (0 :: Int)
+      peak <- liftIO $ newIORef (0 :: Int)
+      forConcurrently_ [1 .. 4 :: Int] $ \_ ->
+        __withRemoteFodSlot slots $ do
+          current <- liftIO $ atomicModifyIORef' active $ \n -> (n + 1, n + 1)
+          liftIO $ atomicModifyIORef' peak $ \n -> (max n current, ())
+          liftIO $ Concurrent.threadDelay 10000
+          liftIO $ atomicModifyIORef' active $ \n -> (n - 1, ())
+      liftIO (readIORef peak) `shouldReturnM` 1
+
   describe "fodCheck" $ aroundM_ (withMock #rebuildFodMock rebuildFodTestImpl) $ do
     let test :: Nix.DrvPath -> M TestReport
         test drvPath = do
@@ -249,6 +313,26 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       let logs = cs (report ^. #logs) :: String
       logs `shouldContainM` "could not be re-verified (source could not be fetched) and was skipped"
       logs `shouldContainM` "marking this check as skipped"
+      verifiedFodsShouldBe []
+
+    it "fails instead of calling a checker error source-unavailable" $ do
+      fod <- mkFodFlake Nothing =<< mkRandomOutput
+      drvPath <- fst <$> testDerivation fod "fod"
+      report <-
+        withMock
+          #rebuildFodMock
+          ( \(_ :: (System, Nix.DrvPath)) ->
+              pure
+                ( Left
+                    "error: some outputs are not valid, so checking is not possible\nHint: --rebuild and --check error if the derivation was not previously built" ::
+                    Either Text Text
+                )
+          )
+          $ test drvPath
+      (report ^. #success) `shouldBeM` Just False
+      let logs = cs (report ^. #logs) :: String
+      logs `shouldContainM` "Failure when checking FOD"
+      logs `shouldNotContainM` "source could not be fetched"
       verifiedFodsShouldBe []
 
     it "fails for lying fods" $ do
@@ -512,7 +596,10 @@ testDerivation flake packageName = do
         $ cmd "nix"
         & addArgs
           [ "eval",
-            ".#" <> packageName,
+            -- This fixture is an ordinary path flake. A bare .# reference can
+            -- be captured by an unrelated parent Git repository (notably
+            -- /tmp/.git under sandboxed test runners on Nix 2.34).
+            "path:.#" <> packageName,
             "--apply",
             "x : {storePath = builtins.toString x; drvPath = x.drvPath; }",
             "--json" :: Text

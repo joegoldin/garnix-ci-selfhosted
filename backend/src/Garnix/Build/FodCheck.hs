@@ -3,19 +3,29 @@ module Garnix.Build.FodCheck
     fodCheck,
     -- exported for testing:
     __findAllFodsRecursively,
+    __isRemoteStoreConnectionError,
+    __isSourceUnavailableError,
+    __rebuildFod,
+    __retryRemoteStoreOperation,
+    __withRemoteFodSlot,
     __pickRemoteBuilderUrlFromMachinesFile,
     __parseMachinesFile,
   )
 where
 
 import Control.Concurrent.Lifted (modifyMVar, modifyMVar_, newMVar, readMVar, swapMVar)
+import Control.Concurrent.QSem (QSem)
+import Control.Concurrent.QSem qualified as QSem
 import Control.Exception.Safe qualified as Safe
 import Control.Lens ((<&>))
 import Control.Monad.Extra (mapMaybeM)
+import Control.Retry (RetryPolicyM, fullJitterBackoff, limitRetries, retrying)
 import Cradle
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Types qualified as Aeson
 import Data.Attoparsec.Text hiding (try, (<?>))
-import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Either.Extra (mapLeft)
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe
@@ -27,12 +37,10 @@ import Garnix.BuildLogs.Types (LogLine (LogLine))
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags qualified as FeatureFlags
 import Garnix.DB.FeatureFlags.Types qualified as FeatureFlags
-import Garnix.Duration (fromMinutes)
+import Garnix.Duration (fromMilliSeconds, fromMinutes, toMicroseconds)
 import Garnix.Monad
 import Garnix.Monad.Async (joinAll, resolve, spawn)
 import Garnix.Monad.Bubbling
-import Data.Aeson qualified as Aeson
-import Data.Aeson.Types qualified as Aeson
 import Garnix.Monad.Metrics (timingAs)
 import Garnix.Monad.Pool (withPoolM)
 import Garnix.Monad.SubProcess (runSubProcess)
@@ -235,12 +243,12 @@ checkFod fodChecker drvPath system = do
   log Informational $ "checking fod: " <> cs drvPath <> ", system: " <> system ^. systemTextIso
   result <- rebuildFod system drvPath
   case result of
-    -- Only a hash mismatch is evidence of a lying FOD. A rebuild that fails
-    -- because the source can't be fetched (mirror gone, CDN blocking the
-    -- fetcher's User-Agent, …) proves nothing about the hash: warn, count it,
-    -- and move on instead of failing the run.
+    -- A genuinely unavailable source proves nothing about the hash. Do not
+    -- apply this exception to arbitrary nix/checker errors: that would turn a
+    -- broken verifier (or a deliberately failing FOD builder) into a green
+    -- bypass.
     Left stderr
-      | not ("hash mismatch" `Text.isInfixOf` stderr) -> do
+      | __isSourceUnavailableError stderr -> do
           let warning =
                 "Could not re-verify FOD '"
                   <> cs drvPath
@@ -273,54 +281,133 @@ checkFod fodChecker drvPath system = do
       DB.addVerifiedFod drvPath storePath
       pure $ Right ()
 
+-- | Conservative recognition of errors emitted by source fetchers. Unknown
+-- failures are verification failures, not skips: it is safer to surface a new
+-- fetcher message than to silently disable FOD checking.
+__isSourceUnavailableError :: Text -> Bool
+__isSourceUnavailableError stderr =
+  let lower = Text.toLower stderr
+   in any
+        (`Text.isInfixOf` lower)
+        [ "unable to download",
+          "cannot download",
+          "could not download",
+          "couldn't download",
+          "download failed",
+          "all mirrors failed",
+          "failed to fetch",
+          "unable to fetch",
+          "could not fetch",
+          "couldn't fetch",
+          "the requested url returned error:",
+          "unexpected http status",
+          "status code: 4",
+          "status code: 5",
+          "neither your store nor your substituters seems to have",
+          "you must first comply with"
+        ]
+
+-- | True only for failures from the SSH transport to a direct remote Nix
+-- store. Keep this narrower than generic network errors: a FOD's own fetcher
+-- may report an HTTP or TCP failure, which is not a reason to reconnect to the
+-- builder.
+__isRemoteStoreConnectionError :: Text -> Bool
+__isRemoteStoreConnectionError stderr =
+  let lower = Text.toLower stderr
+      hasSshPrefix = "ssh:" `Text.isInfixOf` lower
+   in any
+        (`Text.isInfixOf` lower)
+        [ "failed to start ssh connection",
+          "kex_exchange_identification",
+          "ssh_exchange_identification",
+          "connection to remote nix store was unexpectedly closed"
+        ]
+        || ( hasSshPrefix
+               && any
+                 (`Text.isInfixOf` lower)
+                 [ "connection refused",
+                   "connection reset",
+                   "connection timed out",
+                   "could not resolve hostname",
+                   "no route to host"
+                 ]
+           )
+
+__retryRemoteStoreOperation :: RetryPolicyM M -> M (Either Text a) -> M (Either Text a)
+__retryRemoteStoreOperation policy action =
+  retrying policy shouldRetry $ const action
+  where
+    shouldRetry _status = pure . either __isRemoteStoreConnectionError (const False)
+
+remoteStoreRetryPolicy :: RetryPolicyM M
+remoteStoreRetryPolicy =
+  limitRetries 5
+    <> fullJitterBackoff (toMicroseconds (fromMilliSeconds @Int 250))
+
+-- | Bound direct remote-store sessions independently of the ordinary Nix
+-- scheduler. 'nix build --store ...' bypasses buildMachines.maxJobs.
+__withRemoteFodSlot :: QSem -> M a -> M a
+__withRemoteFodSlot slots =
+  Safe.bracket_
+    (liftIO $ QSem.waitQSem slots)
+    (liftIO $ QSem.signalQSem slots)
+
 type NixBuildOutput = [Rec ("drvPath" .== Text .+ "outputs" .== Map.Map Text Text)]
 
--- | Rebuild a FOD, ignoring the existing output, so a lying hash surfaces.
--- Upstream rebuilds on a remote builder from its fleet; a self-host box
--- usually has no builder for its own system (or no /etc/nix/machines at
--- all), so when none matches we rebuild locally — `nix build --rebuild`
--- re-fetches the FOD and fails on hash mismatch either way.
+-- | Prepare and then rebuild a FOD on the same store. Nix's @--rebuild@
+-- refuses to check an output that is not already valid in that store, which
+-- is normally the case on a freshly provisioned self-host guest. The first
+-- build realizes/substitutes that baseline output; the strict second build
+-- ignores it and exposes a lying hash.
 rebuildFod :: System -> Nix.DrvPath -> M (Either Text Text)
 rebuildFod = do
   curry $ mockable #rebuildFodMock $ \(system, drvPath) -> withBubbling $ \bubble -> do
     nixConfig <- view #userNixConfig
     remoteBuilderUrl <- __pickRemoteBuilder system
-    (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- case remoteBuilderUrl of
+    let runBuild remoteBuilder shouldRebuild =
+          let commonArgs =
+                [ "build",
+                  cs drvPath <> "^*",
+                  "--no-link",
+                  "--json"
+                ]
+                  <> ["--rebuild" | shouldRebuild]
+           in do
+                (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- case remoteBuilder of
+                  Just (url, sshKey) ->
+                    run
+                      $ cmd "nix"
+                      & addArgs (commonArgs <> ["--store", url, "--eval-store", "auto"])
+                      & modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords (remoteBuilderSshArgs sshKey))
+                      & addNixConfigEnvironment nixConfig
+                  Nothing ->
+                    run
+                      $ cmd "nix"
+                      & addArgs commonArgs
+                      & addNixConfigEnvironment nixConfig
+                pure $ case exitCode of
+                  ExitFailure _ -> Left stderr
+                  ExitSuccess -> Right stdout
+        prepareAndCheck runOperation remoteBuilder = do
+          void
+            $ (bubble =<< runOperation (runBuild remoteBuilder False))
+            <?> ("rebuildFod: preparing " <> cs drvPath)
+          (bubble =<< runOperation (runBuild remoteBuilder True))
+            <?> ("rebuildFod: checking " <> cs drvPath)
+    case remoteBuilderUrl of
+      Nothing -> prepareAndCheck identity Nothing
       Just url -> do
-        sshKey <- liftIO remoteBuilderSshKeyPath
-        (bubble =<< copyClosure sshKey drvPath url)
-          <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> url)
-        run
-          $ cmd "nix"
-          & addArgs
-            [ "build",
-              cs drvPath <> "^*",
-              "--no-link",
-              "--json",
-              "--rebuild",
-              "--store",
-              url,
-              "--eval-store",
-              "auto"
-            ]
-          & modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords (remoteBuilderSshArgs sshKey))
-          & addNixConfigEnvironment nixConfig
-      Nothing ->
-        run
-          $ cmd "nix"
-          & addArgs
-            ([ "build",
-               cs drvPath <> "^*",
-               "--no-link",
-               "--json",
-               "--rebuild"
-             ] ::
-               [Text]
-            )
-          & addNixConfigEnvironment nixConfig
-    bubble $ case exitCode of
-      ExitFailure _ -> Left stderr
-      ExitSuccess -> Right stdout
+        slots <- view #fodRemoteJobSlots
+        __withRemoteFodSlot slots $ do
+          sshKey <- liftIO remoteBuilderSshKeyPath
+          (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (copyClosure sshKey drvPath url))
+            <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> url)
+          prepareAndCheck
+            (__retryRemoteStoreOperation remoteStoreRetryPolicy)
+            (Just (url, sshKey))
+
+__rebuildFod :: System -> Nix.DrvPath -> M (Either Text Text)
+__rebuildFod = rebuildFod
 
 -- Untested.
 copyClosure :: FilePath -> Nix.DrvPath -> Text -> M (Either Text ())

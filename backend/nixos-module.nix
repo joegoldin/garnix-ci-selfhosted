@@ -1,9 +1,10 @@
-{ config
-, lib
-, pkgs
-, flakePackages
-, flakeInputs
-, ...
+{
+  config,
+  lib,
+  pkgs,
+  flakePackages,
+  flakeInputs,
+  ...
 }:
 let
   buildLogsFluentBitPort = 8888;
@@ -16,7 +17,8 @@ let
     fi
   '';
 
-  migrateScript = with pkgs;
+  migrateScript =
+    with pkgs;
     writeShellScriptBin "migrate" ''
       set -euo pipefail
 
@@ -24,7 +26,8 @@ let
       ${lib.getBin flakePackages."backend_migrate"}/bin/sqitch deploy \
           "db:pg://${config.garnix.database.dbUser}:$(cat /run/secrets/database-password)@${config.garnix.database.fqdn}:${toString config.garnix.database.dbPort}/${config.garnix.database.dbName}?sslmode=${config.garnix.database.ssl.mode}&sslrootcert=${config.garnix.database.ssl.rootCert}"
     '';
-  dbCheckIsReady = with pkgs;
+  dbCheckIsReady =
+    with pkgs;
     writeShellScriptBin "dbCheckIsReady" ''
       #!/usr/bin/env bash
       set -uo pipefail
@@ -126,6 +129,17 @@ in
             When null, the upstream default (garnix.me) is used.
           '';
         };
+        statsReportUrl = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "https://garnix.example.com/api/hosts/stats";
+          description = ''
+            Full control-plane URL that deployed guests POST CPU and memory
+            samples to. Sets GARNIX_STATS_REPORT_URL. When null, the backend
+            defaults to <services.garnixServer.url>/api/hosts/stats. Keep this
+            separate from hostingDomain, which routes untrusted workloads.
+          '';
+        };
         extraHostingDomains = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];
@@ -216,13 +230,15 @@ in
           '';
         };
         s3Artifacts = lib.mkOption {
-          type = lib.types.nullOr (lib.types.submodule {
-            options = {
-              publicBucket = lib.mkOption { type = lib.types.str; };
-              privateBucket = lib.mkOption { type = lib.types.str; };
-              publicBaseUrl = lib.mkOption { type = lib.types.str; };
-            };
-          });
+          type = lib.types.nullOr (
+            lib.types.submodule {
+              options = {
+                publicBucket = lib.mkOption { type = lib.types.str; };
+                privateBucket = lib.mkOption { type = lib.types.str; };
+                publicBaseUrl = lib.mkOption { type = lib.types.str; };
+              };
+            }
+          );
           default = null;
           description = ''
             Build-artifact buckets (garnix.yaml `artifacts:`). Key pairs are read from
@@ -293,7 +309,13 @@ in
           example = "https://<opensearch-ip>/_msearch";
         };
         testFeatures = lib.mkOption {
-          type = lib.types.listOf (lib.types.enum [ "DevApi" "OpenSearchMocks" "CacheUploadMocks" ]);
+          type = lib.types.listOf (
+            lib.types.enum [
+              "DevApi"
+              "OpenSearchMocks"
+              "CacheUploadMocks"
+            ]
+          );
           default = [ ];
         };
         provisionServerPool = lib.mkOption {
@@ -317,6 +339,17 @@ in
             GARNIX_MAX_CONCURRENT_BUILDS.
           '';
         };
+        maxRemoteFodJobs = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 1;
+          description = ''
+            Maximum number of fixed-output derivation checks allowed to use a
+            remote Nix store concurrently. FOD checks connect to the store
+            directly and bypass the Nix daemon's buildMachines.maxJobs
+            scheduler, so small external builders need this separate cap. Sets
+            GARNIX_FOD_REMOTE_MAX_JOBS.
+          '';
+        };
         enableNginx = lib.mkOption {
           type = lib.types.bool;
           default = true;
@@ -328,20 +361,43 @@ in
           description = "SystemMaxUse setting for journald.";
         };
         buildMachines = lib.mkOption {
-          type = lib.types.listOf (lib.types.submodule {
-            options = {
-              hostName = lib.mkOption { type = lib.types.str; };
-              hostAddress = lib.mkOption { type = lib.types.str; };
-              sshUser = lib.mkOption { type = lib.types.str; default = "nix-ssh"; };
-              sshKey = lib.mkOption { type = lib.types.str; default = "/run/secrets/garnix_server_remote_builder_ssh"; };
-              protocol = lib.mkOption { type = lib.types.str; default = "ssh-ng"; };
-              systems = lib.mkOption { type = lib.types.listOf lib.types.str; };
-              maxJobs = lib.mkOption { type = lib.types.int; default = 4; };
-              speedFactor = lib.mkOption { type = lib.types.int; default = 1; };
-              supportedFeatures = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ "big-parallel" ]; };
-              mandatoryFeatures = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
-            };
-          });
+          type = lib.types.listOf (
+            lib.types.submodule {
+              options = {
+                hostName = lib.mkOption { type = lib.types.str; };
+                hostAddress = lib.mkOption { type = lib.types.str; };
+                sshUser = lib.mkOption {
+                  type = lib.types.str;
+                  default = "nix-ssh";
+                };
+                sshKey = lib.mkOption {
+                  type = lib.types.str;
+                  default = "/run/secrets/garnix_server_remote_builder_ssh";
+                };
+                protocol = lib.mkOption {
+                  type = lib.types.str;
+                  default = "ssh-ng";
+                };
+                systems = lib.mkOption { type = lib.types.listOf lib.types.str; };
+                maxJobs = lib.mkOption {
+                  type = lib.types.int;
+                  default = 4;
+                };
+                speedFactor = lib.mkOption {
+                  type = lib.types.int;
+                  default = 1;
+                };
+                supportedFeatures = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ "big-parallel" ];
+                };
+                mandatoryFeatures = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                };
+              };
+            }
+          );
           default = [ ];
           description = "Remote builders. Replaces upstream's hardcoded fleet.";
         };
@@ -375,16 +431,20 @@ in
   };
 
   config = lib.mkIf config.services.garnixServer.enable {
-    assertions = [{
-      assertion =
-        !config.garnix.devMode.enable -> (config.services.garnixServer.testFeatures == [ ]);
-      message = ''
-        Test features cannot be enabled in production.
-        If you want to enable test features, set garnix.devMode.enable to true.
-      '';
-    }];
+    assertions = [
+      {
+        assertion = !config.garnix.devMode.enable -> (config.services.garnixServer.testFeatures == [ ]);
+        message = ''
+          Test features cannot be enabled in production.
+          If you want to enable test features, set garnix.devMode.enable to true.
+        '';
+      }
+    ];
 
-    networking.firewall.allowedTCPPorts = [ 80 443 ];
+    networking.firewall.allowedTCPPorts = [
+      80
+      443
+    ];
 
     environment.systemPackages = [ pkgs.postgresql_18 ];
 
@@ -392,7 +452,8 @@ in
       startAgent = true;
       extraConfig = ''
         AddKeysToAgent yes
-      '' + lib.concatMapStrings (m: ''
+      ''
+      + lib.concatMapStrings (m: ''
         Host ${m.hostName}
            Hostname ${m.hostAddress}
            User ${m.sshUser}
@@ -405,15 +466,26 @@ in
         cores = 4;
       };
       extraOptions = ''
-        max-jobs = ${if config.garnix.devMode.enable then "auto" else toString config.services.garnixServer.maxLocalJobs}
+        max-jobs = ${
+          if config.garnix.devMode.enable then "auto" else toString config.services.garnixServer.maxLocalJobs
+        }
         keep-build-log = true
       '';
-      buildMachines = map
-        (m: {
-          inherit (m) hostName sshUser sshKey protocol systems maxJobs speedFactor supportedFeatures mandatoryFeatures;
-        })
-        config.services.garnixServer.buildMachines;
-      distributedBuilds = !config.garnix.devMode.enable && config.services.garnixServer.buildMachines != [ ];
+      buildMachines = map (m: {
+        inherit (m)
+          hostName
+          sshUser
+          sshKey
+          protocol
+          systems
+          maxJobs
+          speedFactor
+          supportedFeatures
+          mandatoryFeatures
+          ;
+      }) config.services.garnixServer.buildMachines;
+      distributedBuilds =
+        !config.garnix.devMode.enable && config.services.garnixServer.buildMachines != [ ];
       daemonIOSchedPriority = 4;
     };
 
@@ -459,7 +531,7 @@ in
             Tls = if config.garnix.fluent-bit.opensearch.tls then "On" else "Off";
             "Tls.verify" = if config.garnix.devMode.enable then "Off" else "On";
             HTTP_User = config.garnix.fluent-bit.opensearch.basicAuth.username;
-            HTTP_Passwd = ''''${OPENSEARCH_PASSWORD}'';
+            HTTP_Passwd = "\${OPENSEARCH_PASSWORD}";
             Logstash_Format = "On";
             Logstash_Prefix = "garnix-build-logs";
             Logstash_DateFormat = "%Y.%m.%d";
@@ -526,6 +598,7 @@ in
           "S3_CACHE_PRIVATE_BUCKET=${config.services.garnixServer.s3Cache.privateBucket}"
           "GARNIX_MODULES_ORG=${config.services.garnixServer.modulesOrg}"
           "GARNIX_MAX_CONCURRENT_BUILDS=${toString config.services.garnixServer.maxConcurrentBuilds}"
+          "GARNIX_FOD_REMOTE_MAX_JOBS=${toString config.services.garnixServer.maxRemoteFodJobs}"
         ]
         ++ lib.optionals config.services.garnixServer.selfHostMode [
           "GARNIX_SELF_HOST_MODE=1"
@@ -541,6 +614,9 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.hostingDomain != null) [
           "GARNIX_HOSTING_DOMAIN=${config.services.garnixServer.hostingDomain}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.statsReportUrl != null) [
+          "GARNIX_STATS_REPORT_URL=${config.services.garnixServer.statsReportUrl}"
         ]
         ++ lib.optionals (config.services.garnixServer.extraHostingDomains != [ ]) [
           "GARNIX_EXTRA_HOSTING_DOMAINS=${lib.concatStringsSep "," config.services.garnixServer.extraHostingDomains}"
@@ -590,14 +666,17 @@ in
         ];
         ExecStart = ''
           ${lib.getBin flakePackages."backend_garnix"}/bin/server \
-              ${lib.concatStringsSep " " (builtins.map (testFeature: "--enable ${testFeature}") config.services.garnixServer.testFeatures)} \
+              ${
+                lib.concatStringsSep " " (
+                  builtins.map (testFeature: "--enable ${testFeature}") config.services.garnixServer.testFeatures
+                )
+              } \
               --port ${toString config.services.garnixServer.port} \
               --monitoring-port ${toString config.services.garnixServer.monitoringPort} \
               --metrics-port ${toString config.services.garnixServer.metricsPort} \
               --build-logs-reporting-port ${toString buildLogsFluentBitPort} \
               --build-logs-dir /var/lib/garnix/logs \
-              ${lib.optionalString config.services.garnixServer.provisionServerPool
-                '' --provision-server-pool''}
+              ${lib.optionalString config.services.garnixServer.provisionServerPool "--provision-server-pool"}
         '';
       };
       unitConfig = {
