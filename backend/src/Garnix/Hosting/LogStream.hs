@@ -140,13 +140,16 @@ collectorLoop streams key generation ip sshArgs path = forever $ do
   threadDelay 3_000_000
   where
     followOnce =
-      Proc.withCreateProcess process $ \_ (Just stdoutHandle) (Just stderrHandle) processHandle -> do
-        setConnected streams key generation True
-        setError streams key generation ""
-        Async.withAsync (consumeStderr stderrHandle) $ \_ -> do
-          consumeStdout stdoutHandle
-          exitCode <- Proc.waitForProcess processHandle
-          setError streams key generation ("log collector exited (" <> showExit exitCode <> ")")
+      Proc.withCreateProcess process $ \_ maybeStdout maybeStderr processHandle ->
+        case (maybeStdout, maybeStderr) of
+          (Just stdoutHandle, Just stderrHandle) -> do
+            setConnected streams key generation True
+            setError streams key generation ""
+            Async.withAsync (consumeStderr stderrHandle) $ \_ -> do
+              consumeStdout stdoutHandle
+              exitCode <- Proc.waitForProcess processHandle
+              setError streams key generation ("log collector exited (" <> showExit exitCode <> ")")
+          _ -> Safe.throwString "log collector failed to create stdout and stderr pipes"
     process =
       ( Proc.proc
           "ssh"
