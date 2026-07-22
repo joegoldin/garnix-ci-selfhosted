@@ -27,6 +27,17 @@ let
       lib.filterAttrs (_: count: count > 0) config.services.garnixServer.serverPool
     )
   );
+  monitoringBuildersEnv = builtins.toJSON (
+    map
+      (builder: {
+        # MonitoringBuilderTarget uses the backend's snake_case JSON codec.
+        name = builder.name;
+        url = builder.url;
+        systems = builder.systems;
+        max_jobs = builder.maxJobs;
+      })
+      config.services.garnixServer.monitoringBuilders
+  );
 
   logsDir = pkgs.writeShellScriptBin "logsDir" ''
     if [ -d /var/lib/garnix/logs ]; then
@@ -629,6 +640,9 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
+      environment = lib.optionalAttrs (config.services.garnixServer.monitoringBuilders != [ ]) {
+        GARNIX_MONITORING_BUILDERS = monitoringBuildersEnv;
+      };
       serviceConfig = {
         Type = "notify";
         User = config.garnix.database.dbUser;
@@ -711,9 +725,6 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.nodeExporterUrl != null) [
           "GARNIX_NODE_EXPORTER_URL=${config.services.garnixServer.nodeExporterUrl}"
-        ]
-        ++ lib.optionals (config.services.garnixServer.monitoringBuilders != [ ]) [
-          "GARNIX_MONITORING_BUILDERS=${builtins.toJSON config.services.garnixServer.monitoringBuilders}"
         ]
         ++ lib.optionals (config.services.garnixServer.sshHost != null) [
           "GARNIX_SSH_HOST=${config.services.garnixServer.sshHost}"

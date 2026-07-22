@@ -16,6 +16,14 @@
         enable = true;
         testFeatures = [ "DevApi" ];
         provisionServerPool = false;
+        monitoringBuilders = [
+          {
+            name = "test-builder";
+            url = "http://127.0.0.1:9100/metrics";
+            systems = [ "x86_64-linux" ];
+            maxJobs = 2;
+          }
+        ];
       };
       garnix.database = {
         enable = false;

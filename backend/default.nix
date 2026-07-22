@@ -137,6 +137,9 @@ rec {
       hlint src test
       touch $out
     '';
+    nixos-module-monitoring-environment = import ./nixos-module-monitoring-environment-check.nix {
+      inherit flakeInputs pkgs system;
+    };
     check-qualified-imports =
       let
         modulesMustBeQualified = [
