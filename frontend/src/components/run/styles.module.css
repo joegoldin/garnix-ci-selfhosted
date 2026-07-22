@@ -18,6 +18,19 @@
   margin-bottom: 24px;
 }
 
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.titleRow .h1 {
+  margin-bottom: 0;
+}
+
 .h2 {
   font-size: 20px;
   line-height: 130%;
@@ -69,9 +82,4 @@
       margin-bottom: 0;
     }
   }
-}
-
-.actions {
-  display: flex;
-  flex-direction: row-reverse;
 }

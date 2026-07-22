@@ -25,6 +25,7 @@ import GHC.Conc (getNumProcessors)
 import Garnix.API
 import Garnix.Artifacts.Reaper qualified as ArtifactReaper
 import Garnix.Artifacts.Store (s3ArtifactStore)
+import Garnix.BuildLogs qualified as BuildLogs
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags (withRecachedFeatureFlags)
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
@@ -410,6 +411,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
   fodCheckPool <- Garnix.Monad.Pool.newPool 20 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
+  buildWaitTracker <- BuildLogs.newBuildWaitTracker
   terminalSessions <- newMVar Map.empty
   serverLogStreams <- ServerLogStream.newServerLogStreams
   withDefaultLogger $ \defaultLogger -> do
@@ -484,6 +486,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               githubLogDebounceDuration = fromSeconds @Int 15,
               featureFlagConfig,
               fodCheckPool,
+              buildWaitTracker,
               terminalSessions,
               serverLogStreams
             }

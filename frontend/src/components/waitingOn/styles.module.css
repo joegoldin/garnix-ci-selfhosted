@@ -1,0 +1,97 @@
+.heading {
+  font-size: 20px;
+  line-height: 130%;
+  margin-bottom: 16px;
+}
+
+.tree,
+.children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree {
+  border: 1px solid var(--color-stone-300);
+}
+
+.node:not(:last-child) > .row {
+  border-bottom: 1px solid var(--color-stone-200);
+}
+
+.children {
+  background: var(--color-stone-50);
+  border-top: 1px solid var(--color-stone-200);
+}
+
+.row {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-top: 7px;
+  padding-right: 12px;
+  padding-bottom: 7px;
+  background: var(--color-white);
+}
+
+.children .row {
+  background: var(--color-stone-50);
+}
+
+.toggle,
+.togglePlaceholder {
+  width: 22px;
+  min-width: 22px;
+}
+
+.toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--color-stone-600);
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.toggle:hover {
+  color: var(--color-stone-900);
+}
+
+.kind {
+  color: var(--color-stone-500);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.label,
+.derivation {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.derivation {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
+.detail {
+  margin-left: auto;
+  color: var(--color-stone-500);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media only screen and (max-width: 600px) {
+  .kind {
+    display: none;
+  }
+
+  .detail {
+    white-space: normal;
+  }
+}

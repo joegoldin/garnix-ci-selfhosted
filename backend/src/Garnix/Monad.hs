@@ -29,7 +29,7 @@ import Data.UUID qualified
 import Data.UUID.V4 qualified
 import Garnix.Async (Promise)
 import Garnix.Build.Types (EvaluationResult)
-import Garnix.BuildLogs.Types (LogLine)
+import Garnix.BuildLogs.Types (BuildWaitTracker, LogLine)
 import Garnix.DB.FeatureFlags.Types (FeatureFlagConfig)
 import Garnix.Duration
 import Garnix.GithubInterface.Types
@@ -167,6 +167,9 @@ data Env = Env
     githubLogDebounceDuration :: Duration,
     featureFlagConfig :: FeatureFlagConfig,
     fodCheckPool :: Garnix.Monad.Pool.Pool (),
+    -- | Bounded process-local detail for the work an active build is waiting
+    -- on. Durable fallback state comes from the build row after restarts.
+    buildWaitTracker :: BuildWaitTracker,
     -- | Live web-terminal websocket sessions per user (github login), backing
     -- the per-user concurrency cap on /api/terminal (see Garnix.API.Terminal).
     terminalSessions :: MVar (Map Text Int),

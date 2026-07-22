@@ -6,6 +6,7 @@ import Data.Text qualified as T
 import Garnix.API.Builds.Types
 import Garnix.API.Commits (GetCommit, ListCommits, getCommitsForUser, getSingleCommit)
 import Garnix.Access (Access (..), getBuildWithAccess)
+import Garnix.BuildLogs qualified as BuildLogs
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Orchestrator qualified as Orchestrator
@@ -122,6 +123,8 @@ getBuild' user' buildId = do
     Just drv | b ^. alreadyBuilt == Just True -> DB.getOriginalBuildForDrvPath user' drv
     _ -> pure Nothing
   runStartedAt <- DB.getBuildRunStartedAt buildId
+  tracker <- view #buildWaitTracker
+  waitingOn <- BuildLogs.buildWaitNodes tracker b runStartedAt
   pure
     $ BuildResponse
       { _buildResponseId = b ^. id,
@@ -140,6 +143,7 @@ getBuild' user' buildId = do
         _buildResponseForge = b ^. forge,
         _buildResponseRunStartedAt = runStartedAt,
         _buildResponseOriginalBuild = originalBuild,
+        _buildResponseWaitingOn = waitingOn,
         _buildResponseRelatedBuilds = maybeToList originalBuild
       }
 

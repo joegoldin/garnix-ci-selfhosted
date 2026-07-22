@@ -53,6 +53,27 @@ spec = describe "ProcessLogs" $ do
             bustCache <- diffTimeToPicoseconds . utctDayTime <$> getCurrentTime
             pure $ PackageName $ baseName <> "-" <> show bustCache
 
+      it "tracks active nested Nix work with its builder and phase" $ runTestM $ do
+        tracker <- newBuildWaitTracker
+        let buildId = BuildId $ 1 ^. re hashIdInt
+        setBuildWaitStage tracker buildId "Waiting for Nix activity"
+        processorState <- mkTrackedInternalLogProcessorState tracker buildId
+        let processor = buildInternalLogProcessor (const $ pure ()) processorState
+        processor
+          "@nix {\"action\":\"start\",\"id\":10,\"level\":3,\"type\":105,\"text\":\"building\",\"fields\":[\"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-linux-rpi.drv\",\"farum-azula\",1,0],\"parent\":0}"
+        processor
+          "@nix {\"action\":\"result\",\"id\":10,\"type\":104,\"fields\":[\"buildPhase\"]}"
+        [stage] <- readBuildWaitNodes tracker buildId
+        let [derivation] = _waitNodeChildren stage
+        liftIO $ _waitNodeKind derivation `shouldBe` "derivation"
+        liftIO $ _waitNodeLabel derivation `shouldBe` "linux-rpi"
+        liftIO $ map _waitNodeKind (_waitNodeChildren derivation) `shouldBe` ["builder", "phase"]
+        liftIO $ map _waitNodeLabel (_waitNodeChildren derivation) `shouldBe` ["farum-azula", "buildPhase"]
+
+        processor "@nix {\"action\":\"stop\",\"id\":10}"
+        [finishedStage] <- readBuildWaitNodes tracker buildId
+        liftIO $ _waitNodeChildren finishedStage `shouldBe` []
+
       it "transforms logs for flakes with no phases" $ do
         pkgName <- mkPackageName "test-pkg"
         let flake =

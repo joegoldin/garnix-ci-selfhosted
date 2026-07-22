@@ -53,6 +53,7 @@ import Database.PostgreSQL.Typed (PGDatabase (..), pgConnect, pgDisconnect)
 import Database.PostgreSQL.Typed.TH (getTPGDatabase)
 import Garnix (envMocks)
 import Garnix.Async qualified
+import Garnix.BuildLogs qualified
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
 import Garnix.Duration
 import Garnix.Hosting.LogStream qualified as ServerLogStream
@@ -260,6 +261,7 @@ withTestEnvironment tempDir action = do
       Just emptyDir' <- lookupEnv "EMPTY_DIR"
       featureFlagConfig <- getFeatureFlagConfig
       fodCheckPool <- Garnix.Monad.Pool.newPool 40 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
+      buildWaitTracker <- Garnix.BuildLogs.newBuildWaitTracker
       terminalSessions <- newMVar Map.empty
       serverLogStreams <- ServerLogStream.newServerLogStreams
       withDefaultLogger $ \defaultLogger -> do
@@ -320,6 +322,7 @@ withTestEnvironment tempDir action = do
                   githubLogDebounceDuration = fromSeconds 0,
                   featureFlagConfig,
                   fodCheckPool,
+                  buildWaitTracker,
                   hostingDomain = "garnix.me",
                   statsReportUrl = "https://garnix.io/api/hosts/stats",
                   extraHostingDomains = [],

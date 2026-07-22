@@ -7,7 +7,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens
 import Data.Yaml (decodeThrow)
 import Data.Yaml.TH (yamlQQ)
-import Garnix.BuildLogs.Types
+import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Monad.Async (resolve)
@@ -30,6 +30,36 @@ spec = inM
   $ beforeM_ truncateDBM
   $ do
     describe "get /api/run/{id}" $ do
+      it "shows the unfinished builds that an in-progress run is waiting on" $ do
+        withFakeGithubInterface $ \ghState -> do
+          withServer $ \testServer -> do
+            mkRepo ghState "owner" "repo" (#publicity .~ RepoIsPublic True)
+            run <- DB.newRun "FOD checks" (defaultCommitInfo & repoPublicity .~ RepoIsPublic True)
+            waitingBuild <-
+              testBuild
+                $ (repoUser .~ "owner")
+                . (repoName .~ "repo")
+                . (gitCommit .~ "aaaaaaaa")
+                . (packageType .~ TypeNixosConfiguration)
+                . (package .~ "scarab")
+                . (status .~ Nothing)
+            _finishedBuild <-
+              testBuild
+                $ (repoUser .~ "owner")
+                . (repoName .~ "repo")
+                . (gitCommit .~ "aaaaaaaa")
+                . (package .~ "finished")
+                . (status ?~ Success)
+            let runId = run ^. id . to getRunId . re hashIdText
+            result <- assert200 $ testServer.get $ cs $ "/api/run/" <> runId
+            let [waitingOn] = result ^.. responseBody . key "waiting_on" . _Array . traverse
+            liftIO $ waitingOn ^. key "kind" . _String `shouldBe` "build"
+            liftIO $ waitingOn ^. key "label" . _String `shouldBe` "nixosConfiguration scarab"
+            liftIO
+              $ waitingOn
+              ^. key "href" . _String
+              `shouldBe` "/build/" <> getHashId (getBuildId $ waitingBuild ^. id)
+
       it "shows runs for public repos when not logged in" $ do
         withFakeGithubInterface $ \ghState -> do
           withServer $ \testServer -> do

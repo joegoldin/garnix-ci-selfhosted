@@ -22,9 +22,17 @@
 .titleRow {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 24px;
+}
+
+.titleActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .titleRow .h1 {
@@ -99,11 +107,6 @@
       margin-bottom: 0;
     }
   }
-}
-
-.actions {
-  display: flex;
-  flex-direction: row-reverse;
 }
 
 .artifactList {

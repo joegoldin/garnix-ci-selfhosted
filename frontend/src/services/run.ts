@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { waitNodeSchema } from "./waiting";
 import { APIResult, fetchFromAPI } from ".";
 
 const runStatusSchema = z
@@ -29,6 +30,7 @@ export const runSchema = z
       .coerce.date()
       .nullish()
       .transform((v) => v ?? null),
+    waiting_on: z.array(waitNodeSchema).optional().default([]),
   })
   .transform((run) => ({
     ...run,
@@ -39,6 +41,7 @@ export const runSchema = z
     startTime: run.start_time,
     endTime: run.end_time ?? null,
     runStartedAt: run.run_started_at,
+    waitingOn: run.waiting_on,
     // Like builds: a run stays "Pending" until its first output, then shows
     // as "Running" until it finishes.
     status:

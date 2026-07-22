@@ -16,6 +16,7 @@ import { Ok } from "@/services";
 import { Run, cancelRun } from "@/services/run";
 import { trackSubmit } from "@/utils/analytics";
 import { RunLog } from "../buildLog";
+import { WaitingOn } from "../waitingOn";
 import styles from "./styles.module.css";
 
 const createHeaderProps = (module: Run) => {
@@ -76,9 +77,18 @@ export const RunPage = ({
   return (
     <main className={styles.container}>
       <>
-        <Text type="h1" className={styles.h1}>
-          {formatRunName(run)}
-        </Text>
+        <div className={styles.titleRow}>
+          <Text type="h1" className={styles.h1}>
+            {formatRunName(run)}
+          </Text>
+          {run.status === "Pending" || run.status === "Running" ? (
+            <form {...form.props}>
+              <Button submit={true} style="warning">
+                Cancel run
+              </Button>
+            </form>
+          ) : null}
+        </div>
         <div className={`${styles.section} ${styles.summary}`}>
           {createHeaderProps(run).map(({ icon, label, url, value }) => (
             <div key={label} className={styles.field}>
@@ -92,13 +102,9 @@ export const RunPage = ({
             </div>
           ))}
         </div>
-        {run.status === "Pending" || run.status === "Running" ? (
-          <div className={`${styles.section} ${styles.actions}`}>
-            <form {...form.props}>
-              <Button submit={true} style="warning">
-                Cancel run
-              </Button>
-            </form>
+        {run.waitingOn.length > 0 ? (
+          <div className={styles.section}>
+            <WaitingOn nodes={run.waitingOn} />
           </div>
         ) : null}
         <div className={styles.section}>

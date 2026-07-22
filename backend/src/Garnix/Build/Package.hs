@@ -31,23 +31,29 @@ import System.Random (randomIO)
 
 doBuild :: Maybe FodChecker -> RunReporter -> BuildKind -> FlakeDir -> RepoConfig -> ProductPlan -> Build -> M Build
 doBuild fodChecker runReporter buildKind flakeDir repoConfig plan initialBuild = do
-  attr <- localAttr flakeDir (attribute initialBuild)
-  withMessage ("Running build for " <> attr) $ do
-    withSpan (initialBuild ^. id, initialBuild ^. packageType, initialBuild ^. system, initialBuild ^. package) $ do
-      -- Concurrent-build cap: the build is already registered as pending (in
-      -- setupBuilds, before this promise was spawned), so waiting here just
-      -- keeps it pending until a slot frees — it flips to running on its first
-      -- log line. FairQSem is round-robin fair by repo (FIFO within one). A failed build
-      -- still releases its slot (withPoolM brackets acquire/release).
-      withPoolM buildPool (initialBuild ^. repoUser, initialBuild ^. repoName) $ do
-        -- Catch both IO exceptions and M errors
-        ( runBuild
-            `catchError` \_ -> do
-              returnFailedBuild
-          )
-          `catch` \e -> do
-            log Warning $ "An exception occurred while building the package: " <> show (e :: SomeException)
-            returnFailedBuild
+  tracker <- view #buildWaitTracker
+  setBuildWaitStage tracker (initialBuild ^. id) "Waiting for build slot"
+  ( do
+      attr <- localAttr flakeDir (attribute initialBuild)
+      withMessage ("Running build for " <> attr) $ do
+        withSpan (initialBuild ^. id, initialBuild ^. packageType, initialBuild ^. system, initialBuild ^. package) $ do
+          -- Concurrent-build cap: the build is already registered as pending (in
+          -- setupBuilds, before this promise was spawned), so waiting here just
+          -- keeps it pending until a slot frees — it flips to running on its first
+          -- log line. FairQSem is round-robin fair by repo (FIFO within one). A failed build
+          -- still releases its slot (withPoolM brackets acquire/release).
+          withPoolM buildPool (initialBuild ^. repoUser, initialBuild ^. repoName) $ do
+            setBuildWaitStage tracker (initialBuild ^. id) "Evaluating package"
+            -- Catch both IO exceptions and M errors
+            ( runBuild
+                `catchError` \_ -> do
+                  returnFailedBuild
+              )
+              `catch` \e -> do
+                log Warning $ "An exception occurred while building the package: " <> show (e :: SomeException)
+                returnFailedBuild
+    )
+    `finally` clearBuildWait tracker (initialBuild ^. id)
   where
     returnFailedBuild :: M Build
     returnFailedBuild = do
@@ -113,6 +119,8 @@ buildPkg = curry7
     cacheDir <- getNixXdgCacheDir
     attr <- localAttr flakeDir . addNixosExtension . attribute $ build
     workingDir <- view #workingDir
+    tracker <- view #buildWaitTracker
+    setBuildWaitStage tracker (build ^. id) "Evaluating package"
     evalRes <- evaluateAttribute repoConfig productPlan cacheDir workingDir build attr
     case evalRes of
       Right evaluationResult -> do
@@ -128,6 +136,7 @@ buildPkg = curry7
           (build ^. id)
           drvPath'
           (evaluationResult ^. #outputs)
+        setBuildWaitStage tracker (build ^. id) "Checking fixed-output derivations"
         FodCheck.fodCheck fodChecker drvPath'
         finishedBuild <-
           if null $ evaluationResult ^. #toUpload
@@ -138,6 +147,7 @@ buildPkg = curry7
                 & status ?~ Success
                 & alreadyBuilt ?~ True
             else do
+              setBuildWaitStage tracker (build ^. id) "Waiting for Nix activity"
               let builder = runNixBuild runReporter productPlan cacheDir workingDir evaluatedBuild drvPath'
               status' <- withAsync builder $ \q -> do
                 abortOnCancellation evaluatedBuild q
@@ -244,8 +254,9 @@ abortOnCancellation build builder = do
 runNixBuild :: RunReporter -> ProductPlan -> String -> FilePath -> Build -> DrvPath -> M Status
 runNixBuild runReporter productPlan cacheDir workingDir build drvPath = do
   nixConfig <- view #userNixConfig
+  tracker <- view #buildWaitTracker
   log Informational $ "runNixBuild: using nixConfig '" <> show nixConfig <> "'"
-  processor <- buildInternalLogProcessor (reportLogs runReporter) <$> mkInternalLogProcessorState <?> "runNixBuild: buildInternalLogProcessor"
+  processor <- buildInternalLogProcessor (reportLogs runReporter) <$> mkTrackedInternalLogProcessorState tracker (build ^. id) <?> "runNixBuild: buildInternalLogProcessor"
   -- This is a unique ID for the outlink (which is stored in the working dir) so
   -- that nothing gets garbage collected until the working dir is.
   uuid :: UUID <- randomIO

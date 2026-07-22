@@ -150,6 +150,9 @@ const builderMetadata = (builder: MonitoringBuilder): string => {
   return [systems, jobs].filter(Boolean).join(" · ");
 };
 
+const builderAnchor = (name: string): string =>
+  `builder-${name.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+
 export const BuildersSection = ({ data }: { data: MonitoringBuilder[] }) => (
   <>
     <Text type="h2" className={styles.h2}>
@@ -157,7 +160,11 @@ export const BuildersSection = ({ data }: { data: MonitoringBuilder[] }) => (
     </Text>
     <div className={styles.builderList}>
       {data.map((builder) => (
-        <div className={styles.builder} key={builder.name}>
+        <div
+          className={styles.builder}
+          id={builderAnchor(builder.name)}
+          key={builder.name}
+        >
           <div className={styles.builderHeader}>
             <Text type="h3" className={styles.builderName}>
               {builder.name}

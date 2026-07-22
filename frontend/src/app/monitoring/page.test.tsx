@@ -38,6 +38,8 @@ describe("builder monitoring", () => {
     expect(screen.getByText("Builders")).toBeInTheDocument();
     expect(screen.getByText("erdtree")).toBeInTheDocument();
     expect(screen.getByText("farum-azula")).toBeInTheDocument();
+    expect(screen.getByText("farum-azula").closest("[id]"))
+      .toHaveAttribute("id", "builder-farum-azula");
     expect(
       screen.getByText("x86_64-linux, aarch64-linux · 8 jobs"),
     ).toBeInTheDocument();

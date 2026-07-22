@@ -2,6 +2,7 @@ module Garnix.API.Runs where
 
 import Garnix.API.Builds.Types
 import Garnix.Access (Access (..), getRunWithAccess)
+import Garnix.BuildLogs qualified as BuildLogs
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
@@ -34,7 +35,28 @@ runAPI _ =
 getRun :: Maybe User -> RunId -> M RunSummary
 getRun mUser runId = do
   run <- getRunWithAccess Read mUser runId
-  pure $ toRunSummary run
+  waitingOn <- if isJust (run ^. status) then pure [] else getRunWaitNodes run
+  pure $ (toRunSummary run) {_runSummaryWaitingOn = waitingOn}
+
+getRunWaitNodes :: Run -> M [WaitNode]
+getRunWaitNodes run = do
+  tracker <- view #buildWaitTracker
+  builds <- DB.getBuildsByCommit (run ^. repoUser) (run ^. repoName) (run ^. gitCommit)
+  forM (filter (isNothing . (^. status)) builds) $ \build -> do
+    runStartedAt <- DB.getBuildRunStartedAt (build ^. id)
+    children <- BuildLogs.buildWaitNodes tracker build runStartedAt
+    let buildId = getHashId . getBuildId $ build ^. id
+    pure
+      WaitNode
+        { _waitNodeId = "build:" <> buildId,
+          _waitNodeKind = "build",
+          _waitNodeLabel = review asPackageType (build ^. packageType) <> " " <> getPackageName (build ^. package),
+          _waitNodeDetail = Just $ if isJust runStartedAt then "Running" else "Pending",
+          _waitNodeHref = Just $ "/build/" <> buildId,
+          _waitNodeStartedAt = runStartedAt <|> Just (build ^. startTime),
+          _waitNodeLastActivityAt = runStartedAt,
+          _waitNodeChildren = children
+        }
 
 -- | Mirrors 'Garnix.API.Builds.updateBuild': the only supported update is
 -- cancellation. Setting the run row to Cancelled is enough — the action
@@ -70,7 +92,8 @@ data RunSummary = RunSummary
     _runSummaryStatus :: Maybe Status,
     _runSummaryStartTime :: UTCTime,
     _runSummaryEndTime :: Maybe UTCTime,
-    _runSummaryRunStartedAt :: Maybe UTCTime
+    _runSummaryRunStartedAt :: Maybe UTCTime,
+    _runSummaryWaitingOn :: [WaitNode]
   }
   deriving (Eq, Show, Generic)
 
@@ -86,7 +109,8 @@ toRunSummary run@(Run {_runId, _runName, _runStatus, _runStartTime, _runEndTime}
       _runSummaryStatus = _runStatus,
       _runSummaryStartTime = _runStartTime,
       _runSummaryEndTime = _runEndTime,
-      _runSummaryRunStartedAt = run ^. runStartedAt
+      _runSummaryRunStartedAt = run ^. runStartedAt,
+      _runSummaryWaitingOn = []
     }
 
 instance ToJSON RunSummary where

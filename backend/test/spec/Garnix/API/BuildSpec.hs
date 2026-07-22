@@ -42,6 +42,18 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ do
     $ around_ Deprecated.quietWhenPassing
     $ do
       describe "/api/build/{id}" $ do
+        it "shows a compact fallback wait stage for an in-progress build" $ withServer $ \testServer -> do
+          build <- testBuild $ (status .~ Nothing) . (drvPath ?~ "/nix/store/target-drv.drv")
+          DB.markBuildRunning (build ^. id)
+          res <- assert200 $ testServer.get $ "/api/build/" <> cs (getHashId $ getBuildId $ build ^. id)
+          let [waitingOn] = res ^.. responseBody . key "waiting_on" . _Array . traverse
+          liftIO $ waitingOn ^. key "kind" . _String `shouldBe` "stage"
+          liftIO $ waitingOn ^. key "label" . _String `shouldBe` "Waiting for Nix activity"
+          liftIO
+            $ waitingOn
+            ^.. key "children" . _Array . traverse . key "label" . _String
+            `shouldBe` ["target-drv.drv"]
+
         describe "collaborators" $ do
           it "shows builds to collaborators even if they didn't start the build"
             $ withGithubMock repoCollaboratorsLens (\_ _ _ -> pure $ GhCollaborators ["dev-user"])

@@ -6,6 +6,7 @@ import React from "react";
 import { P, match } from "ts-pattern";
 import { z } from "zod";
 import { BuildLog } from "@/components/buildLog";
+import { WaitingOn } from "@/components/waitingOn";
 import { Button } from "@/components/button";
 import { StatusIcon } from "@/components/statusIcon";
 import { Text } from "@/components/text";
@@ -163,7 +164,16 @@ const Page = ({ params }: { params: { slug: string } }) => {
               <Text type="h1" className={styles.h1}>
                 {formatRunName(build)}
               </Text>
-              <BuildArtifactBadge buildId={params.slug} />
+              <div className={styles.titleActions}>
+                <BuildArtifactBadge buildId={params.slug} />
+                {build.status === "Pending" || build.status === "Running" ? (
+                  <form {...form.props}>
+                    <Button submit={true} style="warning">
+                      Cancel build
+                    </Button>
+                  </form>
+                ) : null}
+              </div>
             </div>
             <div className={`${styles.section} ${styles.summary}`}>
               {createHeaderProps(build, giteaUrl).map(
@@ -188,13 +198,9 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 ),
               )}
             </div>
-            {build.status === "Pending" || build.status === "Running" ? (
-              <div className={`${styles.section} ${styles.actions}`}>
-                <form {...form.props}>
-                  <Button submit={true} style="warning">
-                    Cancel build
-                  </Button>
-                </form>
+            {build.waitingOn.length > 0 ? (
+              <div className={styles.section}>
+                <WaitingOn nodes={build.waitingOn} />
               </div>
             ) : null}
             {/* Keyed on status so artifacts refetch when the build finishes

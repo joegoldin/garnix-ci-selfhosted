@@ -3,10 +3,11 @@ module Garnix.BuildLogs.Internal where
 import Data.Aeson
 import Garnix.Prelude
 
-newtype InternalId = InternalId Int64
+newtype InternalId = InternalId {getInternalId :: Int64}
   deriving stock (Eq, Show, Generic, Ord)
 
-instance FromJSON InternalId where parseJSON = ourParseJSON
+instance FromJSON InternalId where
+  parseJSON value = InternalId <$> parseJSON value
 
 -- https://github.com/NixOS/nix/blob/bd7a0746361d42a121b2cef1571bda4f7c370c16/src/libutil/error.hh#L37-L46
 data LogLevel
@@ -42,7 +43,7 @@ data ProgressReport = ProgressReport
   deriving stock (Eq, Show, Generic)
 
 data InternalBuildLogLineStart
-  = Build Text Text
+  = Build Text Text Text
   | Builds Text
   | CopyPaths Text
   | Unknown Text
@@ -61,7 +62,7 @@ data InternalBuildLogLineResult
   deriving stock (Eq, Show, Generic)
 
 data InternalBuildLogLine
-  = Start InternalId LogLevel InternalBuildLogLineStart
+  = Start InternalId (Maybe InternalId) LogLevel InternalBuildLogLineStart
   | Stop InternalId
   | Result InternalId InternalBuildLogLineResult
   | Unhandled
@@ -75,10 +76,11 @@ instance FromJSON InternalBuildLogLine where
       "start" -> do
         typ :: Int <- v .: "type"
         id :: InternalId <- v .: "id"
+        parent :: Maybe InternalId <- v .:? "parent"
         level :: LogLevel <- v .: "level"
         -- `typ` is `ActivityType` declared here:
         -- https://github.com/NixOS/nix/blob/bd7a0746361d42a121b2cef1571bda4f7c370c16/src/libutil/logging.hh#L12-L27
-        Start id level <$> case typ of
+        Start id parent level <$> case typ of
           0 -> Unknown <$> v .: "text"
           101 -> FileTransfer <$> v .: "text"
           102 -> Realize <$> v .: "text"
@@ -86,8 +88,8 @@ instance FromJSON InternalBuildLogLine where
           104 -> Builds <$> v .: "text"
           105 -> do
             text <- v .: "text"
-            (drvPath, _, _, _) :: (Text, Text, Int, Int) <- v .: "fields"
-            pure $ Build drvPath text
+            (drvPath, machine, _, _) :: (Text, Text, Int, Int) <- v .: "fields"
+            pure $ Build drvPath machine text
           109 -> QueryPathInfo <$> v .: "text"
           _ -> pure OtherStartType
       "stop" -> Stop <$> v .: "id"

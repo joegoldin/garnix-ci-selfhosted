@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { waitNodeSchema } from "./waiting";
 import { APIResult, fetchFromAPI } from ".";
 
 export const statusSchema = z
@@ -40,6 +41,7 @@ export const buildSchema = z
       .coerce.date()
       .nullish()
       .transform((v) => v ?? null),
+    waiting_on: z.array(waitNodeSchema).optional().default([]),
   })
   .transform((build) => ({
     ...build,
@@ -52,6 +54,7 @@ export const buildSchema = z
     packageType: build.package_type,
     endTime: build.end_time ?? null,
     runStartedAt: build.run_started_at,
+    waitingOn: build.waiting_on,
     // A not-yet-finished build that has begun executing is "Running".
     status:
       build.status === "Pending" && build.run_started_at != null

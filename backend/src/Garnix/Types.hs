@@ -483,6 +483,27 @@ newtype RawLogs = RawLogs {getRawLogs :: Text}
   deriving stock (Eq, Show, Generic)
   deriving newtype (IsString, Pretty, ConvertibleStrings String)
 
+-- | A compact, recursively expandable description of work that has to finish
+-- before a build or run can complete.  The API deliberately keeps this
+-- presentation-neutral: the web client decides which levels are open.
+data WaitNode = WaitNode
+  { _waitNodeId :: Text,
+    _waitNodeKind :: Text,
+    _waitNodeLabel :: Text,
+    _waitNodeDetail :: Maybe Text,
+    _waitNodeHref :: Maybe Text,
+    _waitNodeStartedAt :: Maybe UTCTime,
+    _waitNodeLastActivityAt :: Maybe UTCTime,
+    _waitNodeChildren :: [WaitNode]
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON WaitNode where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON WaitNode where parseJSON = ourParseJSON
+
 data BuildResponse = BuildResponse
   { _buildResponseId :: BuildId,
     _buildResponseRepoUser :: GhRepoOwner,
@@ -500,6 +521,7 @@ data BuildResponse = BuildResponse
     _buildResponseForge :: Forge,
     _buildResponseRunStartedAt :: Maybe UTCTime,
     _buildResponseOriginalBuild :: Maybe OriginalBuild,
+    _buildResponseWaitingOn :: [WaitNode],
     _buildResponseRelatedBuilds :: [OriginalBuild] -- deprecated
   }
   deriving (Eq, Show, Generic)
