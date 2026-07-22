@@ -18,10 +18,15 @@ spec :: Spec
 spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#serverPoolConfig .~ testPoolConfig)) $ do
   describe "initializeProvisioningPool" $ do
     it "initially creates as many servers as configured" $ do
-      withServerPoolM $ do
-        waitFor (fromSeconds @Int 1) $ do
-          servers :: [ServerTier] <- DB.pgQuery [pgSQL| SELECT server_tier FROM server_pool |]
-          sort servers `shouldBeM` sort (concatMap (\(tier, n) -> replicate n tier) testPoolConfig)
+      -- This assertion only covers reservation counts. Stalling immediately
+      -- after each row is inserted avoids booting and then cancelling five
+      -- QEMU guests, whose pipe teardown used to emit flaky closed-handle
+      -- warnings after the example had already passed.
+      local (#provisioner .~ stalledProvisioner) $ do
+        withServerPoolM $ do
+          waitFor (fromSeconds @Int 1) $ do
+            servers :: [ServerTier] <- DB.pgQuery [pgSQL| SELECT server_tier FROM server_pool |]
+            sort servers `shouldBeM` sort (concatMap (\(tier, n) -> replicate n tier) testPoolConfig)
 
     it "recreates servers if some are used up @slow" $ do
       withServerPoolM $ do
@@ -74,3 +79,14 @@ getPoolSize :: M Int
 getPoolSize = do
   view #serverPoolConfig
     <&> sum . map snd
+
+stalledProvisioner :: Provisioner
+stalledProvisioner =
+  Provisioner
+    { _provisionerProvisionServer = \_ _ -> do
+        threadDelay (fromMinutes @Int 1)
+        error "stalled provisioner unexpectedly completed",
+      _provisionerUpdateMetadata = \_ _ _ _ _ -> error "unused stalled provisioner metadata update",
+      _provisionerDeleteServer = \_ -> pure (),
+      _provisionerGetServerStatus = \_ -> error "unused stalled provisioner status"
+    }
