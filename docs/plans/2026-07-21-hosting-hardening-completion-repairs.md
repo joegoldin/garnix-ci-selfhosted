@@ -4,7 +4,7 @@
 
 **Goal:** Repair every failed or missing verification item so the original hosting-hardening plan is implemented, deployed, and supported by requirement-level evidence.
 
-**Architecture:** The backend owns the claim-time stats marker and receives an explicit control-domain URL; pre-warm guests contain inert reporter units but no marker. Provisioner teardown explicitly stops every path-dependent unit and removes the deterministic tap before deleting state. FOD verification prepares its baseline, strictly rebuilds it, and independently caps direct remote-store sessions. Rollout and verification then cover the complete original plan, including Authentik and operator-skill installation.
+**Architecture:** The backend owns the claim-time stats marker and receives an explicit control-domain URL; pre-warm guests contain inert reporter units but no marker. Provisioner teardown explicitly stops every path-dependent unit and removes the deterministic tap before deleting state. FOD verification prepares its baseline, strictly rebuilds it, fails every unsuccessful check closed, and independently caps direct remote-store sessions. Rollout and verification then cover the complete original plan, including Authentik and operator-skill installation.
 
 **Tech Stack:** Haskell/Servant, Hspec, Python 3 `unittest`, NixOS modules, microvm.nix/systemd, Caddy, PostgreSQL, Authentik REST API, GitHub checks.
 
@@ -145,7 +145,7 @@
 **Interfaces:**
 - Consumes: an FOD derivation and the checker store selected for its system.
 - Produces: a prepared baseline followed by a strict rebuild on the same store;
-  only recognized source-fetch failures are skippable.
+  every preparation or rebuild failure is terminal.
 
 - [ ] **Step 1: Capture the production failure.** Confirm the journal contains
   `some outputs ... are not valid, so checking is not possible` and Nix's
@@ -157,17 +157,17 @@
 - [ ] **Step 3: Prepare then rebuild on one store.** Copy the derivation closure
   as before, run an ordinary `nix build` on the selected local/remote store,
   then run `nix build --rebuild` on the same store.
-- [ ] **Step 4: Make skipping conservative.** Recognize explicit
-  download/fetch/HTTP/mirror/manual-source failures; treat unknown builder,
-  Nix, SSH, and checker errors as FOD failures.
+- [ ] **Step 4: Fail closed.** Treat download/fetch/HTTP/mirror/manual-source,
+  builder, Nix, SSH, and checker errors as FOD failures. Builder-controlled
+  stderr cannot authenticate a source-unavailable exemption.
 - [ ] **Step 5: Bound and retry direct remote-store work.** Add
   `services.garnixServer.maxRemoteFodJobs` / `GARNIX_FOD_REMOTE_MAX_JOBS`
   (default `1`), hold a slot across copy/prepare/check, and retry only
   recognized SSH transport failures with bounded jittered backoff. Prove a
   one-job configuration never exceeds one active remote operation.
 - [ ] **Step 6: Run focused and complete FOD/backend tests.** Expected: new
-  unbuilt-FOD and classification regressions pass, genuine 403 tests remain
-  skipped, lying FODs still fail, and remote retry/cap regressions pass.
+  unbuilt-FOD and classification regressions pass, source 403s and lying FODs
+  fail, and remote retry/cap regressions pass.
 
 ### Task 5: Update docs, format, and run all local gates
 

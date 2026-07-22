@@ -1,6 +1,7 @@
 module Garnix.Hosting.Deploy
   ( rolloutNewServerVersion,
     startServer,
+    cleanupUnreadyServers,
     stopUnusedServers,
     stopServer,
     redeployServer,
@@ -26,6 +27,7 @@ import Garnix.DB qualified as DB
 import Garnix.Duration
 import Garnix.Entitlements (getConfiguredEvalTimeout)
 import Garnix.Hosting.Domains qualified as Domains
+import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.LocalProvisioner (exposeServer)
@@ -117,17 +119,8 @@ getDeployPlan reporter commitInfo deploymentType = do
           then Just wantedAndFinished
           else Nothing
 
-    let toRedeploy =
-          [ (server, build)
-            | server <- existing,
-              build <- wantedBuilds,
-              server ^. buildPersistenceName == build ^. persistenceName,
-              isJust (build ^. persistenceName)
-          ]
-        toSpinDown = filter (`notElem` (fst <$> toRedeploy)) existing
-    toSpinUp <-
+    wantedServers <-
       wantedBuilds
-        & filter (`notElem` (snd <$> toRedeploy))
         & mapM
           ( \build -> case Map.lookup (build ^. package) wantedPackagesMapping of
               Just (serverTier, domainIsPrimary, section) -> do
@@ -151,13 +144,26 @@ getDeployPlan reporter commitInfo deploymentType = do
                       authorizedSSHKeys = _serverSectionAuthorizedSSHKeys section,
                       httpPorts,
                       tcpPorts,
-                      domains = _serverSectionDomains section
+                      domains = _serverSectionDomains section,
+                      logFile = getServerLogFile <$> _serverSectionLogFile section
                     }
               Nothing -> throw $ OtherError "impossible: wantedPackagesMap should contain all deployable packages"
           )
-    Domains.validateServerDomains (concatMap (^. #domains) toSpinUp)
+    let toRedeploy =
+          [ (server, wanted)
+            | server <- existing,
+              wanted <- wantedServers,
+              server ^. buildPersistenceName == wanted ^. #build . persistenceName,
+              isJust (wanted ^. #build . persistenceName)
+          ]
+        toSpinDown = filter (`notElem` (fst <$> toRedeploy)) existing
+        redeployBuilds = map (^. #build) (snd <$> toRedeploy)
+        toSpinUp = filter ((`notElem` redeployBuilds) . (^. #build)) wantedServers
+    Domains.validateServerDomainsExcept
+      (map (^. id) (fst <$> toRedeploy))
+      (concatMap (^. #domains) wantedServers)
     let plan = DeployPlan toSpinDown toSpinUp toRedeploy
-    unless (null toSpinUp) $ do
+    unless (null wantedServers) $ do
       checkDeployPlan (commitInfo ^. repoInfo) deploymentType plan
     pure plan
 
@@ -183,7 +189,10 @@ checkDeployPlan ::
   M ()
 checkDeployPlan repoInfo deploymentType plan = do
   -- No billing/entitlement limits in this fork: only structural checks remain.
-  checkSubdomainValidity repoInfo deploymentType $ fmap (^. #build) $ plan ^. #toSpinUp
+  let builds =
+        fmap (^. #build) (plan ^. #toSpinUp)
+          <> fmap (^. #build) (snd <$> plan ^. #toRedeploy)
+  checkSubdomainValidity repoInfo deploymentType builds
   checkAllBuildsSucceeded plan
 
 checkSubdomainValidity ::
@@ -220,7 +229,13 @@ checkSubdomainValidity
 
 checkAllBuildsSucceeded :: DeployPlan -> M ()
 checkAllBuildsSucceeded plan = do
-  forM_ (plan ^.. #toSpinUp . each . #build) $ \build -> do
+  let builds =
+        plan
+          ^.. #toSpinUp
+          . each
+          . #build
+          <> fmap (^. #build) (snd <$> plan ^. #toRedeploy)
+  forM_ builds $ \build -> do
     let packageName = getPackageName $ build ^. package
     case build ^. status of
       Just Success -> pure ()
@@ -241,7 +256,12 @@ executeDeployPlan ::
 executeDeployPlan = curry4
   $ mockable #executeDeployPlanMock
   $ \(reporter, commitInfo, DeployPlan currentServers wantedServers redeployServers, deploymentType) -> do
-    serverInfos <- Async.mapConcurrently (startServer reporter commitInfo deploymentType) wantedServers
+    -- New candidates are not committed ready until every concurrent start has
+    -- succeeded. If any start fails (and cancels its siblings), compensate all
+    -- unready claims immediately; the old generation remains untouched.
+    serverInfos <-
+      Async.mapConcurrently (startServer reporter commitInfo deploymentType) wantedServers
+        `whenErrorEither` const (void cleanupUnreadyServers)
     redeployedServers <- Async.mapConcurrently (uncurry (redeployServer reporter commitInfo deploymentType)) redeployServers
     deployedServerInfos <- toggleServerFlags serverInfos currentServers <?> "Toggling servers ready flags."
     Async.mapConcurrently_ (\s -> stopServer (s ^. id) (s ^. provisionedServerId)) currentServers
@@ -249,8 +269,29 @@ executeDeployPlan = curry4
 
 stopServer :: ServerId -> ProvisionedServerId -> M ()
 stopServer serverId provisionerId = do
+  ServerLogStream.stopServerLogStream serverId
   deleteServer provisionerId
   DB.deleteServerDB serverId
+
+-- | Compensating transaction for a process death after a pool guest was
+-- claimed but before deployment committed ready_at. Recovery later reruns the
+-- deploy plan and claims a clean guest; retaining the half-mutated one would
+-- leak both the VM and any partially installed credentials/exposure.
+cleanupUnreadyServers :: M Int
+cleanupUnreadyServers = do
+  unready <- DB.getUnreadyServers
+  cleaned <- forM unready $ \server ->
+    catchEither
+      (stopServer (server ^. id) (server ^. provisionedServerId) $> 1)
+      ( \error -> do
+          log Error
+            $ "cleanupUnreadyServers: failed to remove unready server "
+            <> show (server ^. id)
+            <> ": "
+            <> either show showDebug error
+          pure 0
+      )
+  pure (sum cleaned)
 
 startServer ::
   Reporter ->
@@ -264,20 +305,11 @@ startServer = curry4
     run <- DB.newRun ("deployment " <> getPackageName (serverToSpinUp ^. #build . package)) commitInfo
     withRunReporter reporter (ReportRun run) $ \runReporter -> do
       domain <- view #hostingDomain
-      let publicHost =
-            getPackageName (serverToSpinUp ^. #build . package)
-              <> "."
-              <> fromDeploymentType getBranch (("pull-" <>) . show . getGhPullRequestId) deploymentType
-              <> "."
-              <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
-              <> "."
-              <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
-              <> "."
-              <> domain
+      let publicHost = publicHostFor domain commitInfo deploymentType (serverToSpinUp ^. #build)
       serverInfo <- ServerPool.createServer (commitInfo ^. repoInfo) deploymentType serverToSpinUp
-      when (serverToSpinUp ^. #useDefaultAuthentik)
-        $ copyDefaultAuthentikEnv serverInfo publicHost
-        <?> "Copying default Authentik credentials"
+      if serverToSpinUp ^. #useDefaultAuthentik
+        then copyDefaultAuthentikEnv (SshUser "root") serverInfo publicHost <?> "Copying default Authentik credentials"
+        else removeRuntimeFile (SshUser "root") serverInfo "/var/garnix/keys/default-authentik.env" <?> "Removing stale default Authentik credentials"
       -- Authorize login as the garnix user only when the user opts in, via the
       -- deployer's forge keys and/or explicit authorizedSSHKeys. Otherwise the
       -- garnix user stays login-closed (deploys still work via the hosting key).
@@ -285,13 +317,13 @@ startServer = curry4
             serverToSpinUp
               ^. #authorizeDeployerGithubKeys
               || not (null (serverToSpinUp ^. #authorizedSSHKeys))
-      when authorizesGarnixUser
-        $ copyAuthorizedKeys
-          (commitInfo ^. repoInfo . forge)
-          serverInfo
-          (if serverToSpinUp ^. #authorizeDeployerGithubKeys then Just (commitInfo ^. reqUser) else Nothing)
-          (serverToSpinUp ^. #authorizedSSHKeys)
-        <?> "Authorizing SSH keys"
+      copyAuthorizedKeys
+        (SshUser "root")
+        (commitInfo ^. repoInfo . forge)
+        serverInfo
+        (if serverToSpinUp ^. #authorizeDeployerGithubKeys then Just (commitInfo ^. reqUser) else Nothing)
+        (serverToSpinUp ^. #authorizedSSHKeys)
+        <?> "Synchronizing SSH keys"
       -- Public port exposure (DNAT) only makes sense with the local
       -- provisioner; persist whatever it (plus the http routers) exposes, but
       -- only when the server actually declares ssh/ports.
@@ -300,8 +332,8 @@ startServer = curry4
               ^. #exposeSSH
               || not (null (serverToSpinUp ^. #httpPorts))
               || not (null (serverToSpinUp ^. #tcpPorts))
-      when wantsExposure $ do
-        exposeResult <- exposeServerPorts serverInfo serverToSpinUp
+      exposeResult <- exposeServerPorts serverInfo serverToSpinUp
+      when (wantsExposure || isJust exposeResult) $ do
         DB.setServerExposed (serverInfo ^. id) (exposedBlob serverToSpinUp authorizesGarnixUser exposeResult)
       (serverInfo, stderr) <-
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
@@ -321,24 +353,47 @@ startServer = curry4
       reportLogs runReporter (mkLogLine logs)
       reportComplete runReporter RunReportStatusSuccess
       captureAndStoreSshUsers serverInfo
+      forM_ (serverToSpinUp ^. #logFile) $ \path ->
+        ServerLogStream.startServerLogStream (serverInfo ^. id) (serverInfo ^. ipv4Addr) path
       pure serverInfo
 
-redeployServer :: Reporter -> CommitInfo -> DeploymentType -> ServerInfo -> Build -> M ServerInfo
-redeployServer reporter commitInfo deploymentType serverInfo build = do
+redeployServer :: Reporter -> CommitInfo -> DeploymentType -> ServerInfo -> ServerToSpinUp -> M ServerInfo
+redeployServer reporter commitInfo deploymentType serverInfo wanted = do
+  let build = wanted ^. #build
   withStorePath build "out" $ \case
     Nothing -> throw $ OtherError "Store path is missing"
     Just storePath -> do
       run <- DB.newRun ("redeployment " <> getPackageName (build ^. package)) commitInfo
       withRunReporter reporter (ReportRun run) $ \runReporter -> do
+        sshUser <- chooseRedeploySshUser serverInfo
+        domain <- view #hostingDomain
+        let publicHost = publicHostFor domain commitInfo deploymentType build
+            authorizesGarnixUser =
+              wanted
+                ^. #authorizeDeployerGithubKeys
+                || not (null (wanted ^. #authorizedSSHKeys))
         -- /var/garnix/keys is a tmpfs on the guest (see guest-profile.nix), so
-        -- the repo key is RAM-only and vanishes if the VM ever power-cycles.
-        -- Re-deliver it on every redeploy so decrypting services restarted by
-        -- switch-to-configuration always find it. Idempotent on healthy guests.
-        copyKeys (SshUser "garnix") (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
-        copyTerminalCa (SshUser "garnix") serverInfo <?> "Copying terminal CA public key"
-        copyStatsEnv (SshUser "garnix") serverInfo <?> "Copying guest stats configuration"
-        copyClosure (SshUser "garnix") serverInfo storePath <?> "Copying closure for redeployment"
-        deploymentLogs <- switchToConfiguration (SshUser "garnix") serverInfo storePath <?> "Switching to redeployment configuration"
+        -- every tmpfs-backed runtime file is converged before activation. Old
+        -- guests that predate garnix-user hosting-key access fall back to the
+        -- root migration path once; the new configuration restores garnix.
+        copyKeys sshUser (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
+        copyTerminalCa sshUser serverInfo <?> "Copying terminal CA public key"
+        copyStatsEnv sshUser serverInfo <?> "Copying guest stats configuration"
+        if wanted ^. #useDefaultAuthentik
+          then copyDefaultAuthentikEnv sshUser serverInfo publicHost <?> "Copying default Authentik credentials"
+          else removeRuntimeFile sshUser serverInfo "/var/garnix/keys/default-authentik.env" <?> "Removing stale default Authentik credentials"
+        copyAuthorizedKeys
+          sshUser
+          (commitInfo ^. repoInfo . forge)
+          serverInfo
+          (if wanted ^. #authorizeDeployerGithubKeys then Just (commitInfo ^. reqUser) else Nothing)
+          (wanted ^. #authorizedSSHKeys)
+          <?> "Synchronizing SSH keys"
+        exposeResult <- exposeServerPorts serverInfo wanted
+        DB.setServerExposed (serverInfo ^. id) (exposedBlob wanted authorizesGarnixUser exposeResult)
+        DB.setServerDomains (serverInfo ^. id) (wanted ^. #domains)
+        copyClosure sshUser serverInfo storePath <?> "Copying closure for redeployment"
+        deploymentLogs <- switchToConfiguration sshUser serverInfo storePath <?> "Switching to redeployment configuration"
         now <- liftIO getCurrentTime
         let serverInfo' =
               serverInfo
@@ -347,21 +402,21 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
                 ^. id
                 & readyAt
                 ?~ now
+                & isPrimary
+                .~ (wanted ^. #domainIsPrimary)
         DB.updateServerPostDeploy serverInfo' <?> "Updating DB about the redeployed server"
+        -- Change the persisted collector target only after activation commits.
+        -- A failed redeploy must continue following the previous service log,
+        -- including after a backend restart.
+        DB.setServerLogFile (serverInfo ^. id) (wanted ^. #logFile)
         captureAndStoreSshUsers serverInfo'
-        domain <- view #hostingDomain
+        case wanted ^. #logFile of
+          Just path -> ServerLogStream.startServerLogStream (serverInfo' ^. id) (serverInfo' ^. ipv4Addr) path
+          Nothing -> ServerLogStream.forgetServerLogStream (serverInfo' ^. id)
         let logs =
               T.unlines
                 [ "Server has been successfully redeployed to: https://"
-                    <> getPackageName (build ^. package)
-                    <> "."
-                    <> fromDeploymentType getBranch (("pull-" <>) . show . getGhPullRequestId) deploymentType
-                    <> "."
-                    <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
-                    <> "."
-                    <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
-                    <> "."
-                    <> domain,
+                    <> publicHost,
                   "ipv4: " <> serverInfo ^. ipv4Addr,
                   "ipv6: " <> serverInfo ^. ipv6Addr,
                   "",
@@ -371,6 +426,18 @@ redeployServer reporter commitInfo deploymentType serverInfo build = do
         reportLogs runReporter (mkLogLine logs)
         reportComplete runReporter RunReportStatusSuccess
         pure serverInfo'
+
+publicHostFor :: Text -> CommitInfo -> DeploymentType -> Build -> Text
+publicHostFor domain commitInfo deploymentType build =
+  getPackageName (build ^. package)
+    <> "."
+    <> fromDeploymentType getBranch (("pull-" <>) . show . getGhPullRequestId) deploymentType
+    <> "."
+    <> getGhRepoName (commitInfo ^. repoInfo . ghRepoName)
+    <> "."
+    <> getGhLogin (getGhRepoOwner (commitInfo ^. repoInfo . ghRepoOwner))
+    <> "."
+    <> domain
 
 -- | Toggles the wanted servers to be ready and the current servers to end.
 toggleServerFlags :: [ServerInfo] -> [ServerInfo] -> M [ServerInfo]
@@ -403,6 +470,31 @@ setupServer = curry3
         return (serverInfo, stderr)
 
 newtype SshUser = SshUser Text
+  deriving stock (Eq, Show)
+
+-- | Prefer the least-privileged deploy user, but retain the hosting-key root
+-- path as a compatibility bridge for guests created before garnix-user SSH
+-- access was part of the base image.
+chooseRedeploySshUser :: ServerInfo -> M SshUser
+chooseRedeploySshUser server = do
+  garnixWorks <- canConnect (SshUser "garnix")
+  if garnixWorks
+    then pure (SshUser "garnix")
+    else do
+      rootWorks <- canConnect (SshUser "root")
+      if rootWorks
+        then pure (SshUser "root")
+        else throw $ ProvisioningError "Neither garnix nor root hosting-key SSH access works for persistent redeployment"
+  where
+    canConnect (SshUser user) = do
+      (ip, sshArgs) <- ServerPool.sshArgsFor server
+      (exitCode, _, _) <-
+        liftIO
+          $ Proc.readProcessWithExitCode
+            "ssh"
+            ((cs <$> sshArgs) <> [cs user <> "@" <> cs ip, "true"])
+            ""
+      pure (exitCode == ExitSuccess)
 
 copyClosure :: SshUser -> ServerInfo -> StorePath -> M ()
 copyClosure (SshUser user) server storePath = do
@@ -496,8 +588,8 @@ statsEnvContents endpoint provisionerId =
 -- vars to /var/garnix/keys/default-authentik.env (root-only), consumed by the
 -- garnix-authentik guest module's mode = "default". Delivered over ssh stdin
 -- so the secret never lands in process args or the store.
-copyDefaultAuthentikEnv :: ServerInfo -> Text -> M ()
-copyDefaultAuthentikEnv server publicHost = do
+copyDefaultAuthentikEnv :: SshUser -> ServerInfo -> Text -> M ()
+copyDefaultAuthentikEnv (SshUser user) server publicHost = do
   cfg <-
     view #defaultAuthentik >>= \case
       Just cfg -> pure cfg
@@ -521,7 +613,15 @@ copyDefaultAuthentikEnv server publicHost = do
     liftIO
       $ Proc.readProcessWithExitCode
         "ssh"
-        ((cs <$> sshArgs) <> ["root@" <> cs ip, "umask 077 && mkdir -p /var/garnix/keys && cat > " <> cs envLocation <> " && chmod 400 " <> cs envLocation])
+        ( (cs <$> sshArgs)
+            <> [ cs user <> "@" <> cs ip,
+                 remoteAsRoot user
+                   $ "umask 077 && mkdir -p /var/garnix/keys && cat > "
+                   <> envLocation
+                   <> " && chmod 400 "
+                   <> envLocation
+               ]
+        )
         (cs contents)
   case exitCode of
     ExitSuccess -> pure ()
@@ -531,22 +631,53 @@ copyDefaultAuthentikEnv server publicHost = do
 -- file the guest profile reads via authorizedKeys.keyFiles. Keys are the
 -- deployer's forge keys (best-effort, only when a deployer is given) plus the
 -- explicit authorizedSSHKeys. No-op with no keys.
-copyAuthorizedKeys :: Forge -> ServerInfo -> Maybe GhLogin -> [Text] -> M ()
-copyAuthorizedKeys forge' server mDeployer extraKeys = do
+copyAuthorizedKeys :: SshUser -> Forge -> ServerInfo -> Maybe GhLogin -> [Text] -> M ()
+copyAuthorizedKeys (SshUser user) forge' server mDeployer extraKeys = do
   forgeKeys <- maybe (pure []) (fetchDeployerKeys forge') mDeployer
   let keys = filter (not . T.null . T.strip) (forgeKeys <> extraKeys)
-  unless (null keys) $ do
-    (ip, sshArgs) <- ServerPool.sshArgsFor server
-    let keyFile = "/var/garnix/keys/authorized_keys" :: Text
-    (exitCode, _, _) <-
-      liftIO
-        $ Proc.readProcessWithExitCode
-          "ssh"
-          ((cs <$> sshArgs) <> ["root@" <> cs ip, "mkdir -p /var/garnix/keys && cat > " <> cs keyFile <> " && chmod 444 " <> cs keyFile])
-          (cs (T.unlines keys))
-    case exitCode of
-      ExitSuccess -> pure ()
-      ExitFailure _ -> throw $ OtherError "Writing authorized_keys to the server failed"
+  if null keys
+    then removeRuntimeFile (SshUser user) server "/var/garnix/keys/authorized_keys"
+    else do
+      (ip, sshArgs) <- ServerPool.sshArgsFor server
+      let keyFile = "/var/garnix/keys/authorized_keys" :: Text
+      (exitCode, _, _) <-
+        liftIO
+          $ Proc.readProcessWithExitCode
+            "ssh"
+            ( (cs <$> sshArgs)
+                <> [ cs user <> "@" <> cs ip,
+                     remoteAsRoot user
+                       $ "mkdir -p /var/garnix/keys && cat > "
+                       <> keyFile
+                       <> " && chmod 444 "
+                       <> keyFile
+                   ]
+            )
+            (cs (T.unlines keys))
+      case exitCode of
+        ExitSuccess -> pure ()
+        ExitFailure _ -> throw $ OtherError "Writing authorized_keys to the server failed"
+
+-- | Remove a no-longer-declared tmpfs credential. Redeploy is convergence,
+-- not an additive copy: otherwise revoking Authentik or SSH-key access in
+-- garnix.yaml leaves the old credential live until a power cycle.
+removeRuntimeFile :: SshUser -> ServerInfo -> Text -> M ()
+removeRuntimeFile (SshUser user) server path = do
+  (ip, sshArgs) <- ServerPool.sshArgsFor server
+  (exitCode, _, _) <-
+    liftIO
+      $ Proc.readProcessWithExitCode
+        "ssh"
+        ((cs <$> sshArgs) <> [cs user <> "@" <> cs ip, remoteAsRoot user ("rm -f " <> path)])
+        ""
+  case exitCode of
+    ExitSuccess -> pure ()
+    ExitFailure _ -> throw $ OtherError "Removing stale runtime credential from the server failed"
+
+remoteAsRoot :: Text -> Text -> String
+remoteAsRoot user command
+  | user == "root" = cs command
+  | otherwise = cs $ "sudo -n sh -c '" <> command <> "'"
 
 -- | The deployer's public SSH keys, via the forge's @<login>.keys@ endpoint —
 -- github.com for GitHub repos, the configured Gitea instance for Gitea repos
@@ -568,18 +699,16 @@ fetchDeployerKeys forge' login =
   )
     `catchAny` const (pure [])
 
--- | Ask the local provisioner to expose SSH/tcp ports via host-port DNAT, when
--- the provisioner socket is configured and something was requested. Returns
--- Nothing on the Hetzner path or when nothing needs exposing.
+-- | Converge local SSH/tcp exposure. Sending an empty request is deliberate:
+-- it removes stale DNAT rules when a persistent server's config revokes its
+-- last exposed port. Returns Nothing only when no local provisioner exists.
 exposeServerPorts :: ServerInfo -> ServerToSpinUp -> M (Maybe ExposeResult)
 exposeServerPorts server serverToSpinUp = do
   socket <- view #provisionerSocket
   let exposeSSH' = serverToSpinUp ^. #exposeSSH
       tcpGuestPorts = snd <$> serverToSpinUp ^. #tcpPorts
   case socket of
-    Just sock
-      | exposeSSH' || not (null tcpGuestPorts) ->
-          Just <$> exposeServer sock (_serverInfoProvisionedServerId server) exposeSSH' tcpGuestPorts
+    Just sock -> Just <$> exposeServer sock (_serverInfoProvisionedServerId server) exposeSSH' tcpGuestPorts
     _ -> pure Nothing
 
 -- | The per-server exposure blob stored in servers.exposed:

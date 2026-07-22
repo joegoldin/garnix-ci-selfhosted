@@ -23,6 +23,7 @@ module Garnix.YamlConfig
     IncrementalizeBuildsSection (..),
     ModuleSection (..),
     ServerSection (..),
+    ServerLogFile (..),
     ServerPort (..),
     ServerPortType (..),
     exposeSSH,
@@ -30,6 +31,7 @@ module Garnix.YamlConfig
     authorizedSSHKeys,
     ports,
     domains,
+    logFile,
     _garnixConfigActions,
     actions,
     asAttributeMatcher,
@@ -79,8 +81,9 @@ import Garnix.Sandbox
 -- Hide ServerToSpinUp's ssh field selectors: they collide with this module's
 -- makeFields lenses of the same name (ServerSection), which we export instead.
 -- YamlConfig doesn't use ServerToSpinUp.
-import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, domains, exposeSSH)
+import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, domains, exposeSSH, logFile)
 import System.Directory (doesFileExist)
+import System.FilePath (isAbsolute, splitDirectories)
 
 getConfigFromFlake :: (HasCallStack) => Duration -> M (Maybe GarnixConfig)
 getConfigFromFlake evalTimeout = do
@@ -279,6 +282,18 @@ instance HasCodec ServerPort where
       <*> optionalFieldWithDefault "type" HttpPort "\"http\" (default) exposes <name>.<server-domain>; \"tcp\" exposes a raw host:port."
       .= _serverPortType
 
+newtype ServerLogFile = ServerLogFile {getServerLogFile :: Text}
+  deriving stock (Eq, Show, Generic)
+
+instance HasCodec ServerLogFile where
+  codec = bimapCodec validateServerLogFile getServerLogFile textCodec
+    where
+      validateServerLogFile path
+        | not (isAbsolute (cs path)) = Left "logFile must be an absolute path"
+        | ".." `elem` splitDirectories (cs path) = Left "logFile must not contain '..' path components"
+        | T.any (`elem` ['\NUL', '\n', '\r']) path = Left "logFile must not contain NUL or newline characters"
+        | otherwise = Right (ServerLogFile path)
+
 data ServerSection = ServerSection
   { _serverSectionConfiguration :: PackageName,
     _serverSectionDeploySection :: DeploySection,
@@ -287,7 +302,8 @@ data ServerSection = ServerSection
     _serverSectionAuthorizeDeployerGithubKeys :: Bool,
     _serverSectionAuthorizedSSHKeys :: [Text],
     _serverSectionPorts :: [ServerPort],
-    _serverSectionDomains :: [Text]
+    _serverSectionDomains :: [Text],
+    _serverSectionLogFile :: Maybe ServerLogFile
   }
   deriving stock (Eq, Show, Generic)
 
@@ -332,6 +348,10 @@ instance HasCodec ServerSection where
         []
         "Extra hostnames this server should also answer on (full FQDNs). A name under a configured base domain (the default apps domain or an operator/connected base) is wildcard-covered — no DNS action. Any other name is a bare custom domain and needs an A/CNAME record pointing at the garnix host (see the Servers page (i) menu). Each must be declared here (or in the Configure page) to be routed and get a cert."
       .= _serverSectionDomains
+      <*> optionalField
+        "logFile"
+        "Absolute path of a service log file to stream into the Servers-page Logs modal. Garnix follows this file over its private deploy SSH channel and retains bounded in-memory scrollback."
+      .= _serverSectionLogFile
 
 data DeploySection
   = OnPullRequest {tier :: ServerTier}

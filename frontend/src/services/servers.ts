@@ -89,6 +89,17 @@ const serverStatsHistorySchema = z.object({
 });
 export type ServerStatsHistory = z.infer<typeof serverStatsHistorySchema>;
 
+const serverLogStreamSchema = z.object({
+  configured: z.boolean(),
+  connected: z.boolean(),
+  lines: z.array(z.string()),
+  error: z
+    .string()
+    .nullish()
+    .transform((value) => value ?? null),
+});
+export type ServerLogStream = z.infer<typeof serverLogStreamSchema>;
+
 export async function getRunningServers(): Promise<
   APIResult<Array<RunningServer>>
 > {
@@ -108,5 +119,15 @@ export async function redeployServer(id: string): Promise<APIResult<null>> {
 export async function getServerStats(
   id: string,
 ): Promise<APIResult<ServerStatsHistory>> {
-  return await fetchFromAPI(serverStatsHistorySchema, "GET", `hosts/${id}/stats`);
+  return await fetchFromAPI(
+    serverStatsHistorySchema,
+    "GET",
+    `hosts/${id}/stats`,
+  );
+}
+
+export async function getServerLogStream(
+  id: string,
+): Promise<APIResult<ServerLogStream>> {
+  return await fetchFromAPI(serverLogStreamSchema, "GET", `hosts/${id}/logs`);
 }

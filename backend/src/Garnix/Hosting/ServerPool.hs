@@ -2,6 +2,7 @@ module Garnix.Hosting.ServerPool
   ( createServer,
     initializeProvisioningPool,
     sshArgsFor,
+    sshArgsForAddress,
     _checkServerPoolInterval,
   )
 where
@@ -59,7 +60,9 @@ initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ 
     stale <- DB.deleteStaleUnreadyPoolRows
     when (stale > 0)
       $ log Warning
-      $ "Removed " <> show stale <> " stale unready server-pool rows (provisioning died before readiness)."
+      $ "Removed "
+      <> show stale
+      <> " stale unready server-pool rows (provisioning died before readiness)."
     serverPoolConfig <- view #serverPoolConfig
     NoThrow.forConcurrently_ serverPoolConfig $ \(serverTier, idealPoolSize) -> do
       withSpan serverTier $ do
@@ -161,10 +164,13 @@ pollForServerDuration :: Duration
 pollForServerDuration = fromSeconds @Int 5
 
 sshArgsFor :: (HasIpv4Addr s Text) => s -> M (Text, [Text])
-sshArgsFor server = do
+sshArgsFor server = sshArgsForAddress (server ^. ipv4Addr)
+
+sshArgsForAddress :: Text -> M (Text, [Text])
+sshArgsForAddress address = do
   keyFiles <- view #sshUserHostingKeys
   let sshKeysParameters = concatMap (\f -> ["-i", cs f]) keyFiles
-  (ip, port) <- splitPortFromIP (server ^. ipv4Addr)
+  (ip, port) <- splitPortFromIP address
   pure
     ( ip,
       sshKeysParameters

@@ -105,18 +105,28 @@ rerunBuilds reporter builds@(firstBuild : _) commitInfo = do
   unless (all (sameRerunScope firstBuild) builds)
     $ throw
     $ OtherError "Cannot share a rerun scope across different commits or authorization contexts"
-  repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
-  plan <- Entitlements.getPlan (firstBuild ^. repoUser) >>= Entitlements.applyConfiguredTimeouts repoConfig
-  Checkout.runWithCheckout Checkout.remoteWithConfig commitInfo $ \config -> do
-    withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
-      withInternalCacheToken (commitInfo ^. reqUser) $ do
-        FodCheck.withFodChecker reporter commitInfo plan $ \fodChecker -> do
-          promises <- forM builds $ \build ->
-            spawn $ runPreparedBuild reporter build commitInfo $ \runReporter build' -> do
-              reportBuildResult runReporter build'
-              void $ doBuild fodChecker runReporter Webhook (config ^. flakeDir) repoConfig plan build'
-              MetaCheck.update reporter commitInfo
-          resolve =<< joinAll_ promises
+  metaCheckRun <- MetaCheck.newReport reporter commitInfo
+  flip catchEither (\err -> MetaCheck.updateFail commitInfo metaCheckRun (Just err) >> rethrowEither err) $ do
+    repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
+    plan <- Entitlements.getPlan (firstBuild ^. repoUser) >>= Entitlements.applyConfiguredTimeouts repoConfig
+    Checkout.runWithCheckout Checkout.remoteWithConfig commitInfo $ \config -> do
+      withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
+        withInternalCacheToken (commitInfo ^. reqUser) $ do
+          FodCheck.withFodChecker reporter commitInfo plan $ \fodChecker -> do
+            promises <- forM builds $ \build ->
+              spawn $ runPreparedBuild reporter build commitInfo $ \runReporter build' -> do
+                reportBuildResult runReporter build'
+                void $ doBuild fodChecker runReporter Webhook (config ^. flakeDir) repoConfig plan build'
+            resolve =<< joinAll_ promises
+          freshBuilds <-
+            DB.getBuildsByCommit
+              (commitInfo ^. repoInfo . ghRepoOwner)
+              (commitInfo ^. repoInfo . ghRepoName)
+              (commitInfo ^. commit)
+          continued <- continueRecoveredBuilds reporter commitInfo config freshBuilds
+          if continued
+            then MetaCheck.updateSuccess commitInfo metaCheckRun
+            else MetaCheck.updateFail commitInfo metaCheckRun Nothing
 
 -- | Equality boundary for resources shared by 'rerunBuilds'. In particular,
 -- repo publicity and requesting user are cache-authorization boundaries, so

@@ -7,6 +7,7 @@ module Garnix.Build.FodCheck
     __isSourceUnavailableError,
     __rebuildFod,
     __retryRemoteStoreOperation,
+    __runRemoteFodTransaction,
     __withRemoteFodSlot,
     __pickRemoteBuilderUrlFromMachinesFile,
     __parseMachinesFile,
@@ -91,26 +92,14 @@ withFodChecker reporter commitInfo plan action = do
         0 -> pure ()
         1 -> reportToSummary "1 FOD was verified."
         verified -> reportToSummary $ show verified <> " FODs were verified."
-      unfetchable <- readMVar $ fodChecker ^. #totalUnfetchable
-      case unfetchable of
-        0 -> pure ()
-        1 -> reportToSummary "1 FOD could not be re-verified (source could not be fetched) and was skipped."
-        n -> reportToSummary $ show n <> " FODs could not be re-verified (source could not be fetched) and were skipped."
       -- Unambiguous conclusion: any FOD check that failed makes the run a
-      -- failure; otherwise, if nothing was actually re-verified (nor known-good
-      -- from a previous build) and all we had were unverifiable sources, the
-      -- run is skipped rather than a green pass; anything else is a success.
+      -- failure. Fetch-looking stderr is builder-controlled and therefore
+      -- cannot authorize a non-blocking skip.
       case errors of
         Left (errors :: [Text]) -> do
           reportToSummary $ show (length errors) <> " FOD checks failed."
           reportComplete (fodChecker ^. #runReporter) RunReportStatusFailure
-        Right () -> do
-          let hadVerifiedFod = verified > 0 || skipped > 0
-          if unfetchable > 0 && not hadVerifiedFod
-            then do
-              reportToSummary "No FODs could be re-verified; marking this check as skipped."
-              reportComplete (fodChecker ^. #runReporter) RunReportStatusSkipped
-            else reportComplete (fodChecker ^. #runReporter) RunReportStatusSuccess
+        Right () -> reportComplete (fodChecker ^. #runReporter) RunReportStatusSuccess
   either rethrow pure actionResult
 
 getFodChecker :: Reporter -> CommitInfo -> ProductPlan -> M (Maybe FodChecker)
@@ -143,7 +132,6 @@ getFodChecker reporter commitInfo plan = do
     mkFodChecker runReporter =
       FodChecker runReporter
         <$> newMVar 0
-        <*> newMVar 0
         <*> newMVar 0
         <*> newMVar (Just [])
         <*> newMVar mempty
@@ -243,21 +231,6 @@ checkFod fodChecker drvPath system = do
   log Informational $ "checking fod: " <> cs drvPath <> ", system: " <> system ^. systemTextIso
   result <- rebuildFod system drvPath
   case result of
-    -- A genuinely unavailable source proves nothing about the hash. Do not
-    -- apply this exception to arbitrary nix/checker errors: that would turn a
-    -- broken verifier (or a deliberately failing FOD builder) into a green
-    -- bypass.
-    Left stderr
-      | __isSourceUnavailableError stderr -> do
-          let warning =
-                "Could not re-verify FOD '"
-                  <> cs drvPath
-                  <> "' (source could not be fetched); skipped — a failed fetch is not a hash mismatch:\n"
-                  <> stderr
-          log Warning warning
-          modifyMVar_ (fodChecker ^. #totalUnfetchable) $ pure . (+ 1)
-          reportLogs (fodChecker ^. #runReporter) $ LogLine (Just $ PackageName $ cs drvPath <> " (skipped: source unavailable)") Nothing warning
-          pure $ Right ()
     Left stderr -> do
       let errorMessage =
             "Failure when checking FOD '"
@@ -281,31 +254,12 @@ checkFod fodChecker drvPath system = do
       DB.addVerifiedFod drvPath storePath
       pure $ Right ()
 
--- | Conservative recognition of errors emitted by source fetchers. Unknown
--- failures are verification failures, not skips: it is safer to surface a new
--- fetcher message than to silently disable FOD checking.
+-- | Kept as a regression seam for the historical source-unavailable bypass.
+-- FOD stderr is emitted by code under verification, so no substring can prove
+-- that a message came from a trusted fetcher rather than a builder deliberately
+-- printing fetch-looking text. Every failed rebuild therefore fails closed.
 __isSourceUnavailableError :: Text -> Bool
-__isSourceUnavailableError stderr =
-  let lower = Text.toLower stderr
-   in any
-        (`Text.isInfixOf` lower)
-        [ "unable to download",
-          "cannot download",
-          "could not download",
-          "couldn't download",
-          "download failed",
-          "all mirrors failed",
-          "failed to fetch",
-          "unable to fetch",
-          "could not fetch",
-          "couldn't fetch",
-          "the requested url returned error:",
-          "unexpected http status",
-          "status code: 4",
-          "status code: 5",
-          "neither your store nor your substituters seems to have",
-          "you must first comply with"
-        ]
+__isSourceUnavailableError _stderr = False
 
 -- | True only for failures from the SSH transport to a direct remote Nix
 -- store. Keep this narrower than generic network errors: a FOD's own fetcher
@@ -351,6 +305,14 @@ __withRemoteFodSlot slots =
   Safe.bracket_
     (liftIO $ QSem.waitQSem slots)
     (liftIO $ QSem.signalQSem slots)
+
+-- | Hold one remote-FOD slot across the complete copy -> baseline realize ->
+-- strict rebuild transaction. Bracketing the phases individually would still
+-- cap commands but allow several large closures to be staged concurrently on
+-- the small external builder.
+__runRemoteFodTransaction :: QSem -> M a -> M b -> M c -> M c
+__runRemoteFodTransaction slots copyPhase preparePhase checkPhase =
+  __withRemoteFodSlot slots $ copyPhase *> preparePhase *> checkPhase
 
 type NixBuildOutput = [Rec ("drvPath" .== Text .+ "outputs" .== Map.Map Text Text)]
 
@@ -398,13 +360,19 @@ rebuildFod = do
       Nothing -> prepareAndCheck identity Nothing
       Just url -> do
         slots <- view #fodRemoteJobSlots
-        __withRemoteFodSlot slots $ do
-          sshKey <- liftIO remoteBuilderSshKeyPath
-          (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (copyClosure sshKey drvPath url))
-            <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> url)
-          prepareAndCheck
-            (__retryRemoteStoreOperation remoteStoreRetryPolicy)
-            (Just (url, sshKey))
+        sshKey <- liftIO remoteBuilderSshKeyPath
+        __runRemoteFodTransaction
+          slots
+          ( (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (copyClosure sshKey drvPath url))
+              <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> url)
+          )
+          ( void
+              $ (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (runBuild (Just (url, sshKey)) False))
+              <?> ("rebuildFod: preparing " <> cs drvPath)
+          )
+          ( (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (runBuild (Just (url, sshKey)) True))
+              <?> ("rebuildFod: checking " <> cs drvPath)
+          )
 
 __rebuildFod :: System -> Nix.DrvPath -> M (Either Text Text)
 __rebuildFod = rebuildFod

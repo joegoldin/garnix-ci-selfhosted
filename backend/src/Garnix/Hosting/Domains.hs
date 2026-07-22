@@ -12,6 +12,7 @@ module Garnix.Hosting.Domains
     knownBaseDomains,
     classifyDomain,
     validateServerDomains,
+    validateServerDomainsExcept,
   )
 where
 
@@ -19,7 +20,7 @@ import Data.Text qualified as T
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
-import Garnix.Types (Error (OtherError))
+import Garnix.Types (Error (OtherError), ServerId)
 
 data DomainKind
   = -- | A strict subdomain of the given known base — no per-server DNS needed.
@@ -47,10 +48,20 @@ classifyDomain bases fqdn =
 -- | Reject a deploy whose declared domains collide with those already claimed
 -- by another live server.
 validateServerDomains :: [Text] -> M ()
-validateServerDomains declared = do
-  taken <- DB.getAllDeclaredServerDomains
-  let clashes = filter (`elem` taken) declared
+validateServerDomains = validateServerDomainsExcept []
+
+-- | Variant used by persistent redeploy planning: domains already attached to
+-- the exact server rows being reused are not conflicts with themselves. Other
+-- live servers remain authoritative, and duplicate declarations within the
+-- desired plan are rejected as well.
+validateServerDomainsExcept :: [ServerId] -> [Text] -> M ()
+validateServerDomainsExcept ignoredServerIds declared = do
+  domainsByServer <- DB.getServerDomains
+  let taken = concat [domains | (serverId, domains) <- domainsByServer, serverId `notElem` ignoredServerIds]
+      duplicates = declared \\ nub declared
+      clashes = nub (filter (`elem` taken) declared <> duplicates)
   unless (null clashes)
     $ throw
     $ OtherError
-    $ "Domain(s) already in use by another server: " <> T.intercalate ", " clashes
+    $ "Domain(s) already in use by another server: "
+    <> T.intercalate ", " clashes

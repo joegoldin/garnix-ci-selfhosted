@@ -40,15 +40,18 @@ NixOS machine. Everything below uses example values — substitute your own:
     are permanently routed to the **authenticated** cache bucket. An external
     fork is blocked on its first attempt and appears in the admin approval
     inbox; approved retries keep the same private-cache routing.
-- **Restart-safe package builds** — evaluation checkpoints the derivation before
-  FOD checking and realization. A `garnixServer` deploy resumes checkpointed
-  builds on startup instead of cancelling them; work interrupted before that
-  point, and external run processes that cannot be reattached, is closed out
-  honestly as Cancelled rather than hanging forever.
+- **Restart-safe package builds** — a `garnixServer` deploy resumes every
+  non-terminal package build on startup. Rows interrupted after evaluation
+  reuse their derivation checkpoint and reattach/cache-hit Nix; rows interrupted
+  earlier safely repeat evaluation. The recovered commit then continues its
+  idempotent artifact/module/deployment tail. Synthetic overall rows and
+  external run processes that cannot safely be replayed are closed out as
+  Cancelled rather than hanging forever.
 - **Hardened FOD verification** — prepare and strict-rebuild happen on the same
-  checker store, only recognized source-fetch failures may skip, unknown errors
-  fail, transient remote-store errors retry, and direct external-builder work
-  has its own `maxRemoteFodJobs` cap.
+  checker store; every failed rebuild fails closed because builder-controlled
+  stderr cannot authenticate a “source unavailable” exception. Transient
+  remote-store errors retry, and the complete copy/prepare/check transaction on
+  an external builder has its own `maxRemoteFodJobs` cap.
 - **Per-bucket S3 credentials** (`S3_CACHE_PRIVATE_ACCESS_KEY_ID`/`…_SECRET_…`)
   — needed for providers like Backblaze B2 whose keys are all-buckets or
   one-bucket (upstream assumed one key pair for both cache buckets).
@@ -97,6 +100,10 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
   picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
   [Server deployments](#server-deployments-self-host-microvm-hosting).
+- **Live deployed-server logs** — an optional absolute `servers[].logFile`
+  path is followed over the existing private deploy SSH channel. The Servers
+  page's Logs modal shows deploy output and application output side by side,
+  with owner-gated API access and bounded process-local scrollback.
 - **Custom & vanity domains** — `garnix.yaml` `servers[].domains:` lets a
   hosted server answer on extra hostnames; operator wildcard bases
   (`services.garnixServer.extraHostingDomains`) and admin-registered
@@ -278,6 +285,16 @@ garnix.example.com {
   @webhook path /api/events/github/*
   handle @webhook { reverse_proxy 127.0.0.1:8321 }
 
+  # This terminating handle is deliberately before Authentik. Only claimed
+  # guests on the hosting bridge can post stats; other sources fall through to
+  # the interactive gate, and the backend independently validates the source
+  # subnet and live provisioner id.
+  @guestStats {
+    path /api/hosts/stats
+    remote_ip 10.111.0.0/24
+  }
+  handle @guestStats { reverse_proxy 127.0.0.1:8321 }
+
   handle /oauth2/* { reverse_proxy 127.0.0.1:4180 }
 
   # Next.js standalone doesn't serve static assets; serve them from the pkg.
@@ -326,6 +343,7 @@ headers from clients, authenticate the request, then inject the marker only on
 the authenticated backend hop. Missing marker configuration fails closed.
 
 Authentik side:
+
 1. Create an OAuth2/OIDC provider + application for
    `https://garnix.example.com/oauth2/callback`.
 2. Gate access with **application entitlements** (not ad-hoc groups): create
@@ -416,14 +434,13 @@ builds:
 substitutes each FOD's baseline output, then rebuilds it while ignoring that
 output so a lying hash surfaces in CI. This two-step sequence is required on
 fresh self-hosted guests because Nix refuses `--rebuild` when the output is not
-already valid in that store. A recognized source-fetch failure (dead mirror,
-HTTP error, CDN blocking an automation user-agent) is reported as
-skipped-with-warning because it proves nothing about the hash. Hash mismatches
-and all unrecognized builder, Nix, SSH, or checker failures fail the run rather
-than being mislabeled as source-unavailable. The conclusion is unambiguous:
-**any FOD failed → failed**; nothing verified and every FOD was unfetchable →
-**skipped** (a distinct grey conclusion, not a green pass); anything actually
-verified (or known-good from a prior build) → **success**.
+already valid in that store. A source-fetch-looking failure (dead mirror, HTTP
+error, CDN block) still appears in the build log, but it is a failure:
+those diagnostics come from builder-controlled stderr, so a malicious FOD can
+print fetch-looking text itself. Treating any substring as a trusted exception
+would bypass the security check. The conclusion is therefore unambiguous:
+**every requested FOD is verified (or already known-good) → success; any failed
+prepare or strict rebuild → failure**.
 
 **Check conclusions map to the forge's native ones.** A run/check reports one of
 `success`, `failure`, `timed out`, `cancelled`, or `skipped`. On GitHub these
@@ -444,18 +461,20 @@ whole commit is re-run) and **Cancel all** (stops every queued/running build)
 — both with confirmation. Cancelled builds render as an orange ✗, distinct
 from red failures.
 
-**Backend deploy/restart recovery:** after package evaluation succeeds, Garnix
-stores the derivation and output map *before* starting FOD verification or
-realization. On startup it resumes non-terminal build rows with that checkpoint
-in place; packages from the same interrupted commit share one checkout,
-authorization context, and replacement FOD coordinator. Re-running each
-derivation joins or replaces the interrupted Nix work and preserves the
-original row without creating a separate “FOD checks” run per package. A
-concurrent user cancellation cannot be overwritten by the checkpoint. Work
-interrupted before evaluation produced a derivation, plus action/deployment
-`runs` whose external process cannot be reattached, is still marked Cancelled.
-This is recovery from a process restart, not live migration of arbitrary
-commands.
+**Backend deploy/restart recovery:** Garnix stores the derivation and output map
+immediately after evaluation, before FOD verification or realization. On
+startup it resumes _all_ non-terminal package rows: checkpointed rows reattach
+to or cache-hit the surviving Nix daemon, while pre-checkpoint rows repeat
+evaluation. Packages from one interrupted commit share a checkout,
+authorization context, and replacement FOD coordinator, then continue through
+content-addressed artifact publication, module publication, and reconciliatory
+deployment. A half-claimed guest that never committed `ready_at` is removed
+first and the recovered deploy claims a clean guest. Persistent redeploys also
+reconcile their tmpfs repo/AuthentiK/SSH credentials, terminal CA, stats config,
+ports, domains, and the optional application-log collector. Synthetic overall
+rows and action/deployment `runs` whose external processes cannot safely be
+replayed remain Cancelled. This is process recovery, not live migration of
+arbitrary commands.
 
 **Filtering busy instances:** the Builds-page status filter sits beside its
 title; each Commit page has its own All/Active/Complete/Failed filter; and the
@@ -754,7 +773,7 @@ build pipeline with a Gitea commit-status reporter. All forge-specific calls
 - **Login** still uses GitHub OAuth for identity; in self-host mode access is
   gated by oauth2-proxy/Authentik regardless, and the Gitea webhook's sender is
   recorded as the build's requesting user — so builds work without Gitea login.
-- **Private caches for Gitea repos**: a *public* Gitea repo's cache is served
+- **Private caches for Gitea repos**: a _public_ Gitea repo's cache is served
   normally; a *private* Gitea repo's cache paths are currently fail-closed (not
   served), because the cache-serve permission check is GitHub-API-based. Public
   repos and the build/status loop are unaffected.
@@ -905,6 +924,34 @@ servers:
 | `i16x16`          | 16   | 16384     |
 | `i16x32`          | 16   | 32768     |
 
+### View a deployed service log
+
+Set `logFile` to an absolute file path inside the guest to add a live service
+log beside the deployment output in the Servers page's **Logs** modal:
+
+```yaml
+servers:
+  - configuration: myServer
+    deployment:
+      type: on-branch
+      branch: main
+    logFile: /var/log/my-service.log
+```
+
+After a successful deployment, the backend follows that file with a fixed
+`tail -n 10000 -F --` command over its existing private guest SSH connection.
+It does not open a guest port or accept a configurable command. The path must
+be absolute and cannot contain `..`, NUL, or newline path components.
+
+Scrollback is process-local: at most the newest 10,000 lines and 10 MiB per
+server are retained, with individual lines capped at 16,384 characters. A
+backend restart reconnects every live configured server and seeds the buffer
+from the newest 10,000 lines in the file. Only a user who can already view the
+repository's server (the owner or an installed organization member) can call
+the log API.
+Deleting a server stops its collector; persistent redeploys replace the old
+buffer and converge a changed or removed `logFile` setting.
+
 Enable pre-warming with `services.garnixServer.provisionServerPool`, then set
 the exact available tiers with `services.garnixServer.serverPool` (for example,
 `{ i2x4 = 1; }`). Each deployment's `machine` must match a pooled tier.
@@ -959,8 +1006,10 @@ authorized, three direct-SSH routes are shown with copyable commands on the
   `ssh garnix@<internal-ip>` directly (no `exposeSSH` needed).
 - **ProxyJump** — `ssh -J <host> garnix@<internal-ip>`, jumping through the
   garnix host (`services.garnixServer.sshHost`).
-- **DNAT** — with `exposeSSH: true`, the provisioner opens a deterministic
-  public host port (`sshExposePortBase + id%1000`); `ssh -p <port> garnix@<host>`.
+- **DNAT** — with `exposeSSH: true`, the provisioner reuses the guest's recorded
+  port when possible, otherwise allocates the lowest free port from the SSH
+  exposure range; `ssh -p <port> garnix@<host>`. The recorded allocation, not a
+  formula based on guest id, is authoritative across redeploys.
 
 **Bring your own login user (fully manual).** If you'd rather not touch the
 `garnix` user, declare an ordinary login user in the deployed
@@ -1345,13 +1394,13 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | "Github didn't give us a user token" | trailing `\n` in the GitHub client secret |
 | White page, `/_next` 404s | proxy must serve `/_next/*` from the frontend package |
 | `getInstalledOrgs … 401` | expired 8h user token — re-login; disable token expiry on the App |
-| Jobs interrupted by a `garnixServer` restart (deploy) | package builds checkpoint their derivation immediately after evaluation and are resumed on startup; work interrupted before that checkpoint, plus action/deployment run processes that cannot be reattached, is marked Cancelled. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
+| Jobs interrupted by a `garnixServer` restart (deploy) | all package rows resume on startup: pre-checkpoint work repeats evaluation, checkpointed work reattaches/cache-hits Nix, and the commit continues its artifact/module/deploy tail. Synthetic overall rows and non-idempotent external action/deployment run processes are marked Cancelled. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
 | every eval hangs; plain `nix` commands block on the host | nix-daemon deadlock — for us it was `min-free`/`max-free` **auto-GC** deadlocking on `gc.lock` against a concurrent `addToStore`. Don't run auto-GC on the garnix host; use a scheduled `nix-collect-garbage` job instead, and if it happens find the fork holding the `gc.lock` flock in `/proc/locks` and kill it |
 | **Logs** panel empty on a *finished* build | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog |
 | `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |
 | nix build: `can't find source for <new file>` | new files must be `git add`ed before a git-flake build sees them |
 | 401s from your private substituter inside builds | set `buildNetRcFile` (the sandbox can't read the host's root-only netrc) |
-| every FOD is skipped as “source unavailable” with `--rebuild and --check error if the derivation was not previously built` | the checker store was fresh and lacked the baseline output; prepare/substitute the FOD on that same store before the strict `--rebuild`. Do not classify this Nix precondition error as a fetch failure |
+| FOD prepare/rebuild reports “source unavailable” or `--rebuild and --check error if the derivation was not previously built` | the checker always prepares/substitutes the baseline on the same store before strict `--rebuild`; any remaining error fails closed. Never classify builder-controlled stderr as a trusted fetch exception |
 
 ---
 
@@ -1437,7 +1486,6 @@ via the provisioner mock, and the Action specs boot
 `nixosConfigurations.action-runner2` (`nix/tests/action-runner-vm.nix`);
 `SpecHook` fixes up the committed test SSH keys' permissions at suite start
 (git can't store 0600 modes).
-
 
 # Acknowledgments
 

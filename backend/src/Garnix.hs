@@ -31,7 +31,8 @@ import Garnix.DB.FeatureFlags (withRecachedFeatureFlags)
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
 import Garnix.Duration
 import Garnix.GithubInterface
-import Garnix.Hosting.Deploy (stopUnusedServers)
+import Garnix.Hosting.Deploy (cleanupUnreadyServers, stopUnusedServers)
+import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.LocalProvisioner (localProvisionerInterface)
@@ -416,6 +417,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
       _ -> pure 1
   fodRemoteJobSlots <- QSem.newQSem fodRemoteMaxJobs
   terminalSessions <- newMVar Map.empty
+  serverLogStreams <- ServerLogStream.newServerLogStreams
   withDefaultLogger $ \defaultLogger -> do
     let env =
           Env
@@ -489,7 +491,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               featureFlagConfig,
               fodCheckPool,
               fodRemoteJobSlots,
-              terminalSessions
+              terminalSessions,
+              serverLogStreams
             }
     action env
 
@@ -515,11 +518,17 @@ runWith opts = do
       -- Builds/runs left non-terminal by the previous process can never be
       -- driven further by it (their threads died with it). Most can't finish
       -- either and would show "running" forever, so cancel those. But a
-      -- build that got far enough to have a drv_path was handed off to the
-      -- nix-daemon, which survives the restart -- resume those in the
-      -- background instead of losing the work. Self-host only: with a fleet
-      -- this would cancel/resume other servers' in-flight work.
+      -- package build can be resumed in place: before the drv checkpoint it
+      -- repeats evaluation; after it, Nix reattaches/cache-hits the surviving
+      -- daemon realization. Synthetic overall rows and side-effecting runs are
+      -- terminalized. Self-host only: a fleet needs process ownership first.
       when (env ^. #selfHostMode) $ do
+        runM env cleanupUnreadyServers >>= \case
+          Right cleaned
+            | cleaned > 0 ->
+                hPutStrLn stderr $ "Removed " <> show cleaned <> " unready claimed guest(s) left by the previous process"
+          Right _ -> pure ()
+          Left err -> hPutStrLn stderr $ "Failed to clean unready claimed guests: " <> show err
         runM env DB.cancelOrphanedWork >>= \case
           Right (orphanedBuilds, orphanedRuns)
             | orphanedBuilds + orphanedRuns > 0 ->
@@ -550,6 +559,12 @@ runWith opts = do
                     <> " commit group(s) from the previous process in the background"
             Right _ -> pure ()
             Left err -> hPutStrLn stderr $ "Failed to look up/resume orphaned builds: " <> show err
+        runM env ServerLogStream.resumeServerLogStreams >>= \case
+          Right resumed
+            | resumed > 0 ->
+                hPutStrLn stderr $ "Resumed application-log streams for " <> show resumed <> " deployed server(s)"
+          Right _ -> pure ()
+          Left err -> hPutStrLn stderr $ "Failed to resume deployed-server application-log streams: " <> show err
       -- The heartbeat reaper needs the Traefik heartbeat middleware to be
       -- reporting; in self-host mode servers are torn down by deploy plans
       -- instead, so skip it rather than reap every server.

@@ -1,5 +1,6 @@
 module Garnix.Build.Flake
   ( runBuildFlake,
+    continueRecoveredBuilds,
   )
 where
 
@@ -108,6 +109,35 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
               if allBuildsSucceeded && allDeploymentsSucceeded
                 then MetaCheck.updateSuccess commitInfo metaCheckRun
                 else MetaCheck.updateFail commitInfo metaCheckRun Nothing
+
+-- | Continue the idempotent tail of a commit after startup recovery has
+-- finished its package rows. Action processes are deliberately not replayed:
+-- their orphaned run rows are cancelled at startup because arbitrary actions
+-- are not guaranteed idempotent. Artifact publication is content-addressed,
+-- module publication is an upsert, and deployment planning is reconciliatory,
+-- so these stages are safe to repeat.
+continueRecoveredBuilds :: Reporter -> CommitInfo -> GarnixConfig -> [Build] -> M Bool
+continueRecoveredBuilds reporter commitInfo config builds = do
+  Artifacts.publishArtifacts config builds
+  let packageBuilds = filter ((/= TypeOverall) . (^. packageType)) builds
+      allBuildsSucceeded = all ((`elem` [Just Success, Just Skipped]) . (^. status)) packageBuilds
+  when allBuildsSucceeded $ Modules.publish reporter config commitInfo
+  deployments <- case (commitInfo ^. prFromFork, commitInfo ^. branch) of
+    (Nothing, Just branch) ->
+      if allBuildsSucceeded
+        then rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
+        else pure []
+    (Just _, Nothing) -> do
+      log Notice "Recovered PR is from a fork. Not deploying servers"
+      pure []
+    _ -> do
+      log Critical "Recovered commit has inconsistent branch/fork metadata; not deploying servers"
+      pure []
+  let allDeploymentsSucceeded =
+        all
+          (\serverInfo -> isJust (serverInfo ^. readyAt) && isNothing (serverInfo ^. endedAt))
+          deployments
+  pure (allBuildsSucceeded && allDeploymentsSucceeded)
 
 setupBuilds :: Reporter -> CommitInfo -> GarnixConfig -> ProductPlan -> M [(Build, RunReporter)]
 setupBuilds reporter commitInfo config _plan = do

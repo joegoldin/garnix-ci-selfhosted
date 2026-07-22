@@ -98,13 +98,15 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
             `shouldBeM` [["first", "second"], ["second"], ["second"]]
           Build.rerunBuilds mempty [firstBuild, secondBuild & reqUser .~ "another-user"] commitInfo
             `shouldThrowM` OtherError "Cannot share a rerun scope across different commits or authorization contexts"
-          withMock
-            #buildPkgMock
-            ( \(_, _, _, _, _, _, build) -> do
-                now <- liftIO getCurrentTime
-                pure $ build & status ?~ Success & endTime ?~ now
-            )
-            $ Build.rerunBuilds openSearchReporter [firstBuild, secondBuild] commitInfo
+          withMockReturning #executeDeployPlanMock [] $ do
+            withMock
+              #buildPkgMock
+              ( \(_, _, _, _, _, _, build) -> do
+                  now <- liftIO getCurrentTime
+                  pure $ build & status ?~ Success & endTime ?~ now
+              )
+              $ Build.rerunBuilds openSearchReporter [firstBuild, secondBuild] commitInfo
+            (length <$> getMockCalls #executeDeployPlanMock) `shouldReturnM` 1
 
           runs <- DB.getRuns "owner" "repo" (commitInfo ^. commit)
           map (^. status) (filter ((== "FOD checks") . (^. name)) runs)
@@ -272,9 +274,10 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       result `shouldSatisfyM` isRight
 
   describe "__isSourceUnavailableError" $ do
-    it "recognizes source-fetch failures" $ do
-      __isSourceUnavailableError "curl: (22) The requested URL returned error: 403" `shouldBeM` True
-      __isSourceUnavailableError "Exception: Failed to fetch file from https://crates.io. Status code: 403" `shouldBeM` True
+    it "does not trust source-fetch-looking text emitted by a builder" $ do
+      __isSourceUnavailableError "curl: (22) The requested URL returned error: 403" `shouldBeM` False
+      __isSourceUnavailableError "Exception: Failed to fetch file from https://crates.io. Status code: 403" `shouldBeM` False
+      __isSourceUnavailableError "builder failed with exit code 1\n> unable to download policy-sentinel" `shouldBeM` False
 
     it "does not hide verifier or builder failures" $ do
       __isSourceUnavailableError "some outputs are not valid, so checking is not possible" `shouldBeM` False
@@ -310,18 +313,34 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       result `shouldBeM` Left "curl: (22) The requested URL returned error: 403"
       liftIO (readIORef attempts) `shouldReturnM` 1
 
+    it "stops after the configured number of remote-store retries" $ do
+      attempts <- liftIO $ newIORef (0 :: Int)
+      result <-
+        __retryRemoteStoreOperation (limitRetries 3) $ do
+          liftIO $ atomicModifyIORef' attempts $ \n -> (n + 1, ())
+          pure (Left "ssh: connect to host builder: Connection refused" :: Either Text Text)
+      result `shouldBeM` Left "ssh: connect to host builder: Connection refused"
+      liftIO (readIORef attempts) `shouldReturnM` 4
+
   describe "remote-store concurrency" $ do
-    it "honors a one-job limit across concurrent FOD operations" $ do
+    it "holds a one-job slot across each complete remote FOD transaction" $ do
       slots <- liftIO $ QSem.newQSem 1
-      active <- liftIO $ newIORef (0 :: Int)
-      peak <- liftIO $ newIORef (0 :: Int)
-      forConcurrently_ [1 .. 4 :: Int] $ \_ ->
-        __withRemoteFodSlot slots $ do
-          current <- liftIO $ atomicModifyIORef' active $ \n -> (n + 1, n + 1)
-          liftIO $ atomicModifyIORef' peak $ \n -> (max n current, ())
-          liftIO $ Concurrent.threadDelay 10000
-          liftIO $ atomicModifyIORef' active $ \n -> (n - 1, ())
-      liftIO (readIORef peak) `shouldReturnM` 1
+      trace <- liftIO $ newIORef ([] :: [Int])
+      let phase transactionId = liftIO $ do
+            atomicModifyIORef' trace $ \xs -> (xs <> [transactionId], ())
+            Concurrent.threadDelay 10000
+          transaction transactionId =
+            __runRemoteFodTransaction slots (phase transactionId) (phase transactionId) (phase transactionId)
+      forConcurrently_ [1, 2 :: Int] transaction
+      observed <- liftIO $ readIORef trace
+      observed `shouldSatisfyM` (`elem` [[1, 1, 1, 2, 2, 2], [2, 2, 2, 1, 1, 1]])
+
+    it "releases the remote FOD slot when a transaction throws" $ do
+      slots <- liftIO $ QSem.newQSem 1
+      __runRemoteFodTransaction slots (throw $ OtherError "copy failed") (pure ()) (pure ())
+        `shouldThrowM` OtherError "copy failed"
+      __runRemoteFodTransaction slots (pure ()) (pure ()) (pure ("next" :: Text))
+        `shouldReturnM` ("next" :: Text)
 
   describe "fodCheck" $ aroundM_ (withMock #rebuildFodMock rebuildFodTestImpl) $ do
     let test :: Nix.DrvPath -> M TestReport
@@ -346,10 +365,11 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       report ^. #logs `shouldBeM` "Checking fixed output derivations...\n1 FOD was verified."
       verifiedFodsShouldBe [fodDrvPath]
 
-    it "marks the run skipped when nothing could be re-verified" $ do
-      -- A FOD whose source can't be re-fetched (simulated 403) proves nothing
-      -- about its hash: it's neither a pass nor a failure. With no other FODs
-      -- verified, the whole check concludes skipped rather than a green pass.
+    it "fails closed when a FOD source cannot be re-fetched" $ do
+      -- Fetch diagnostics are emitted by the FOD's own builder and therefore
+      -- are not authenticated verifier provenance. A builder can print a
+      -- fetch-looking 403 itself, so any failed strict rebuild must fail the
+      -- security gate rather than becoming a non-blocking skip.
       fod <- mkFodFlake Nothing =<< mkRandomOutput
       drvPath <- fst <$> testDerivation fod "fod"
       report <-
@@ -357,11 +377,10 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
           #rebuildFodMock
           (\(_ :: (System, Nix.DrvPath)) -> pure (Left "curl: (22) The requested URL returned error: 403" :: Either Text Text))
           $ test drvPath
-      -- Skipped is non-blocking, so the test reporter still sees a "pass".
-      (report ^. #success) `shouldBeM` Just True
+      (report ^. #success) `shouldBeM` Just False
       let logs = cs (report ^. #logs) :: String
-      logs `shouldContainM` "could not be re-verified (source could not be fetched) and was skipped"
-      logs `shouldContainM` "marking this check as skipped"
+      logs `shouldContainM` "Failure when checking FOD"
+      logs `shouldNotContainM` "source could not be fetched"
       verifiedFodsShouldBe []
 
     it "fails instead of calling a checker error source-unavailable" $ do

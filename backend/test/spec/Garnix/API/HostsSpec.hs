@@ -13,6 +13,7 @@ import Garnix.DB qualified as DB
 import Garnix.Duration
 import Garnix.ExpiringCache (clearCache)
 import Garnix.GithubInterface.Types
+import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.TestHelpers
@@ -581,6 +582,55 @@ spec = do
       it "404s for a server the user cannot see" $ withServer $ \testServer -> do
         _user <- testServer.login
         result <- testServer.get "/api/hosts/vBV73Z9e/stats"
+        result `shouldHaveStatusCode` 404
+
+    beforeM_ truncateDBM $ describe "server application logs" $ do
+      it "serves bounded in-memory lines only to an owner" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user identity
+        DB.setServerLogFile (server ^. id) (Just "/var/log/example.log")
+        ServerLogStream.appendServerLogLine (server ^. id) "first"
+        ServerLogStream.appendServerLogLine (server ^. id) "second"
+        let sid = getHashId (getServerId (server ^. id))
+        result <- assert200 $ testServer.get (cs ("/api/hosts/" <> sid <> "/logs"))
+        liftIO
+          $ result
+          ^?! responseBody . _Value
+          `shouldBe` [aesonQQ|
+            {
+              configured: true,
+              connected: false,
+              lines: ["first", "second"]
+            }
+          |]
+
+      it "reports an unconfigured stream without touching the guest" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user identity
+        let sid = getHashId (getServerId (server ^. id))
+        result <- assert200 $ testServer.get (cs ("/api/hosts/" <> sid <> "/logs"))
+        liftIO $ result ^?! responseBody . key "configured" . _Bool `shouldBe` False
+
+      it "caps in-memory scrollback at the newest 10000 lines" $ withServer $ \testServer -> do
+        user <- testServer.login
+        server <- createSimpleServer user identity
+        DB.setServerLogFile (server ^. id) (Just "/var/log/example.log")
+        forM_ [1 .. 10005 :: Int] $ \lineNumber ->
+          ServerLogStream.appendServerLogLine (server ^. id) ("line-" <> show lineNumber)
+        let sid = getHashId (getServerId (server ^. id))
+        result <- assert200 $ testServer.get (cs ("/api/hosts/" <> sid <> "/logs"))
+        liftIO $ do
+          length (result ^.. responseBody . key "lines" . _Array . traverse) `shouldBe` 10000
+          result ^?! responseBody . key "lines" . nth 0 . _String `shouldBe` "line-6"
+          result ^?! responseBody . key "lines" . nth 9999 . _String `shouldBe` "line-10005"
+
+      it "requires auth on the per-server logs endpoint" $ withServer $ \testServer -> do
+        result <- testServer.get "/api/hosts/vBV73Z9e/logs"
+        result `shouldHaveStatusCode` 401
+
+      it "404s for application logs of a server the user cannot see" $ withServer $ \testServer -> do
+        _user <- testServer.login
+        result <- testServer.get "/api/hosts/vBV73Z9e/logs"
         result `shouldHaveStatusCode` 404
 
 createSimpleServer :: User -> (ServerInfo -> ServerInfo) -> M ServerInfo

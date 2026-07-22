@@ -1607,7 +1607,10 @@ data ServerToSpinUp = ServerToSpinUp
     -- | garnix.yaml servers[].ports of type tcp: (name, guest port).
     tcpPorts :: [(Text, Int)],
     -- | garnix.yaml servers[].domains: extra hostnames the server answers on.
-    domains :: [Text]
+    domains :: [Text],
+    -- | garnix.yaml servers[].logFile: absolute guest file followed over the
+    -- private deploy SSH channel, with bounded control-plane memory.
+    logFile :: Maybe Text
   }
   deriving stock (Show, Eq, Generic)
 
@@ -1624,7 +1627,10 @@ data ExposeResult = ExposeResult
 data DeployPlan = DeployPlan
   { toSpinDown :: [ServerInfo],
     toSpinUp :: [ServerToSpinUp],
-    toRedeploy :: [(ServerInfo, Build)]
+    -- | Persistent guests paired with the complete desired server spec.  A
+    -- redeploy must converge tmpfs-backed credentials and exposure metadata as
+    -- well as switch the NixOS closure, so retaining only the Build is unsafe.
+    toRedeploy :: [(ServerInfo, ServerToSpinUp)]
   }
   deriving stock (Show, Eq, Generic)
 

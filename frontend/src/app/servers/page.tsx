@@ -8,6 +8,7 @@ import {
   RunningServer,
   getRunningServers,
   deleteServer,
+  getServerLogStream,
   redeployServer,
 } from "@/services/servers";
 import { Table } from "@/components/table";
@@ -41,9 +42,7 @@ const Page = () => {
     <div className={styles.container}>
       <div className={styles.header}>
         <Text type="h1">Servers</Text>
-        {servers.length > 0 && (
-          <ServerFilters servers={servers} {...filters} />
-        )}
+        {servers.length > 0 && <ServerFilters servers={servers} {...filters} />}
       </div>
       <div className={styles.section}>
         {match(serversResult.data)
@@ -129,7 +128,8 @@ const ResourcesCell = ({ stats }: { stats: RunningServer["stats"] }) => {
       </span>
       <span className={styles.resourceLine}>
         <span className={styles.resourceLabel}>RAM</span>
-        {kbToGiB(stats.mem_used_kb)} / {kbToGiB(stats.mem_total_kb)} GiB ({memPct}
+        {kbToGiB(stats.mem_used_kb)} / {kbToGiB(stats.mem_total_kb)} GiB (
+        {memPct}
         %)
       </span>
     </div>
@@ -155,14 +155,20 @@ const ConnectCell = ({
   const portUrl = (name: string) =>
     server.url.replace(/^https:\/\//, `https://${name}.`);
   const hasAny =
-    !!ip || (sshPort != null && !!sshHost) || httpPorts.length > 0 || tcpPorts.length > 0;
+    !!ip ||
+    (sshPort != null && !!sshHost) ||
+    httpPorts.length > 0 ||
+    tcpPorts.length > 0;
   return (
     <div className={styles.connect}>
       {hasAny ? (
         <>
           {ip ? (
             <div className={styles.cmdGroup}>
-              <CopyableCommand label="Tailscale" command={`ssh ${sshUser}@${ip}`} />
+              <CopyableCommand
+                label="Tailscale"
+                command={`ssh ${sshUser}@${ip}`}
+              />
               {sshHost ? (
                 <CopyableCommand
                   label="ProxyJump"
@@ -180,7 +186,11 @@ const ConnectCell = ({
           {httpPorts.length > 0 || tcpPorts.length > 0 ? (
             <div className={styles.portList}>
               {httpPorts.map((p) => (
-                <Link key={`h-${p.name}`} href={portUrl(p.name)} className={styles.portChip}>
+                <Link
+                  key={`h-${p.name}`}
+                  href={portUrl(p.name)}
+                  className={styles.portChip}
+                >
                   {p.name} ↗
                 </Link>
               ))}
@@ -234,9 +244,8 @@ const ServersTable = (props: {
   filters: ReturnType<typeof useFilters>;
   onRequestReload: () => void;
 }) => {
-  const [currentLogsModal, setCurrentLogsModal] = React.useState<null | string>(
-    null,
-  );
+  const [currentLogsModal, setCurrentLogsModal] =
+    React.useState<null | RunningServer>(null);
   const [deleteServerModal, setDeleteServerModal] = React.useState<
     null | string
   >(null);
@@ -247,12 +256,10 @@ const ServersTable = (props: {
         <DomainsModal onRequestClose={() => setShowDomainsHelp(false)} />
       )}
       {currentLogsModal != null && (
-        <FloatingModal onRequestClose={() => setCurrentLogsModal(null)}>
-          <ModalSection>
-            <Text type="h1">Deploy logs</Text>
-            <code className={styles.logs}>{currentLogsModal}</code>
-          </ModalSection>
-        </FloatingModal>
+        <ServerLogsModal
+          server={currentLogsModal}
+          onRequestClose={() => setCurrentLogsModal(null)}
+        />
       )}
       {deleteServerModal != null && (
         <DeleteServerConfirmationModal
@@ -364,9 +371,7 @@ const ServersTable = (props: {
                       Terminal
                     </Button>
                   ) : null}
-                  <Button
-                    onClick={() => setCurrentLogsModal(server.deploy_logs)}
-                  >
+                  <Button onClick={() => setCurrentLogsModal(server)}>
                     Logs
                   </Button>
                   <Button href={`/servers/${server.id}`}>Monitor</Button>
@@ -391,6 +396,107 @@ const ServersTable = (props: {
         </tbody>
       </Table>
     </>
+  );
+};
+
+const ServerLogsModal = (props: {
+  server: RunningServer;
+  onRequestClose: () => void;
+}) => {
+  const loadStream = React.useCallback(
+    () => getServerLogStream(props.server.id),
+    [props.server.id],
+  );
+  const streamResult = useLoading(loadStream, { poll: fromSecs(1) });
+  const stream =
+    !streamResult.loading && streamResult.data.ok
+      ? streamResult.data.data
+      : null;
+  const streamError =
+    !streamResult.loading && !streamResult.data.ok
+      ? streamResult.data.error.message
+      : null;
+
+  return (
+    <FloatingModal
+      className={styles.logsModal}
+      onRequestClose={props.onRequestClose}
+    >
+      <ModalSection className={styles.logsModalSection}>
+        <Text type="h1">
+          Logs — {props.server.repo_owner}/{props.server.repo_name}
+        </Text>
+        <div className={styles.logPanels}>
+          <section className={styles.logPanel}>
+            <Text type="h2">Deploy logs</Text>
+            <FollowingLogOutput value={props.server.deploy_logs} />
+          </section>
+          <section className={styles.logPanel}>
+            <div className={styles.logPanelHeader}>
+              <Text type="h2">Server log</Text>
+              {stream?.configured ? (
+                <span className={styles.logStreamStatus}>
+                  <span
+                    className={styles.logStreamDot}
+                    data-connected={
+                      props.server.status !== "Ended" && stream.connected
+                    }
+                  />
+                  {props.server.status === "Ended"
+                    ? "Stopped"
+                    : stream.connected
+                      ? "Live"
+                      : "Reconnecting"}
+                </span>
+              ) : null}
+            </div>
+            {streamResult.loading ? (
+              <div className={styles.logMessage}>Connecting…</div>
+            ) : streamError != null ? (
+              <div className={styles.logMessage}>{streamError}</div>
+            ) : !stream?.configured ? (
+              <div className={styles.logMessage}>
+                Add <code>logFile: /absolute/path/to/service.log</code> to this
+                server&apos;s <code>garnix.yaml</code> entry to stream it here.
+              </div>
+            ) : (
+              <>
+                {stream.error != null ? (
+                  <div className={styles.logStreamError}>{stream.error}</div>
+                ) : null}
+                <FollowingLogOutput value={stream.lines.join("\n")} />
+              </>
+            )}
+          </section>
+        </div>
+      </ModalSection>
+    </FloatingModal>
+  );
+};
+
+const FollowingLogOutput = ({ value }: { value: string }) => {
+  const outputRef = React.useRef<HTMLElement>(null);
+  const shouldFollow = React.useRef(true);
+
+  React.useLayoutEffect(() => {
+    const output = outputRef.current;
+    if (output != null && shouldFollow.current) {
+      output.scrollTop = output.scrollHeight;
+    }
+  }, [value]);
+
+  return (
+    <code
+      ref={outputRef}
+      className={styles.logs}
+      onScroll={(event) => {
+        const output = event.currentTarget;
+        shouldFollow.current =
+          output.scrollHeight - output.clientHeight - output.scrollTop < 40;
+      }}
+    >
+      {value}
+    </code>
   );
 };
 

@@ -10,7 +10,7 @@ import Garnix.DB qualified as DB
 import Garnix.Monad (M, throw)
 import Garnix.Nix.Types (DrvPath (..), StoreHash (..), StorePath (..))
 import Garnix.Prelude
-import Garnix.TestHelpers (defaultCommitInfo, testBuild, truncateDBM)
+import Garnix.TestHelpers (addTestServer, defaultCommitInfo, testBuild, truncateDBM)
 import Garnix.TestHelpers.Monad (beforeM_, inM, shouldBeM, shouldReturnM)
 import Garnix.Types hiding (context, head)
 import System.Environment (getEnv)
@@ -224,27 +224,31 @@ spec = do
   -- lists, so nothing forces it in); clear it explicitly so the counts below
   -- are exact.
   describe "orphaned build/run resumability" $ inM $ beforeM_ truncateDBM $ do
-    it "getResumableOrphanedBuilds/cancelOrphanedWork split orphaned builds by drv_path, and cancel all orphaned runs" $ do
+    it "resumes package builds even before evaluation, while cancelling overall rows and runs" $ do
       void $ DB.pgExec [pgSQL| TRUNCATE runs |]
 
-      resumable <- testBuild ((status .~ Nothing) . (drvPath ?~ "/nix/store/00000000000000000000000000000000-foo.drv"))
-      unresumable <- testBuild (status .~ Nothing)
+      resumableWithDrv <- testBuild ((status .~ Nothing) . (drvPath ?~ "/nix/store/00000000000000000000000000000000-foo.drv"))
+      resumableBeforeEval <- testBuild ((status .~ Nothing) . (package .~ "before-eval"))
+      unresumableOverall <- testBuild ((status .~ Nothing) . (packageType .~ TypeOverall) . (package .~ "overall"))
       finished <- testBuild (status ?~ Success)
       run <- DB.newRun "test-run" defaultCommitInfo
 
-      -- only the build with a drv_path is reported as resumable
-      DB.getResumableOrphanedBuilds `shouldReturnM` [resumable]
+      -- Package rows are restartable by re-evaluating when drv_path is absent.
+      -- The derivation checkpoint is an optimization, not a correctness gate.
+      DB.getResumableOrphanedBuilds `shouldReturnM` [resumableWithDrv, resumableBeforeEval]
 
       (cancelledBuilds, cancelledRuns) <- DB.cancelOrphanedWork
       cancelledBuilds `shouldBeM` 1
       cancelledRuns `shouldBeM` 1
 
-      -- the resumable build is left alone (still orphaned, ready to resume)
-      DB.getBuild (resumable ^. id) `shouldReturnM` resumable
+      -- Both package rows are left orphaned for startup recovery.
+      DB.getBuild (resumableWithDrv ^. id) `shouldReturnM` resumableWithDrv
+      DB.getBuild (resumableBeforeEval ^. id) `shouldReturnM` resumableBeforeEval
 
-      -- the unresumable build (no drv_path) got cancelled
-      cancelledUnresumable <- DB.getBuild (unresumable ^. id)
-      cancelledUnresumable ^. status `shouldBeM` Just Cancelled
+      -- The synthetic overall row cannot be passed to package doBuild and is
+      -- terminalized; its component package rows determine the final result.
+      cancelledOverall <- DB.getBuild (unresumableOverall ^. id)
+      cancelledOverall ^. status `shouldBeM` Just Cancelled
 
       -- an already-terminal build is untouched
       DB.getBuild (finished ^. id) `shouldReturnM` finished
@@ -255,6 +259,13 @@ spec = do
       case runAfter of
         Just r -> r ^. status `shouldBeM` Just Cancelled
         Nothing -> liftIO $ expectationFailure "expected the run row to still exist"
+
+    it "finds claimed servers whose deployment never became ready" $ do
+      build <- testBuild identity
+      unready <- addTestServer (configurationBuildId .~ (build ^. id))
+      now <- liftIO getCurrentTime
+      _ready <- addTestServer ((configurationBuildId .~ (build ^. id)) . (readyAt ?~ now))
+      DB.getUnreadyServers `shouldReturnM` [unready]
 
   let wrap test = do
         socketPath <- getEnv "TPG_SOCK"

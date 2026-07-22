@@ -56,6 +56,7 @@ import Garnix (envMocks)
 import Garnix.Async qualified
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
 import Garnix.Duration
+import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Monad
 import Garnix.Monad.Metrics (registerMetrics)
 import Garnix.Monad.Pool qualified
@@ -262,6 +263,7 @@ withTestEnvironment tempDir action = do
       fodCheckPool <- Garnix.Monad.Pool.newPool 40 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
       fodRemoteJobSlots <- QSem.newQSem 40
       terminalSessions <- newMVar Map.empty
+      serverLogStreams <- ServerLogStream.newServerLogStreams
       withDefaultLogger $ \defaultLogger -> do
         ghInterface <- Deprecated.testGithubInterface tempDir buildRef
         let env =
@@ -333,7 +335,8 @@ withTestEnvironment tempDir action = do
                   provisionerSocket = Nothing,
                   giteaConfig = Nothing,
                   defaultAuthentik = Nothing,
-                  terminalSessions
+                  terminalSessions,
+                  serverLogStreams
                 }
         action env
   where

@@ -153,15 +153,12 @@ restartBuild reqUser' oldBuild = do
     assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
     withSpan commitInfo $ rerunBuild reporter build' commitInfo
 
--- | Resume builds orphaned by a backend restart mid-flight (left
--- @status IS NULL@ with a non-null @drv_path@ -- see
--- 'DB.getResumableOrphanedBuilds'). Unlike 'restartBuild'/'restartCommit',
+-- | Resume package builds orphaned by a backend restart mid-flight (left
+-- @status IS NULL@ -- see 'DB.getResumableOrphanedBuilds'). Unlike
+-- 'restartBuild'/'restartCommit',
 -- this reuses the existing build rows rather than cloning fresh ones: the
--- actual nix realizations run against the nix-daemon, which survives the
--- backend restart, so re-running the rows' derivations either re-attaches to
--- the daemon's still-in-progress jobs (fast) or
--- cache-hits if they finished while the backend was down; only a drv the
--- daemon (and store) has since forgotten forces a full rebuild.
+-- rows with derivation checkpoints reattach to the nix-daemon; rows interrupted
+-- earlier simply repeat evaluation before building.
 --
 -- Best-effort: this runs unattended at startup, with nobody to retry it, so
 -- any failure that would otherwise leave the build stuck @status IS NULL@

@@ -3,11 +3,10 @@
 # command/package. Imported by flake.nix's per-system section; the NixOS modules
 # in this dir (nixos-module.nix, guest-profile.nix, authentik-guard.nix) are
 # imported by path elsewhere and are unaffected by this default.nix.
-{
-  lib,
-  pkgs,
-  system,
-  ...
+{ lib
+, pkgs
+, system
+, ...
 }:
 let
   mkGuestProfileConfig =
@@ -110,17 +109,17 @@ in
       assert !(builtins.hasAttr "statsReportUrl" guestProfileConfig.garnix.guest);
       assert !(builtins.hasAttr "provisionerId" guestProfileConfig.garnix.guest);
       assert
-        guestProfileConfig.systemd.timers.garnix-stats-reporter.unitConfig.ConditionPathExists
-        == "/var/lib/garnix/stats.env";
+      guestProfileConfig.systemd.timers.garnix-stats-reporter.unitConfig.ConditionPathExists
+      == "/var/lib/garnix/stats.env";
       assert
-        guestProfileConfig.systemd.services.garnix-stats-reporter.unitConfig.ConditionPathExists
-        == "/var/lib/garnix/stats.env";
+      guestProfileConfig.systemd.services.garnix-stats-reporter.unitConfig.ConditionPathExists
+      == "/var/lib/garnix/stats.env";
       assert
-        guestProfileConfig.systemd.services.garnix-stats-reporter.serviceConfig.EnvironmentFile
-        == "/var/lib/garnix/stats.env";
+      guestProfileConfig.systemd.services.garnix-stats-reporter.serviceConfig.EnvironmentFile
+      == "/var/lib/garnix/stats.env";
       assert !(builtins.hasAttr "garnix/stats.env" guestProfileConfig.environment.etc);
       assert
-        !(builtins.elem "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env" guestProfileConfig.systemd.tmpfiles.rules);
+      !(builtins.elem "C /var/lib/garnix/stats.env 0644 root root - /etc/garnix/stats.env" guestProfileConfig.systemd.tmpfiles.rules);
       pkgs.runCommand "guest-profile-stats-tests"
         {
           nativeBuildInputs = [
@@ -160,12 +159,19 @@ in
             test "$(cat "$count_file")" -eq "$expected_attempts"
           }
 
-          run_http_case 204 0 1 18180
-          run_http_case 302 1 3 18181
-          run_http_case 404 1 3 18182
-          run_http_case 503 1 3 18183
+          # The reporter accepts exactly the HTTP success class. Exercise both
+          # boundaries plus values immediately outside it so redirects and
+          # informational responses can never become accidental success.
+          run_http_case 200 0 1 18180
+          run_http_case 204 0 1 18181
+          run_http_case 299 0 1 18182
+          run_http_case 199 1 3 18183
+          run_http_case 300 1 3 18184
+          run_http_case 302 1 3 18185
+          run_http_case 404 1 3 18186
+          run_http_case 503 1 3 18187
 
-          if GARNIX_STATS_URL=http://127.0.0.1:18184/api/hosts/stats \
+          if GARNIX_STATS_URL=http://127.0.0.1:18188/api/hosts/stats \
             GARNIX_PROVISIONER_ID=42 \
             GARNIX_STATS_CPU_SAMPLE_DELAY=0 \
             GARNIX_STATS_RETRY_DELAY=0 \

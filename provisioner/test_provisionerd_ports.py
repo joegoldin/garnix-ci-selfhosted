@@ -427,6 +427,117 @@ class IptablesRuleTests(unittest.TestCase):
 
 
 class CleanupTests(unittest.TestCase):
+    def test_cleanup_attempts_later_steps_after_exposure_failure(self):
+        events = []
+
+        def fail_exposure(_name):
+            events.append("remove_exposure")
+            raise RuntimeError("corrupt exposure registry")
+
+        def fake_run(cmd, check=True, timeout=None):
+            events.append(("run", list(cmd)))
+            if cmd[0] == "iptables":
+                raise RuntimeError("iptables unavailable")
+            return SimpleNamespace(stdout="", returncode=0)
+
+        with patched_pd(
+            run=fake_run,
+            remove_exposure=fail_exposure,
+            dnsmasq_drop=lambda name: events.append(("dnsmasq_drop", name)),
+            MICROVMS_DIR="/microvms",
+            SPECS_DIR="/specs",
+            GCROOTS_DIR="/gcroots",
+        ):
+            with mock.patch.object(pd.shutil, "rmtree"):
+                with mock.patch.object(pd.os, "unlink", side_effect=FileNotFoundError):
+                    with self.assertRaisesRegex(RuntimeError, "corrupt exposure registry"):
+                        required_callable("cleanup_vm")("garnix-42")
+
+        self.assertIn(
+            ("run", ["systemctl", "stop", "microvm@garnix-42.service"]),
+            events,
+        )
+        self.assertIn(("run", ["ip", "link", "delete", "gx42"]), events)
+        self.assertIn(("dnsmasq_drop", "garnix-42"), events)
+        self.assertIn(
+            (
+                "run",
+                [
+                    "systemctl",
+                    "reset-failed",
+                    "microvm@garnix-42.service",
+                    "microvm-tap-interfaces@garnix-42.service",
+                    "microvm-set-booted@garnix-42.service",
+                ],
+            ),
+            events,
+        )
+
+    def test_cleanup_recovers_corrupt_registry_from_deterministic_guest_ip(self):
+        old_nat = [
+            [
+                "-A",
+                "PREROUTING",
+                "-i",
+                "eth0",
+                "-p",
+                "tcp",
+                "--dport",
+                "32009",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.111.0.52:80",
+            ]
+        ]
+        old_forward = [
+            [
+                "-A",
+                "FORWARD",
+                "-p",
+                "tcp",
+                "-d",
+                "10.111.0.52/32",
+                "--dport",
+                "80",
+                "-j",
+                "ACCEPT",
+            ]
+        ]
+        firewall = FakeIptables(nat=old_nat, forward=old_forward)
+        with tempfile.TemporaryDirectory() as d:
+            exposed = os.path.join(d, "exposed")
+            microvms = os.path.join(d, "microvms")
+            specs = os.path.join(d, "specs")
+            gcroots = os.path.join(d, "gcroots")
+            for path in (exposed, microvms, specs, gcroots):
+                os.makedirs(path)
+            registry = os.path.join(exposed, "garnix-42.json")
+            with open(registry, "w") as f:
+                f.write('{"ip":')
+
+            def fake_run(cmd, check=True, timeout=None):
+                if cmd[0] == "iptables":
+                    return firewall.run(cmd, check=check, timeout=timeout)
+                return SimpleNamespace(stdout="", returncode=0)
+
+            with patched_pd(
+                EXPOSED_DIR=exposed,
+                MICROVMS_DIR=microvms,
+                SPECS_DIR=specs,
+                GCROOTS_DIR=gcroots,
+                DNSMASQ_HOSTS=os.path.join(d, "dnsmasq-hosts"),
+                UPLINK="eth0",
+                run=fake_run,
+            ):
+                with open(pd.DNSMASQ_HOSTS, "w") as f:
+                    f.write("aa:bb:cc:dd:ee:ff,10.111.0.52,garnix-42\n")
+                required_callable("cleanup_vm")("garnix-42")
+
+            self.assertFalse(os.path.exists(registry))
+            self.assertEqual(firewall.rules[("nat", "PREROUTING")], [])
+            self.assertEqual(firewall.rules[(None, "FORWARD")], [])
+
     def test_cleanup_stops_path_dependent_units_before_removing_vm_directory(self):
         events = []
 

@@ -156,6 +156,58 @@ spec = do
                 liftIO $ length (plan1 ^. #toRedeploy) `shouldBe` 1
             result `shouldBe` Right ()
 
+          it "keeps runtime configuration in a persistent redeploy plan" $ do
+            let runtimeYaml =
+                  Just
+                    $ cs
+                      [i|
+servers:
+  - configuration: db
+    deployment:
+      type: on-branch
+      branch: branch
+    authentik: default
+    exposeSSH: true
+    authorizeDeployerGithubKeys: true
+    authorizedSSHKeys:
+      - ssh-ed25519 AAAATEST explicit@test
+    ports:
+      - name: web
+        port: 8080
+        type: http
+      - name: database
+        port: 5432
+        type: tcp
+    domains:
+      - db.example.test
+    logFile: /var/log/database.log
+|]
+            result <- Deprecated.withMockRepo flake runtimeYaml branch $ \_mockGithubRepo commit -> do
+              withMockReturning #executeDeployPlanMock [] $ do
+                now <- liftIO getCurrentTime
+                [existingBuild] <- createBuildsFor "owner" "repo" "branch" "prevcommit" [("db", Just "db")]
+                existingServer <- addTestServer $ \server ->
+                  server
+                    & configurationBuildId .~ (existingBuild ^. id)
+                    & readyAt ?~ now
+                    & endedAt .~ Nothing
+                DB.setServerDomains (existingServer ^. id) ["db.example.test"]
+
+                resolve =<< buildFlake mempty =<< mkCommitInfo commit
+
+                (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
+                let [(_, wanted)] = plan1 ^. #toRedeploy
+                liftIO $ do
+                  wanted ^. #useDefaultAuthentik `shouldBe` True
+                  wanted ^. #exposeSSH `shouldBe` True
+                  wanted ^. #authorizeDeployerGithubKeys `shouldBe` True
+                  wanted ^. #authorizedSSHKeys `shouldBe` ["ssh-ed25519 AAAATEST explicit@test"]
+                  wanted ^. #httpPorts `shouldBe` [("web", 8080)]
+                  wanted ^. #tcpPorts `shouldBe` [("database", 5432)]
+                  wanted ^. #domains `shouldBe` ["db.example.test"]
+                  wanted ^. #logFile `shouldBe` Just "/var/log/database.log"
+            result `shouldBe` Right ()
+
       it "does not mark server as ready from a failed deployment" $ do
         let event = defaultEvent
         let packages = [PackageName "first", PackageName "second"]
@@ -352,6 +404,8 @@ spec = do
               liftIO $ err result `shouldBe` ProvisioningError "test error"
               [(_id, deployLogs)] <- getDeployLogsDB
               liftIO $ deployLogs `shouldBe` "Error provisioning server: test error\n"
+              [failedServer] <- getAllDbServers
+              liftIO $ failedServer ^. endedAt `shouldSatisfy` isJust
 
         it "reports failed deployments to github" $ do
           let event = defaultEvent
@@ -499,8 +553,9 @@ spec = do
         build <- fromSingleton . filter (\p -> p ^. packageType == TypeNixosConfiguration) <$> builds
         secondGenServers <- getAllDbServers
         let serverInfo2 = fromSingleton secondGenServers
+            wanted = ServerToSpinUp def build False False False False [] [] [] [] Nothing
         reports <- withTestReporter_ $ \reporter -> do
-          void $ redeployServer reporter commitInfo (BranchDeployment branch) serverInfo2 build
+          void $ redeployServer reporter commitInfo (BranchDeployment branch) serverInfo2 wanted
         let logs' = cs $ (reports Map.! "redeployment db") ^. #logs
         liftIO $ do
           logs' `shouldContain` "Server has been successfully redeployed to: https://db.branch.repo.owner.garnix.me"
@@ -585,7 +640,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -615,7 +670,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -635,7 +690,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -659,7 +714,7 @@ spec = do
           commit <-
             Deprecated.writeMockRemote "test-branch"
               $ def
-              & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+              & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
           let prEvent =
                 mkPullRequestEvent commit "test-branch" "other-owner/repo-fork" "owner/repo" testInstallationId
                   & number .~ 42
@@ -677,7 +732,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "foo/bar" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "foo/bar" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -691,7 +746,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "sh/some-feature"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         let prEvent =
               mkPullRequestEvent commit "sh/some-feature" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -709,7 +764,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "pkg-a" (OnPullRequest def) Nothing False False [] [] [], ServerSection "pkg-b" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "pkg-a" (OnPullRequest def) Nothing False False [] [] [] Nothing, ServerSection "pkg-b" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         let prEvent =
               mkPullRequestEvent commit "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -732,7 +787,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -748,7 +803,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -764,7 +819,7 @@ spec = do
         commitA <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         let prEvent =
               mkPullRequestEvent commitA "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -800,7 +855,7 @@ spec = do
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] []]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
         build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)

@@ -26,6 +26,7 @@ import Garnix.ExpiringCache
 import Garnix.GithubInterface.Types
 import Garnix.Hosting.Deploy (stopServer)
 import Garnix.Hosting.Helpers
+import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Monad
 import Garnix.Monad.Concurrency (forkM)
 import Garnix.Orchestrator qualified as Orchestrator
@@ -60,7 +61,10 @@ data HostsAPI route = HostsAPI
     -- | Current sample + the short rolling window of samples for one server,
     -- for the per-server Monitor page. Auth + ownership-gated the same way as
     -- GET /api/hosts.
-    _hostsAPIGetServerStats :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "stats" :> Get '[JSON] ServerStatsHistory
+    _hostsAPIGetServerStats :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "stats" :> Get '[JSON] ServerStatsHistory,
+    -- | Bounded, process-local application log stream collected from the
+    -- optional garnix.yaml servers[].logFile over private deploy SSH.
+    _hostsAPIGetServerLogs :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "logs" :> Get '[JSON] ServerLogStream.ServerLogSnapshot
   }
   deriving (Generic)
 
@@ -76,7 +80,8 @@ hostsAPI =
       _hostsAPIGetHosts = getHosts,
       _hostsAPIDeleteHost = deleteHost,
       _hostsAPIRedeployHost = redeployHost,
-      _hostsAPIGetServerStats = getServerStats
+      _hostsAPIGetServerStats = getServerStats,
+      _hostsAPIGetServerLogs = getServerLogs
     }
 
 data HostList = HostList
@@ -274,6 +279,20 @@ getServerStats (Authenticated (WebSession user ghToken)) serverId = do
       pure $ ServerStatsHistory (if null samples then Nothing else Just (last samples)) samples
     else throw NotFound
 getServerStats _ _ = throw Unauthorized
+
+getServerLogs :: AuthResult AuthJwtPayload -> ServerId -> M ServerLogStream.ServerLogSnapshot
+getServerLogs (Authenticated (WebSession user ghToken)) serverId = do
+  servers <-
+    getRunningAndRecentServersForOwners
+      . (GhRepoOwner (user ^. githubLogin) :)
+      . map organizationName
+      =<< getInstalledOrgs ghToken
+  if any ((== serverId) . _runningServerId) servers
+    then do
+      configured <- isJust <$> DB.getServerLogFile serverId
+      ServerLogStream.getServerLogSnapshot serverId configured
+    else throw NotFound
+getServerLogs _ _ = throw Unauthorized
 
 data DnsHosts = DnsHosts
   { byHash :: Map Text HostIPs,

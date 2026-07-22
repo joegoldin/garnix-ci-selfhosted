@@ -510,15 +510,13 @@ makeNewBuildForBuildId reqUser buildId evalHost = do
     [] -> throw $ NoSuchBuild buildId
     _ -> throw $ OtherError "Impossible: more than one result"
 
--- | Close out the builds and runs left non-terminal by a previous backend
--- process that CANNOT be resumed: their driving threads died with it, and
--- without a derivation to re-attach to (or, for runs, a process to re-attach
--- to at all) they can never finish — without this they'd show "running"
--- forever in the UI after every deploy/restart. Builds that do have a
--- 'drv_path' are resumable (see 'getResumableOrphanedBuilds') and are
--- deliberately left alone here; the caller resumes those separately instead
--- of cancelling them. Returns (builds, runs) closed. Self-host only (single
--- backend); a fleet would cancel other servers' in-flight work.
+-- | Close out orphaned work that is intentionally not replayed. Package build
+-- rows are resumable even before evaluation: recovery can evaluate them again,
+-- and an existing drv_path merely makes reattachment faster. The synthetic
+-- TypeOverall row is not a package and cannot be fed to doBuild, while runs may
+-- represent non-idempotent actions, so those are terminalized. Returns
+-- (overall builds, runs) closed. Self-host only (single backend); a fleet would
+-- need process ownership before touching another server's work.
 cancelOrphanedWork :: M (Int, Int)
 cancelOrphanedWork = do
   now <- liftIO getCurrentTime
@@ -527,7 +525,7 @@ cancelOrphanedWork = do
       [pgSQL|
         UPDATE builds
         SET status = ${Just Cancelled}, end_time = ${now}
-        WHERE status IS NULL AND drv_path IS NULL
+        WHERE status IS NULL AND package_type = ${TypeOverall}
       |]
   orphanedRuns <-
     pgExec
@@ -538,15 +536,11 @@ cancelOrphanedWork = do
       |]
   pure (orphanedBuilds, orphanedRuns)
 
--- | Orphaned builds (@status IS NULL@, left running by a previous backend
--- process that died) which got far enough to have a @drv_path@ — i.e. past
--- eval, with a derivation to re-realize. These are resumable: the actual
--- build runs against the nix-daemon, which survives a backend restart, so
--- re-running @nix build@ on 'drv_path' re-attaches to the daemon's
--- still-in-progress job (or cache-hits if it already finished) instead of
--- starting over. Used at startup to resume these in place; the non-resumable
--- remainder (no 'drv_path', plus all orphaned runs) is cancelled by
--- 'cancelOrphanedWork'.
+-- | Every orphaned package build. A row with drv_path reattaches to the
+-- nix-daemon's realization (or cache-hits); a row interrupted before that
+-- checkpoint safely re-evaluates the attribute. Excluding TypeOverall is
+-- essential because it is a synthetic commit summary, not a buildable flake
+-- attribute.
 getResumableOrphanedBuilds :: M [Build]
 getResumableOrphanedBuilds =
   pgQueryPrism
@@ -577,7 +571,7 @@ getResumableOrphanedBuilds =
       already_built,
       forge
     FROM builds
-    WHERE status IS NULL AND drv_path IS NOT NULL
+    WHERE status IS NULL AND package_type <> ${TypeOverall}
   |]
 
 -- | (runningBuilds, pendingBuilds, runningRuns, pendingRuns) across the whole
@@ -1739,6 +1733,51 @@ setServerExposed serverId val = do
         WHERE id = ${serverId}
       |]
 
+-- | Converge the custom-domain declarations of a persistent server. New
+-- servers get these at INSERT time; reused servers must update the same row or
+-- removed domains continue routing indefinitely.
+setServerDomains :: ServerId -> [Text] -> M ()
+setServerDomains serverId domains = do
+  let encoded = cs (Aeson.encode domains) :: Text
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE servers
+        SET domains = ${encoded}::text::jsonb
+        WHERE id = ${serverId}
+      |]
+
+-- | Persist the optional application-log path so process restarts can resume
+-- the private SSH collector for live servers.
+setServerLogFile :: ServerId -> Maybe Text -> M ()
+setServerLogFile serverId path = do
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE servers
+        SET log_file = ${path}
+        WHERE id = ${serverId}
+      |]
+
+getServerLogFile :: ServerId -> M (Maybe Text)
+getServerLogFile serverId = do
+  rows <- pgQuery [pgSQL|SELECT log_file FROM servers WHERE id = ${serverId}|]
+  pure $ case rows of
+    [path] -> path
+    _ -> Nothing
+
+-- | Collector recovery input, deliberately limited to live, ready guests.
+getActiveServerLogFiles :: M [(ServerId, Text, Text)]
+getActiveServerLogFiles =
+  pgQuery
+    [pgSQL|!
+        SELECT id, ipv4, log_file
+        FROM servers
+        WHERE ended_at IS NULL
+          AND ready_at IS NOT NULL
+          AND log_file IS NOT NULL
+      |]
+
 -- | The exposure blobs of all live servers, as an assoc list (keyed by ServerId
 -- which has no Ord instance). Read back as text and decoded; unparseable rows
 -- are dropped. Consumers join this against Host/RunningServer by server id.
@@ -1960,6 +1999,7 @@ claimServerDB serverToSpinUp pullRequest =
       let buildId = serverToSpinUp ^. #build . id
       let domainIsPrimary = serverToSpinUp ^. #domainIsPrimary
       let domainsEncoded = cs (Aeson.encode (serverToSpinUp ^. #domains)) :: Text
+      let logFile = serverToSpinUp ^. #logFile
       changes <-
         pgQueryPrism
           _ServerInfo
@@ -1976,6 +2016,7 @@ claimServerDB serverToSpinUp pullRequest =
               , server_tier
               , is_primary
               , domains
+              , log_file
               )
             VALUES
               ( DEFAULT
@@ -1989,6 +2030,7 @@ claimServerDB serverToSpinUp pullRequest =
               , ${tier}
               , ${domainIsPrimary}
               , ${domainsEncoded}::text::jsonb
+              , ${logFile}
               )
             RETURNING
               id,
@@ -2022,7 +2064,8 @@ updateServerPostDeploy s = do
             ipv4 = ${s ^. ipv4Addr},
             ipv6  = ${s ^. ipv6Addr},
             ended_at = ${s ^. endedAt},
-            ready_at = ${s ^. readyAt}
+            ready_at = ${s ^. readyAt},
+            is_primary = ${s ^. isPrimary}
         WHERE id = ${s ^. id}
       |]
   case changes of
@@ -2253,6 +2296,35 @@ getRunningServersOf repoInfo deploymentType = do
         AND servers.ended_at IS NULL
         AND servers.pull_request = ${prId}
       |]
+
+-- | Claimed guests whose deployment never reached the ready checkpoint. A
+-- backend process that dies after claim cannot safely infer how far the guest
+-- mutation got; startup removes these transaction remnants and recovered
+-- deployment planning claims a fresh pool guest.
+getUnreadyServers :: M [ServerInfo]
+getUnreadyServers =
+  pgQueryPrism
+    _ServerInfo
+    [pgSQL|
+      SELECT
+        servers.id,
+        servers.provisioner_id,
+        servers.ipv4,
+        servers.ipv6,
+        servers.created_at,
+        servers.ended_at,
+        servers.configuration_build_id,
+        servers.pull_request,
+        servers.ready_at,
+        builds.persistence_name,
+        servers.server_tier,
+        servers.is_primary
+      FROM servers
+      INNER JOIN builds ON servers.configuration_build_id = builds.id
+      WHERE servers.ready_at IS NULL
+        AND servers.ended_at IS NULL
+      ORDER BY servers.created_at, servers.id
+    |]
 
 getProvisionerServerById :: [GhRepoOwner] -> ServerId -> M (Maybe ProvisionedServerId)
 getProvisionerServerById owner serverId = do

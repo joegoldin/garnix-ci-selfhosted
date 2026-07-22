@@ -34,6 +34,7 @@ import Garnix.BuildLogs.Types (LogLine)
 import Garnix.DB.FeatureFlags.Types (FeatureFlagConfig)
 import Garnix.Duration
 import Garnix.GithubInterface.Types
+import Garnix.Hosting.LogStream.Types (ServerLogStreams)
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Log
 import Garnix.Monad.ForkT
@@ -173,7 +174,9 @@ data Env = Env
     fodRemoteJobSlots :: QSem,
     -- | Live web-terminal websocket sessions per user (github login), backing
     -- the per-user concurrency cap on /api/terminal (see Garnix.API.Terminal).
-    terminalSessions :: MVar (Map Text Int)
+    terminalSessions :: MVar (Map Text Int),
+    -- | Bounded, process-local application-log buffers for hosted servers.
+    serverLogStreams :: ServerLogStreams
   }
   deriving stock (Generic)
 
@@ -419,10 +422,6 @@ data FodChecker = FodChecker
   { runReporter :: RunReporter,
     totalSkipped :: MVar Int,
     totalVerified :: MVar Int,
-    -- | FODs whose rebuild failed WITHOUT a hash mismatch (upstream source
-    -- gone, CDN bot-walls the fetcher's User-Agent, …). Reported as warnings,
-    -- not failures — only a hash mismatch is evidence of a lying FOD.
-    totalUnfetchable :: MVar Int,
     promises :: MVar (Maybe [Promise (Either [(Nix.DrvPath, Text)] ())]),
     startedOrDone :: MVar (Set Nix.DrvPath)
   }

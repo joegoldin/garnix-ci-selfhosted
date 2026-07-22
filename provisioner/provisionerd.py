@@ -487,6 +487,54 @@ def remove_exposure(name: str):
         raise
 
 
+def remove_exposure_for_cleanup(name: str):
+    """Remove exposure state during guest teardown.
+
+    The normal mutation path validates the registry strictly and must keep
+    doing so: accepting corrupt allocation state while assigning ports would
+    be unsafe. Teardown has a stronger liveness requirement, though. If that
+    registry is corrupt or unreadable, the guest's deterministic IP still lets
+    us identify every DNAT/FORWARD rule aimed at it, remove those rules
+    transactionally, and discard the unusable registry file.
+    """
+    registry_failure = None
+    try:
+        remove_exposure(name)
+        return
+    except Exception as error:
+        registry_failure = error
+        guest_ip = vm_ip_from_name(name)
+        if not guest_ip:
+            raise
+
+    journal = []
+    try:
+        snapshots = _affected_firewall_rules(set(), guest_ip)
+        _delete_snapshots(snapshots, journal)
+        try:
+            os.unlink(_exposure_path(name))
+        except FileNotFoundError:
+            pass
+    except BaseException as fallback_error:
+        try:
+            _rollback(journal)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "exposure cleanup failed: "
+                f"{registry_failure}; deterministic-IP fallback also failed: "
+                f"{fallback_error}; rollback also failed: {rollback_error}"
+            ) from registry_failure
+        raise RuntimeError(
+            "exposure cleanup failed: "
+            f"{registry_failure}; deterministic-IP fallback also failed: {fallback_error}"
+        ) from registry_failure
+    log.warning(
+        "removed exposure for %s via deterministic-IP fallback after registry failure: %s",
+        name,
+        registry_failure,
+    )
+
+
 def write_exposure(name: str, ip: str, rules: list):
     os.makedirs(EXPOSED_DIR, exist_ok=True)
     path = _exposure_path(name)
@@ -513,7 +561,16 @@ def vm_ip_from_name(name: str) -> str:
 
 def cleanup_vm(name: str):
     """Best-effort teardown of every trace of a guest (idempotent)."""
-    remove_exposure(name)
+    failures = []
+
+    def attempt(label: str, action):
+        try:
+            action()
+        except Exception as error:
+            failures.append(f"{label}: {error}")
+            log.warning("guest cleanup step failed for %s (%s): %s", name, label, error)
+
+    attempt("exposure", lambda: remove_exposure_for_cleanup(name))
     units = [
         f"microvm@{name}.service",
         f"microvm-tap-interfaces@{name}.service",
@@ -524,21 +581,39 @@ def cleanup_vm(name: str):
     # while /var/lib/microvms/<name> still exists; PartOf propagation alone
     # does not guarantee those path-dependent jobs finish before our rmtree.
     for unit in units:
-        run(["systemctl", "stop", unit], check=False)
+        attempt(f"stop {unit}", lambda unit=unit: run(["systemctl", "stop", unit], check=False))
     match = re.fullmatch(r"garnix-(\d+)", name)
     if match:
         # tap-down normally removes this. The exact fallback is safe after a
         # partial/failed unit stop and keeps repeated cleanup idempotent.
-        run(["ip", "link", "delete", f"gx{match.group(1)}"], check=False)
-    shutil.rmtree(os.path.join(MICROVMS_DIR, name), ignore_errors=True)
-    shutil.rmtree(os.path.join(SPECS_DIR, name), ignore_errors=True)
-    for root in (name, f"booted-{name}"):
+        attempt(
+            "tap",
+            lambda: run(["ip", "link", "delete", f"gx{match.group(1)}"], check=False),
+        )
+
+    def remove_tree(path: str):
         try:
-            os.unlink(os.path.join(GCROOTS_DIR, root))
+            shutil.rmtree(path)
         except FileNotFoundError:
             pass
-    dnsmasq_drop(name)
-    run(["systemctl", "reset-failed", *units], check=False)
+
+    attempt("microvm directory", lambda: remove_tree(os.path.join(MICROVMS_DIR, name)))
+    attempt("spec directory", lambda: remove_tree(os.path.join(SPECS_DIR, name)))
+    for root in (name, f"booted-{name}"):
+        def remove_root(root=root):
+            try:
+                os.unlink(os.path.join(GCROOTS_DIR, root))
+            except FileNotFoundError:
+                pass
+
+        attempt(f"gcroot {root}", remove_root)
+    attempt("dnsmasq reservation", lambda: dnsmasq_drop(name))
+    attempt(
+        "reset failed units",
+        lambda: run(["systemctl", "reset-failed", *units], check=False),
+    )
+    if failures:
+        raise RuntimeError("guest cleanup incomplete: " + "; ".join(failures))
 
 
 def do_create(req: dict) -> dict:

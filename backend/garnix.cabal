@@ -90,6 +90,8 @@ library
       Garnix.Hosting.Deploy
       Garnix.Hosting.Domains
       Garnix.Hosting.Helpers
+      Garnix.Hosting.LogStream
+      Garnix.Hosting.LogStream.Types
       Garnix.Hosting.ServerPool
       Garnix.Hosting.ServerPool.Types
       Garnix.Incremental
@@ -891,6 +893,8 @@ test-suite spec
       Garnix.Hosting.Deploy
       Garnix.Hosting.Domains
       Garnix.Hosting.Helpers
+      Garnix.Hosting.LogStream
+      Garnix.Hosting.LogStream.Types
       Garnix.Hosting.ServerPool
       Garnix.Hosting.ServerPool.Types
       Garnix.Incremental

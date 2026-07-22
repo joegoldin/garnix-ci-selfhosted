@@ -31,12 +31,93 @@
 
 .logs {
   display: block;
-  height: 65vh;
-  margin-top: 20px;
+  box-sizing: border-box;
+  height: 58vh;
+  margin-top: 12px;
   padding: 5px;
   border: 1px solid var(--color-stone-300);
   white-space: pre;
   overflow: auto;
+}
+
+.logsModal {
+  width: min(1200px, calc(100vw - 48px));
+  max-width: 1200px;
+}
+
+.logsModalSection {
+  padding: 24px;
+}
+
+.logPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.logPanel {
+  min-width: 0;
+}
+
+.logPanelHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.logStreamStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-stone-500);
+  font-size: 12px;
+}
+
+.logStreamDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-stone-400);
+}
+
+.logStreamDot[data-connected="true"] {
+  background: green;
+}
+
+.logMessage {
+  box-sizing: border-box;
+  height: 58vh;
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid var(--color-stone-300);
+  color: var(--color-stone-500);
+}
+
+.logStreamError {
+  margin-top: 12px;
+  color: var(--color-error);
+  font-size: 12px;
+}
+
+.logStreamError + .logs {
+  height: calc(58vh - 32px);
+}
+
+@media only screen and (max-width: 850px) {
+  .logsModal {
+    width: calc(100vw - 24px);
+  }
+
+  .logPanels {
+    grid-template-columns: 1fr;
+  }
+
+  .logs,
+  .logMessage {
+    height: 34vh;
+  }
 }
 
 .noServers a {
