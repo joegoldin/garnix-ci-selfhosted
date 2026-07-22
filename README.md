@@ -79,8 +79,9 @@ NixOS machine. Everything below uses example values — substitute your own:
   results report back as Gitea commit statuses. Off unless `giteaUrl` is set. See
   [the Gitea section](#optional-gitea-as-a-second-forge).
 - **Monitoring page** (`/monitoring`, sidebar → "Monitoring") — a self-host
-  dashboard of instance (Prometheus), host (node-exporter), job, and deployment
-  stats. Claimed guests receive a full control-plane stats endpoint; pre-warm
+  dashboard of instance (Prometheus), configured builder (node-exporter), job,
+  and deployment stats. Claimed guests receive a full control-plane stats
+  endpoint; pre-warm
   guests cannot report before claim, and the ingestion route is guest-subnet
   gated. See [Monitoring](#monitoring).
 - **SSH into deployed servers + extra ports** — `garnix.yaml` `servers[]` gains
@@ -1102,10 +1103,12 @@ Documentation) aggregates, via `GET /api/monitoring`:
 - **Instance** — garnix's own Prometheus (`services.garnixServer.metricsScrapeUrl`,
   default `127.0.0.1:<metricsPort>/` — the endpoint serves at the root path):
   queue depths, builds attempted, cache-push ratio.
-- **Host** — the machine's `node-exporter`
-  (`services.garnixServer.nodeExporterUrl`, default `127.0.0.1:9100/metrics`):
-  load, memory, disk, CPU count. Run
-  `services.prometheus.exporters.node` bound to loopback.
+- **Builders** — every target in `services.garnixServer.monitoringBuilders`,
+  with its supported systems, `maxJobs`, load, memory, disk, and CPU count.
+  Targets are scraped concurrently, so an unavailable builder is marked as
+  such without hiding healthy builders or the rest of the page. When the list
+  is empty, the legacy `services.garnixServer.nodeExporterUrl` remains the
+  single-host fallback.
 - **Jobs** — running/pending builds + actions/deploys and recent build durations.
 - **Deployments** — the live servers (from `/api/hosts`).
 
@@ -1223,6 +1226,22 @@ services.garnixServer.buildMachines = [{
 # Direct FOD checker sessions bypass the Nix scheduler, so cap them separately.
 # A 2-core/12-GiB builder should normally stay at one.
 services.garnixServer.maxRemoteFodJobs = 1;
+
+# Optional operator monitoring for the local and remote builders.
+services.garnixServer.monitoringBuilders = [
+  {
+    name = "local";
+    url = "http://127.0.0.1:9100/metrics";
+    systems = [ "x86_64-linux" ];
+    maxJobs = 8;
+  }
+  {
+    name = "arm-builder";
+    url = "http://arm-builder.example:9100/metrics";
+    systems = [ "aarch64-linux" ];
+    maxJobs = 1;
+  }
+];
 ```
 
 `buildMachines[*].maxJobs` limits ordinary builds scheduled by the Nix daemon.
@@ -1231,6 +1250,12 @@ rebuild on one specific store; those sessions are instead limited by
 `maxRemoteFodJobs` (default `1`) and transient SSH transport failures are
 retried with jittered backoff. The cap queues work in Garnix instead of opening
 too many simultaneous SSH sessions against a small builder.
+
+Remote node-exporters should never be internet-wide. Bind the exporter only
+as broadly as needed and enforce a source allowlist at both the host firewall
+and the service boundary (for example, the control-plane host's stable `/32`
+plus the Tailscale CGNAT range). Do not add port 9100 to a global
+`allowedTCPPorts` list.
 
 Until a darwin builder is registered, exclude `darwinConfigurations.*` from
 your `garnix.yaml` includes.

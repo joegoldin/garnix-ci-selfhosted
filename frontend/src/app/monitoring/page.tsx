@@ -14,7 +14,7 @@ import {
   getMonitoring,
   Monitoring,
   MonitoringInstance,
-  MonitoringHost,
+  MonitoringBuilder,
   MonitoringJobs,
 } from "@/services/monitoring";
 import { getRunningServers } from "@/services/servers";
@@ -100,7 +100,7 @@ const InstanceSection = ({ data }: { data: MonitoringInstance }) => (
   </>
 );
 
-const HostSection = ({ data }: { data: MonitoringHost }) => {
+const BuilderStats = ({ data }: { data: MonitoringBuilder["stats"] }) => {
   const memUsedPct =
     data.memUsedBytes != null && data.memTotalBytes
       ? ` (${((data.memUsedBytes / data.memTotalBytes) * 100).toFixed(0)}%)`
@@ -114,11 +114,8 @@ const HostSection = ({ data }: { data: MonitoringHost }) => {
       ? ` (${((diskUsed / data.diskTotalBytes) * 100).toFixed(0)}%)`
       : "";
   return (
-    <>
-      <Text type="h2" className={styles.h2}>
-        Host (erdtree)
-      </Text>
-      {!data.scraped && <NotScraped what="the host node-exporter" />}
+    <div>
+      {!data.scraped && <NotScraped what="this builder's node-exporter" />}
       <div className={styles.statGrid}>
         <Stat
           label="Load (1m / 5m / 15m)"
@@ -140,9 +137,43 @@ const HostSection = ({ data }: { data: MonitoringHost }) => {
           )}${diskUsedPct}`}
         />
       </div>
-    </>
+    </div>
   );
 };
+
+const builderMetadata = (builder: MonitoringBuilder): string => {
+  const systems = builder.systems.join(", ");
+  const jobs =
+    builder.maxJobs > 0
+      ? `${builder.maxJobs} ${builder.maxJobs === 1 ? "job" : "jobs"}`
+      : "";
+  return [systems, jobs].filter(Boolean).join(" · ");
+};
+
+export const BuildersSection = ({ data }: { data: MonitoringBuilder[] }) => (
+  <>
+    <Text type="h2" className={styles.h2}>
+      Builders
+    </Text>
+    <div className={styles.builderList}>
+      {data.map((builder) => (
+        <div className={styles.builder} key={builder.name}>
+          <div className={styles.builderHeader}>
+            <Text type="h3" className={styles.builderName}>
+              {builder.name}
+            </Text>
+            {builderMetadata(builder) && (
+              <Text type="span" className={styles.builderMeta}>
+                {builderMetadata(builder)}
+              </Text>
+            )}
+          </div>
+          <BuilderStats data={builder.stats} />
+        </div>
+      ))}
+    </div>
+  </>
+);
 
 const JobsSection = ({ data }: { data: MonitoringJobs }) => (
   <>
@@ -270,7 +301,7 @@ const Content = ({ data }: { data: Monitoring }) => (
       <InstanceSection data={data.instance} />
     </div>
     <div className={styles.section}>
-      <HostSection data={data.host} />
+      <BuildersSection data={data.builders} />
     </div>
     <div className={styles.section}>
       <JobsSection data={data.jobs} />

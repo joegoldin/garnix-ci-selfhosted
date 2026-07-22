@@ -327,6 +327,8 @@ withTestEnvironment tempDir action = do
                   hostingPublicIp = Nothing,
                   metricsScrapeUrl = "http://127.0.0.1:8323/metrics",
                   nodeExporterUrl = "http://127.0.0.1:9100/metrics",
+                  monitoringBuilderTargets =
+                    [MonitoringBuilderTarget "host" "http://127.0.0.1:9100/metrics" [] 0],
                   sshHost = "",
                   provisionerSocket = Nothing,
                   giteaConfig = Nothing,

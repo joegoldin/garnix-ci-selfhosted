@@ -8,8 +8,10 @@ module Garnix.API.Monitoring
     MonitoringDto (..),
     InstanceStats (..),
     HostStats (..),
+    BuilderStats (..),
     JobStats (..),
     RecentBuild (..),
+    __collectBuilderStats,
   )
 where
 
@@ -37,7 +39,8 @@ monitoringAPI auth =
     { _monitoringAPIGet = do
         requireSelfHostConfig auth
         garnixMetrics <- scrape =<< view #metricsScrapeUrl
-        nodeMetrics <- scrape =<< view #nodeExporterUrl
+        builderTargets <- view #monitoringBuilderTargets
+        builders <- __collectBuilderStats scrape builderTargets
         (runningBuilds, pendingBuilds, runningRuns, pendingRuns) <- DB.getJobCounts
         recent <- DB.getRecentBuildDurations 10
         pure
@@ -56,20 +59,8 @@ monitoringAPI auth =
                     _instanceStatsCachePushFailure = look "garnix_server_cache_push_failure" garnixMetrics,
                     _instanceStatsScraped = not (Map.null garnixMetrics)
                   },
-              _monitoringDtoHost =
-                let memTotal = look "node_memory_MemTotal_bytes" nodeMetrics
-                    memAvail = look "node_memory_MemAvailable_bytes" nodeMetrics
-                 in HostStats
-                      { _hostStatsLoad1 = look "node_load1" nodeMetrics,
-                        _hostStatsLoad5 = look "node_load5" nodeMetrics,
-                        _hostStatsLoad15 = look "node_load15" nodeMetrics,
-                        _hostStatsMemTotalBytes = memTotal,
-                        _hostStatsMemUsedBytes = (-) <$> memTotal <*> memAvail,
-                        _hostStatsDiskTotalBytes = lookLabelled "node_filesystem_size_bytes" "mountpoint" "/" nodeMetrics,
-                        _hostStatsDiskAvailBytes = lookLabelled "node_filesystem_avail_bytes" "mountpoint" "/" nodeMetrics,
-                        _hostStatsCpuCount = countCpus nodeMetrics,
-                        _hostStatsScraped = not (Map.null nodeMetrics)
-                      },
+              _monitoringDtoHost = maybe emptyHostStats _builderStatsStats (listToMaybe builders),
+              _monitoringDtoBuilders = builders,
               _monitoringDtoJobs =
                 JobStats
                   { _jobStatsRunningBuilds = runningBuilds,
@@ -129,9 +120,9 @@ lookLabelled :: Text -> Text -> Text -> Map Text Double -> Maybe Double
 lookLabelled name label value m =
   listToMaybe
     [ v
-    | (k, v) <- Map.toList m,
-      (name <> "{") `T.isPrefixOf` k,
-      (label <> "=\"" <> value <> "\"") `T.isInfixOf` k
+      | (k, v) <- Map.toList m,
+        (name <> "{") `T.isPrefixOf` k,
+        (label <> "=\"" <> value <> "\"") `T.isInfixOf` k
     ]
 
 countCpus :: Map Text Double -> Maybe Double
@@ -140,9 +131,44 @@ countCpus m =
     0 -> Nothing
     n -> Just (fromIntegral n)
 
+hostStatsFromMetrics :: Map Text Double -> HostStats
+hostStatsFromMetrics nodeMetrics =
+  let memTotal = look "node_memory_MemTotal_bytes" nodeMetrics
+      memAvail = look "node_memory_MemAvailable_bytes" nodeMetrics
+   in HostStats
+        { _hostStatsLoad1 = look "node_load1" nodeMetrics,
+          _hostStatsLoad5 = look "node_load5" nodeMetrics,
+          _hostStatsLoad15 = look "node_load15" nodeMetrics,
+          _hostStatsMemTotalBytes = memTotal,
+          _hostStatsMemUsedBytes = (-) <$> memTotal <*> memAvail,
+          _hostStatsDiskTotalBytes = lookLabelled "node_filesystem_size_bytes" "mountpoint" "/" nodeMetrics,
+          _hostStatsDiskAvailBytes = lookLabelled "node_filesystem_avail_bytes" "mountpoint" "/" nodeMetrics,
+          _hostStatsCpuCount = countCpus nodeMetrics,
+          _hostStatsScraped = not (Map.null nodeMetrics)
+        }
+
+emptyHostStats :: HostStats
+emptyHostStats = hostStatsFromMetrics Map.empty
+
+__collectBuilderStats ::
+  (Text -> M (Map Text Double)) ->
+  [MonitoringBuilderTarget] ->
+  M [BuilderStats]
+__collectBuilderStats scrapeTarget targets =
+  forConcurrently targets $ \MonitoringBuilderTarget {..} -> do
+    metrics <- scrapeTarget _monitoringBuilderTargetUrl
+    pure
+      BuilderStats
+        { _builderStatsName = _monitoringBuilderTargetName,
+          _builderStatsSystems = _monitoringBuilderTargetSystems,
+          _builderStatsMaxJobs = _monitoringBuilderTargetMaxJobs,
+          _builderStatsStats = hostStatsFromMetrics metrics
+        }
+
 data MonitoringDto = MonitoringDto
   { _monitoringDtoInstance :: InstanceStats,
     _monitoringDtoHost :: HostStats,
+    _monitoringDtoBuilders :: [BuilderStats],
     _monitoringDtoJobs :: JobStats
   }
   deriving stock (Eq, Show, Generic)
@@ -180,6 +206,18 @@ data HostStats = HostStats
   deriving stock (Eq, Show, Generic)
 
 instance ToJSON HostStats where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+data BuilderStats = BuilderStats
+  { _builderStatsName :: Text,
+    _builderStatsSystems :: [Text],
+    _builderStatsMaxJobs :: Int,
+    _builderStatsStats :: HostStats
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON BuilderStats where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 

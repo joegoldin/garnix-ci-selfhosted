@@ -181,7 +181,37 @@ in
           type = lib.types.nullOr lib.types.str;
           default = null;
           example = "http://127.0.0.1:9100/metrics";
-          description = "Where the self-host monitoring page scrapes host (node-exporter) metrics.";
+          description = "Legacy single-host node-exporter target. Used when monitoringBuilders is empty.";
+        };
+        monitoringBuilders = lib.mkOption {
+          default = [ ];
+          description = "Builder node-exporter targets shown on the self-host monitoring page.";
+          type = lib.types.listOf (
+            lib.types.submodule {
+              options = {
+                name = lib.mkOption {
+                  type = lib.types.str;
+                  description = "Builder display name.";
+                };
+                url = lib.mkOption {
+                  type = lib.types.str;
+                  example = "http://builder.example.com:9100/metrics";
+                  description = "Node-exporter metrics URL reachable from garnixServer.";
+                };
+                systems = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                  example = [ "aarch64-linux" ];
+                  description = "Nix systems this builder supports.";
+                };
+                maxJobs = lib.mkOption {
+                  type = lib.types.ints.unsigned;
+                  default = 0;
+                  description = "Maximum concurrent build jobs; zero means unspecified.";
+                };
+              };
+            }
+          );
         };
         sshHost = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -681,6 +711,9 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.nodeExporterUrl != null) [
           "GARNIX_NODE_EXPORTER_URL=${config.services.garnixServer.nodeExporterUrl}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.monitoringBuilders != [ ]) [
+          "GARNIX_MONITORING_BUILDERS=${builtins.toJSON config.services.garnixServer.monitoringBuilders}"
         ]
         ++ lib.optionals (config.services.garnixServer.sshHost != null) [
           "GARNIX_SSH_HOST=${config.services.garnixServer.sshHost}"

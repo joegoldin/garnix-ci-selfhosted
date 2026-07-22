@@ -207,7 +207,7 @@ const ReporterStaleness = ({ sampledAt }: { sampledAt: Date }) => {
   );
 };
 
-const MonitorContent = ({ history }: { history: ServerStatsHistory }) => {
+export const MonitorContent = ({ history }: { history: ServerStatsHistory }) => {
   const { current, samples } = history;
   if (!current && samples.length === 0) {
     return (
@@ -242,11 +242,6 @@ const MonitorContent = ({ history }: { history: ServerStatsHistory }) => {
                 )} GiB (${memPct}%)`
               : "—"
           }
-        />
-        <StatCard label="Samples" value={`${samples.length}`} />
-        <StatCard
-          label="Last update"
-          value={current ? current.sampled_at.toLocaleTimeString() : "—"}
         />
       </div>
       <div className={styles.charts}>

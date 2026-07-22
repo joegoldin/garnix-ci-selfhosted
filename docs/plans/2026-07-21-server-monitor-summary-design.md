@@ -41,9 +41,12 @@ capacity and resource pressure; it does not claim per-job builder attribution,
 which the current Nix interface cannot report reliably.
 
 On farum-azula, enable node-exporter and expose its metrics listener only to
-erdtree's stable public source address. The backend targets the existing private
-domain configuration rather than hard-coding a real domain in either public
-repository. Port 9100 must not become generally reachable from the internet.
+localhost, authenticated Tailscale IPv4 peers, and erdtree's stable public
+source address. The backend targets the existing private domain configuration,
+and the allowlist interpolates erdtree's public IP from the private secrets
+input rather than hard-coding either value in a public repository. The firewall
+and the systemd service independently enforce the allowlist. Port 9100 must not
+become generally reachable from the internet.
 
 ## Failure and security behavior
 
@@ -51,8 +54,8 @@ repository. Port 9100 must not become generally reachable from the internet.
   that builder.
 - Monitoring remains self-host-only and admin-only.
 - Metric target names and URLs are operator configuration, not request input.
-- The farum-azula firewall is the authority for the source restriction; the
-  exporter has no public allow-all rule.
+- The farum-azula firewall and systemd service boundary both enforce the source
+  restriction; the exporter has no public allow-all rule.
 
 ## Verification
 

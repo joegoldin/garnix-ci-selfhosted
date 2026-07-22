@@ -102,6 +102,9 @@ data Env = Env
     metricsScrapeUrl :: Text,
     -- | URL of the host node-exporter metrics (self-host monitoring page).
     nodeExporterUrl :: Text,
+    -- | Node-exporter targets displayed on the self-host monitoring page.
+    -- The legacy 'nodeExporterUrl' remains the single-host fallback.
+    monitoringBuilderTargets :: [MonitoringBuilderTarget],
     -- | External SSH host for reaching deployed servers' DNAT'd ports
     -- (GARNIX_SSH_HOST). "" when unset; surfaced via /api/config.
     sshHost :: Text,
@@ -173,6 +176,17 @@ data Env = Env
     terminalSessions :: MVar (Map Text Int)
   }
   deriving stock (Generic)
+
+data MonitoringBuilderTarget = MonitoringBuilderTarget
+  { _monitoringBuilderTargetName :: Text,
+    _monitoringBuilderTargetUrl :: Text,
+    _monitoringBuilderTargetSystems :: [Text],
+    _monitoringBuilderTargetMaxJobs :: Int
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON MonitoringBuilderTarget where
+  parseJSON = ourParseJSON
 
 data TestFeature
   = DevApi

@@ -766,6 +766,7 @@ test-suite spec
       Garnix.API.HostsSpec
       Garnix.API.KeysSpec
       Garnix.API.ModulesSpec
+      Garnix.API.MonitoringSpec
       Garnix.API.RunsSpec
       Garnix.API.TerminalSpec
       Garnix.Artifacts.ReaperSpec

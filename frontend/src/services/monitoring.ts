@@ -53,6 +53,20 @@ const hostSchema = z
     scraped: s.scraped,
   }));
 
+const builderSchema = z
+  .object({
+    name: z.string(),
+    systems: z.array(z.string()),
+    max_jobs: z.number(),
+    stats: hostSchema,
+  })
+  .transform((b) => ({
+    name: b.name,
+    systems: b.systems,
+    maxJobs: b.max_jobs,
+    stats: b.stats,
+  }));
+
 const recentBuildSchema = z
   .object({
     name: z.string(),
@@ -85,17 +99,23 @@ const monitoringSchema = z
   .object({
     instance: instanceSchema,
     host: hostSchema,
+    builders: z.array(builderSchema).default([]),
     jobs: jobsSchema,
   })
   .transform((m) => ({
     instance: m.instance,
     host: m.host,
+    builders:
+      m.builders.length > 0
+        ? m.builders
+        : [{ name: "host", systems: [], maxJobs: 0, stats: m.host }],
     jobs: m.jobs,
   }));
 
 export type Monitoring = z.infer<typeof monitoringSchema>;
 export type MonitoringInstance = Monitoring["instance"];
 export type MonitoringHost = Monitoring["host"];
+export type MonitoringBuilder = Monitoring["builders"][number];
 export type MonitoringJobs = Monitoring["jobs"];
 
 export const getMonitoring = async (): Promise<APIResult<Monitoring>> =>

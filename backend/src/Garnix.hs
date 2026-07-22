@@ -9,6 +9,7 @@ import Control.Exception qualified
 import Control.Exception.Safe qualified as Safe
 import Cradle qualified
 import Crypto.PubKey.RSA.Read (readRsaPem)
+import Data.Aeson qualified as Aeson
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Char8 qualified
 import Data.ByteString.Char8 qualified as BSC
@@ -304,6 +305,18 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   -- the ROOT path, not /metrics — so the default scrape URL has no /metrics.
   metricsScrapeUrl' <- maybe "http://127.0.0.1:8323/" cs <$> lookupEnv "GARNIX_METRICS_SCRAPE_URL"
   nodeExporterUrl' <- maybe "http://127.0.0.1:9100/metrics" cs <$> lookupEnv "GARNIX_NODE_EXPORTER_URL"
+  monitoringBuilderTargets' <-
+    lookupEnv "GARNIX_MONITORING_BUILDERS" >>= \case
+      Nothing -> pure [MonitoringBuilderTarget "host" nodeExporterUrl' [] 0]
+      Just encoded ->
+        case Aeson.eitherDecodeStrict' (BSC.pack encoded) of
+          Left err ->
+            Control.Exception.throwIO
+              $ Control.Exception.ErrorCall
+              $ "Invalid GARNIX_MONITORING_BUILDERS: "
+              <> err
+          Right [] -> pure [MonitoringBuilderTarget "host" nodeExporterUrl' [] 0]
+          Right targets -> pure targets
   sshHost' <- maybe "" cs <$> lookupEnv "GARNIX_SSH_HOST"
   -- garnix's own OIDC client, for deployments opting into `authentik: default`.
   defaultAuthentik' <- do
@@ -438,6 +451,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               hostingPublicIp = hostingPublicIp',
               metricsScrapeUrl = metricsScrapeUrl',
               nodeExporterUrl = nodeExporterUrl',
+              monitoringBuilderTargets = monitoringBuilderTargets',
               sshHost = sshHost',
               cacheUrl = cacheUrl',
               cachePublicKey = cachePublicKey',
