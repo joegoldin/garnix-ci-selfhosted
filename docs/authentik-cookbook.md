@@ -197,11 +197,9 @@ runtime; the plaintext never enters the nix store.
 
 ```nix
 modules = [
-  microvm.nixosModules.microvm
   garnix-ci.nixosModules.garnix-guest
   garnix-ci.nixosModules.garnix-authentik
   {
-    garnix.guest.sshPublicKey = "<YOUR HOSTING PUBLIC KEY>";
     garnix.authentik = {
       enable = true;
       publicUrl = "https://myapp.main.myrepo.myorg.apps.example.com";

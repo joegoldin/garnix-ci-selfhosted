@@ -1,54 +1,55 @@
 {
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
-  inputs.sops-nix = {
-    url = "github:Mic92/sops-nix";
-    inputs = {
-      nixpkgs.follows = "nixpkgs";
+    microvm = {
+      url = "github:microvm-nix/microvm.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
-  };
 
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-
-  inputs.treetop = {
-    url = "github:soenkehahn/treetop";
-    inputs = {
-      nixpkgs.follows = "nixpkgs";
-      flake-utils.follows = "flake-utils";
-      crane.follows = "crane";
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
-  };
 
-  inputs.crane = {
-    url = "github:ipetkov/crane";
-  };
+    flake-utils.url = "github:numtide/flake-utils";
 
-  inputs.comment = {
-    url = "github:garnix-io/comment";
-    inputs = {
-      nixpkgs.follows = "nixpkgs";
-      flake-utils.follows = "flake-utils";
-      crane.follows = "crane";
+    treetop = {
+      url = "github:soenkehahn/treetop";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
+        crane.follows = "crane";
+      };
     };
-  };
 
-  inputs.cradle = {
-    url = "github:garnix-io/cradle";
-    inputs = {
-      nixpkgs.follows = "nixpkgs";
-      flake-utils.follows = "flake-utils";
+    crane.url = "github:ipetkov/crane";
+
+    comment = {
+      url = "github:garnix-io/comment";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
+        crane.follows = "crane";
+      };
     };
-  };
 
-  inputs.treefmt-nix = {
-    url = "github:numtide/treefmt-nix";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
+    cradle = {
+      url = "github:garnix-io/cradle";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
+      };
+    };
 
-  inputs.terms-and-conditions = {
-    url = "github:garnix-io/terms-and-conditions";
-    inputs = {
-      nixpkgs.follows = "nixpkgs";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    terms-and-conditions = {
+      url = "github:garnix-io/terms-and-conditions";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
@@ -112,11 +113,11 @@
         system:
         let
           pkgs = import nixpkgs { inherit system overlays; };
-          lib = nixpkgs.lib;
+          inherit (nixpkgs) lib;
           namespace = prefix: attrSet: lib.mapAttrs' (name: value: { name = "${prefix}_${name}";inherit value; }) attrSet;
           subDirInputs = {
             inherit system pkgs flakeInputs self;
-            lib = nixpkgs.lib;
+            inherit (nixpkgs) lib;
           };
 
           treefmt = import ./nix/treefmt.nix subDirInputs;
@@ -153,7 +154,7 @@
           formatter = treefmt.wrapper;
 
           devShells.default = pkgs.mkShell {
-            shellHook = backend.shellHook;
+            inherit (backend) shellHook;
             buildInputs = [
               pkgs.just
               pkgs.nil
@@ -172,17 +173,22 @@
         }).nixosConfigurations
         # The action-runner VM the backend spec suite boots (Garnix.Action).
         // (import ./nix/tests/action-runner-vm.nix { inherit flakeInputs; }).nixosConfigurations;
-      nixosModules.self-hosted = import ./nix/modules/self-hosted.nix;
-      # Shared profile for garnix-hosted microVM guests: user-deployed
-      # nixosConfigurations must import this (together with
-      # microvm.nixosModules.microvm) so switch-to-configuration inside the
-      # guest keeps a fstab matching the provisioner's base guest
-      # (root/overlay volumes + virtiofs store share).
-      nixosModules.garnix-guest = import ./provisioner/guest-profile.nix;
-      # Optional: lock a deployed server behind Authentik/OIDC (oauth2-proxy +
-      # nginx forward-auth gate on :80). Import into a deployed config and set
-      # `garnix.authentik.*`. See provisioner/authentik-guard.nix.
-      nixosModules.garnix-authentik = import ./provisioner/authentik-guard.nix;
+      nixosModules = {
+        self-hosted = import ./nix/modules/self-hosted.nix;
+        # Complete profile for garnix-hosted microVM guests. It carries the
+        # pinned microvm.nix module as well as the Garnix guest conventions, so
+        # consuming repositories need only this one import.
+        garnix-guest = {
+          imports = [
+            flakeInputs.microvm.nixosModules.microvm
+            ./provisioner/guest-profile.nix
+          ];
+        };
+        # Optional: lock a deployed server behind Authentik/OIDC (oauth2-proxy
+        # + nginx forward-auth gate on :80). Import into a deployed config and
+        # set `garnix.authentik.*`. See provisioner/authentik-guard.nix.
+        garnix-authentik = import ./provisioner/authentik-guard.nix;
+      };
       # Mandatory for self-hosted consumers: opensearch/nixos-module.nix's
       # dashboards.package option defaults to pkgs.opensearch-dashboards,
       # which only exists via this overlay (nix/packages/opensearch-dashboards);

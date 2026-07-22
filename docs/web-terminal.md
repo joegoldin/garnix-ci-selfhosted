@@ -98,12 +98,15 @@ repository activation and guest reboot preserve terminal trust, while the CA
 private key never enters the guest.
 
 `garnix.guest.terminalCaPublicKey` defaults to
-`garnix.guest.sshPublicKey` for repository-flake evaluation compatibility. Do
-not treat that fallback as the deployed trust source: the provisioner supplies
-the real first-boot value and the backend refreshes the durable file. Existing
-hosted repositories must bump their `garnix-ci` lock and redeploy once so their
-guest configuration points sshd at the durable path; updating only the host
-services cannot rewrite a stale repository-locked guest module.
+`garnix.guest.sshPublicKey` for repository-flake evaluation compatibility, and
+the fork supplies a neutral default hosting public key. Operators of another
+instance must override `sshPublicKey` with their provisioner's public key. Do
+not treat the terminal-CA fallback as the deployed trust source: the
+provisioner supplies the real first-boot value and the backend refreshes the
+durable file. Existing hosted repositories must bump their `garnix-ci` lock and
+redeploy once so their guest configuration points sshd at the durable path;
+updating only the host services cannot rewrite a stale repository-locked guest
+module.
 
 ### CA rotation
 

@@ -10,7 +10,7 @@ import Garnix.Prelude
 import Garnix.TestHelpers (defaultCommitInfo, fromSingleton)
 import Garnix.TestHelpers.GithubInterface qualified as GH
 import Garnix.TestHelpers.Monad
-import Garnix.Types hiding (context, pending)
+import Garnix.Types hiding (context, logFile, pending)
 import Garnix.YamlConfig
 import Test.Hspec
 
@@ -265,7 +265,7 @@ spec = do
         actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 True) Nothing False False [] [] [] Nothing]
         roundtripTest actual
 
-      it "accepts an absolute server log file" $ do
+      it "accepts a custom absolute application log path" $ do
         let simpleServerConfig :: ByteString
             simpleServerConfig =
               cs
@@ -276,7 +276,9 @@ spec = do
                         deployment:
                           type: on-branch
                           branch: master
-                        logFile: /var/log/my-service.log
+                        applicationLog:
+                          enable: true
+                          path: /var/log/my-service.log
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
         actual
@@ -284,7 +286,7 @@ spec = do
             [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log"))]
         roundtripTest actual
 
-      it "rejects a relative server log file" $ do
+      it "enables the default application log path explicitly" $ do
         let simpleServerConfig :: ByteString
             simpleServerConfig =
               cs
@@ -295,11 +297,34 @@ spec = do
                         deployment:
                           type: on-branch
                           branch: master
-                        logFile: var/log/my-service.log
+                        applicationLog:
+                          enable: true
+                  |]
+        let actual =
+              (^. serverSection . to fromSingleton . logFile)
+                <$> decodeConfig simpleServerConfig
+        actual
+          `shouldBe` Right
+            (Just (ServerLogFile "/var/log/nginx/hello-access.log"))
+
+      it "rejects a relative application log path" $ do
+        let simpleServerConfig :: ByteString
+            simpleServerConfig =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: foo
+                        deployment:
+                          type: on-branch
+                          branch: master
+                        applicationLog:
+                          enable: true
+                          path: var/log/my-service.log
                   |]
         decodeConfig simpleServerConfig
           `shouldSatisfy` \case
-            Left err -> "logFile must be an absolute path" `isInfixOf` err
+            Left err -> "applicationLog.path must be an absolute path" `isInfixOf` err
             Right _ -> False
 
     context "artifacts section" $ do

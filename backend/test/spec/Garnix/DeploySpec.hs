@@ -180,7 +180,9 @@ servers:
         type: tcp
     domains:
       - db.example.test
-    logFile: /var/log/database.log
+    applicationLog:
+      enable: true
+      path: /var/log/database.log
 |]
             result <- Deprecated.withMockRepo flake runtimeYaml branch $ \_mockGithubRepo commit -> do
               withMockReturning #executeDeployPlanMock [] $ do
@@ -984,7 +986,7 @@ simpleFlake' description' =
     description = "#{description'}";
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
-    inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+    inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
 
     outputs = { self, nixpkgs }: {
 
@@ -1017,7 +1019,7 @@ flakeWithFailingBuilds =
   {
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
-    inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+    inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
 
     outputs = { self, nixpkgs }: {
       packages.x86_64-linux.failing = derivation {
@@ -1052,7 +1054,7 @@ flakeWithFailingActivation =
       {
         # If you update this, update also places where it matches.
         # Search for INNER_NIXPKGS_MATCHES
-        inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+        inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
 
         outputs = { self, nixpkgs }: {
 
@@ -1082,7 +1084,7 @@ flakeWithPersistenceAndConfig enable name (PackageName package) t =
   inputs = {
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
     garnix.url = "github:garnix-io/garnix-lib";
   };
 
@@ -1148,7 +1150,7 @@ flakeWithPersistence enable name (PackageName package) t =
   inputs = {
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
     garnix.url = "github:garnix-io/garnix-lib";
   };
 
@@ -1210,7 +1212,7 @@ makeMultiFlake packages = cs buildFile
     description = "simple description here";
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
-    inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+    inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
 
     outputs = { self, nixpkgs }: {
 

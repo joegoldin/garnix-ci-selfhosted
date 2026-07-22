@@ -13,11 +13,10 @@
 #   - sshd with the hosting public key for root and the garnix user;
 #     passwordless sudo for wheel (redeploys run `sudo switch-to-configuration`
 #     as the garnix user)
-{
-  lib,
-  config,
-  pkgs,
-  ...
+{ lib
+, config
+, pkgs
+, ...
 }:
 let
   # Resource reporter: one /proc read, a short CPU sample, and a POST (with a
@@ -74,7 +73,13 @@ in
   options.garnix.guest = {
     sshPublicKey = lib.mkOption {
       type = lib.types.str;
-      description = "Hosting SSH public key allowed for root and the garnix user.";
+      default = lib.removeSuffix "\n" (builtins.readFile ./hosting-public-key.pub);
+      defaultText = lib.literalExpression "builtins.readFile ./hosting-public-key.pub";
+      description = ''
+        Hosting SSH public key allowed for root and the garnix user. The fork's
+        bundled public key is the default; operators of another instance must
+        override it with their provisioner's hosting public key.
+      '';
     };
     terminalCaPublicKey = lib.mkOption {
       type = lib.types.str;
@@ -267,5 +272,11 @@ in
       };
       system.stateVersion = "25.11";
     }
+    (lib.mkIf config.services.nginx.enable {
+      # nginx's LogsDirectory is created/chowned when nginx starts. During a
+      # first activation, logrotate-checkconf otherwise races that preparation
+      # and its `su nginx nginx` rule cannot traverse /var/log/nginx.
+      systemd.services.logrotate-checkconf.after = [ "nginx.service" ];
+    })
   ];
 }

@@ -100,10 +100,11 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
   picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
   [Server deployments](#server-deployments-self-host-microvm-hosting).
-- **Live deployed-server logs** — an optional absolute `servers[].logFile`
-  path is followed over the existing private deploy SSH channel. The Servers
-  page's Logs modal shows deploy output and application output side by side,
-  with owner-gated API access and bounded process-local scrollback.
+- **Live deployed-server logs** — `servers[].applicationLog` is disabled by
+  default; enable it to follow its absolute guest `path` over the existing
+  private deploy SSH channel. The Servers page's Logs modal shows deploy output
+  and application output side by side, with owner-gated API access and bounded
+  process-local scrollback.
 - **Custom & vanity domains** — `garnix.yaml` `servers[].domains:` lets a
   hosted server answer on extra hostnames; operator wildcard bases
   (`services.garnixServer.extraHostingDomains`) and admin-registered
@@ -876,16 +877,17 @@ services.caddy.virtualHosts."https://".extraConfig = ''
 ```
 
 Guest contract: every deployed `nixosConfiguration` MUST import
-`microvm.nixosModules.microvm` and `garnix-ci.nixosModules.garnix-guest`
-(fixed volume/share/network conventions — 20 GiB root, 20 GiB writable store
-overlay, virtiofs read-only store, DHCP) and set `garnix.guest.sshPublicKey`
-to the instance's hosting public key (derived at service start into
-`/var/lib/garnix-provisioner/hosting.pub`). Keep the `garnix-ci` input current:
-the guest module must configure `TrustedUserCAKeys` with the durable terminal-CA
-path described below. `garnix.guest.terminalCaPublicKey` defaults to
-`sshPublicKey` only so repository flakes remain evaluable; the provisioner
-injects the actual terminal-CA public key for first boot, and the backend owns
-the durable copy after that. See
+`garnix-ci.nixosModules.garnix-guest`. This single composite module carries the
+pinned microvm.nix module and Garnix's fixed volume/share/network conventions
+(20 GiB root, 20 GiB writable store overlay, virtiofs read-only store, DHCP).
+The fork's neutral hosting public key is the default for
+`garnix.guest.sshPublicKey`; operators deploying another instance must override
+it with `/var/lib/garnix-provisioner/hosting.pub` from their host. Keep the
+`garnix-ci` input current: the guest module must configure `TrustedUserCAKeys`
+with the durable terminal-CA path described below.
+`garnix.guest.terminalCaPublicKey` defaults to `sshPublicKey` only so repository
+flakes remain evaluable; the provisioner injects the actual terminal-CA public
+key for first boot, and the backend owns the durable copy after that. See
 [`examples/hello-server/flake.nix`](examples/hello-server/flake.nix) for a
 complete user repo.
 
@@ -926,8 +928,9 @@ servers:
 
 ### View a deployed service log
 
-Set `logFile` to an absolute file path inside the guest to add a live service
-log beside the deployment output in the Servers page's **Logs** modal:
+Application logging is off by default. Enable it to add a live service log
+beside the deployment output in the Servers page's **Logs** modal. `path` is
+optional and defaults to `/var/log/nginx/hello-access.log`:
 
 ```yaml
 servers:
@@ -935,7 +938,9 @@ servers:
     deployment:
       type: on-branch
       branch: main
-    logFile: /var/log/my-service.log
+    applicationLog:
+      enable: true
+      path: /var/log/my-service.log
 ```
 
 After a successful deployment, the backend follows that file with a fixed
@@ -950,7 +955,13 @@ from the newest 10,000 lines in the file. Only a user who can already view the
 repository's server (the owner or an installed organization member) can call
 the log API.
 Deleting a server stops its collector; persistent redeploys replace the old
-buffer and converge a changed or removed `logFile` setting.
+buffer and converge a changed path or disabled `applicationLog` setting.
+
+The application remains responsible for creating and writing the configured
+file. For nginx guests, `garnix-guest` orders `logrotate-checkconf` after nginx
+so systemd prepares `/var/log/nginx` before logrotate validates its `su nginx
+nginx` rule. For another service, give its log directory explicit ownership
+and order any activation-time validator after the service that prepares it.
 
 Enable pre-warming with `services.garnixServer.provisionServerPool`, then set
 the exact available tiers with `services.garnixServer.serverPool` (for example,
@@ -1234,11 +1245,9 @@ gated by claims — see `docs/authentik-cookbook.md`):
 
 ```nix
 modules = [
-  microvm.nixosModules.microvm
   garnix-ci.nixosModules.garnix-guest
   garnix-ci.nixosModules.garnix-authentik
   {
-    garnix.guest.sshPublicKey = "<YOUR HOSTING PUBLIC KEY>";
     garnix.authentik = {
       enable = true;
       publicUrl = "https://app.main.myrepo.myorg.apps.example.com";

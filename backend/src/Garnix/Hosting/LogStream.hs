@@ -65,7 +65,7 @@ stopServerLogStream serverId = do
   streams <- view #serverLogStreams
   liftIO $ stopCollector streams (serverKey serverId) False
 
--- | Remove both collector and buffer, used when a redeploy removes logFile.
+-- | Remove collector and buffer when a redeploy disables applicationLog.
 forgetServerLogStream :: ServerId -> M ()
 forgetServerLogStream serverId = do
   streams <- view #serverLogStreams

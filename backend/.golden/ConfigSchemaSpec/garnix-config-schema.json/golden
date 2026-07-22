@@ -215,6 +215,20 @@
                     "items": {
                         "$comment": "servers",
                         "properties": {
+                            "applicationLog": {
+                                "$comment": "Optional application-log stream. Disabled by default; enable it to follow the configured absolute guest path over Garnix's private deploy SSH channel with bounded in-memory scrollback.\napplicationLog",
+                                "properties": {
+                                    "enable": {
+                                        "$comment": "Stream the configured application log in the Servers-page Logs modal.",
+                                        "type": "boolean"
+                                    },
+                                    "path": {
+                                        "$comment": "Absolute guest path to follow when application logging is enabled.",
+                                        "type": "string"
+                                    }
+                                },
+                                "type": "object"
+                            },
                             "authentik": {
                                 "$comment": "Set to \"default\" to have garnix drop its own OIDC (Authentik) credentials onto the deployed server at /var/garnix/keys/default-authentik.env, for use with the garnix-authentik guest module's mode = \"default\". The server is then gated by the exact same Authentik application (and entitlements) as garnix itself.",
                                 "type": "string"

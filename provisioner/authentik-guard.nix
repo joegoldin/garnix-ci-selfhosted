@@ -2,7 +2,7 @@
 # OIDC provider) with one import.
 #
 # Import this into a deployed nixosConfiguration (alongside
-# microvm.nixosModules.microvm + garnix-ci.nixosModules.garnix-guest) and point
+# garnix-ci.nixosModules.garnix-guest, which includes microvm.nix) and point
 # `garnix.authentik.upstream` at your own service. The module runs oauth2-proxy
 # (OIDC) plus an nginx forward-auth gate on port 80 (the port Traefik proxies
 # to), so every request must carry a valid Authentik session before it reaches
@@ -276,7 +276,7 @@ in
       clientID = if cfg.mode == "default" then null else cfg.clientId;
       oidcIssuerUrl = if cfg.mode == "default" then null else cfg.issuerUrl;
       redirectURL = if cfg.mode == "default" then null else "${cfg.publicUrl}/oauth2/callback";
-      scope = cfg.scope;
+      inherit (cfg) scope;
       reverseProxy = true; # honour X-Forwarded-* from the fronting proxy (the local nginx gate)
       # Only the loopback nginx gate talks to oauth2-proxy, so only trust
       # forwarded headers from loopback — otherwise oauth2-proxy trusts all

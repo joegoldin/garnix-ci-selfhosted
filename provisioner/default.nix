@@ -5,6 +5,7 @@
 # imported by path elsewhere and are unaffected by this default.nix.
 { lib
 , pkgs
+, self
 , system
 , ...
 }:
@@ -32,6 +33,17 @@ let
       ];
     }).config;
   guestProfileConfig = mkGuestProfileConfig { };
+  compositeGuestProfileConfig =
+    (lib.nixosSystem {
+      inherit system;
+      modules = [
+        self.nixosModules.garnix-guest
+        {
+          services.nginx.enable = true;
+          system.stateVersion = "25.11";
+        }
+      ];
+    }).config;
   statsHttpStub = pkgs.writeText "garnix-stats-http-stub.py" ''
     import http.server
     import pathlib
@@ -101,6 +113,20 @@ in
         "C /var/lib/garnix/terminal-ca.pub 0644 root root - /etc/ssh/garnix-hosting-ca.pub"
         guestProfileConfig.systemd.tmpfiles.rules;
       pkgs.runCommand "guest-profile-terminal-ca-tests" { } ''
+        touch "$out"
+      '';
+    guestProfileCompositeTests =
+      assert compositeGuestProfileConfig.microvm.hypervisor == "qemu";
+      assert
+      compositeGuestProfileConfig.garnix.guest.sshPublicKey
+      == "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJWojlZ6BC0rqPVmy4UcgVgTGXS9drL/o2wcbAEXoyf2 garnix-hosting";
+      assert builtins.elem
+        compositeGuestProfileConfig.garnix.guest.sshPublicKey
+        compositeGuestProfileConfig.users.users.garnix.openssh.authorizedKeys.keys;
+      assert builtins.elem
+        "nginx.service"
+        compositeGuestProfileConfig.systemd.services.logrotate-checkconf.after;
+      pkgs.runCommand "guest-profile-composite-tests" { } ''
         touch "$out"
       '';
     guestProfileStatsTests =

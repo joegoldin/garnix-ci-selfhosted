@@ -456,8 +456,9 @@ const ServerLogsModal = (props: {
               <div className={styles.logMessage}>{streamError}</div>
             ) : !stream?.configured ? (
               <div className={styles.logMessage}>
-                Add <code>logFile: /absolute/path/to/service.log</code> to this
-                server&apos;s <code>garnix.yaml</code> entry to stream it here.
+                Set <code>applicationLog.enable: true</code> in this
+                server&apos;s <code>garnix.yaml</code> entry to stream its
+                configured log path here.
               </div>
             ) : (
               <>

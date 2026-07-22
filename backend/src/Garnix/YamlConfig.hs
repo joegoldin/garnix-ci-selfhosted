@@ -23,6 +23,7 @@ module Garnix.YamlConfig
     IncrementalizeBuildsSection (..),
     ModuleSection (..),
     ServerSection (..),
+    ServerApplicationLog (..),
     ServerLogFile (..),
     ServerPort (..),
     ServerPortType (..),
@@ -285,14 +286,51 @@ instance HasCodec ServerPort where
 newtype ServerLogFile = ServerLogFile {getServerLogFile :: Text}
   deriving stock (Eq, Show, Generic)
 
+defaultServerLogFile :: ServerLogFile
+defaultServerLogFile = ServerLogFile "/var/log/nginx/hello-access.log"
+
 instance HasCodec ServerLogFile where
   codec = bimapCodec validateServerLogFile getServerLogFile textCodec
     where
       validateServerLogFile path
-        | not (isAbsolute (cs path)) = Left "logFile must be an absolute path"
-        | ".." `elem` splitDirectories (cs path) = Left "logFile must not contain '..' path components"
-        | T.any (`elem` ['\NUL', '\n', '\r']) path = Left "logFile must not contain NUL or newline characters"
+        | not (isAbsolute (cs path)) = Left "applicationLog.path must be an absolute path"
+        | ".." `elem` splitDirectories (cs path) = Left "applicationLog.path must not contain '..' path components"
+        | T.any (`elem` ['\NUL', '\n', '\r']) path = Left "applicationLog.path must not contain NUL or newline characters"
         | otherwise = Right (ServerLogFile path)
+
+data ServerApplicationLog = ServerApplicationLog
+  { _serverApplicationLogEnable :: Bool,
+    _serverApplicationLogPath :: ServerLogFile
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance Default ServerApplicationLog where
+  def = ServerApplicationLog False defaultServerLogFile
+
+instance HasCodec ServerApplicationLog where
+  codec =
+    object "applicationLog"
+      $ ServerApplicationLog
+      <$> optionalFieldWithDefault
+        "enable"
+        False
+        "Stream the configured application log in the Servers-page Logs modal."
+      .= _serverApplicationLogEnable
+      <*> optionalFieldWithDefault
+        "path"
+        defaultServerLogFile
+        "Absolute guest path to follow when application logging is enabled."
+      .= _serverApplicationLogPath
+
+resolveServerApplicationLog :: ServerApplicationLog -> Maybe ServerLogFile
+resolveServerApplicationLog ServerApplicationLog {..}
+  | _serverApplicationLogEnable = Just _serverApplicationLogPath
+  | otherwise = Nothing
+
+encodeServerApplicationLog :: Maybe ServerLogFile -> ServerApplicationLog
+encodeServerApplicationLog = \case
+  Nothing -> def
+  Just path -> ServerApplicationLog True path
 
 data ServerSection = ServerSection
   { _serverSectionConfiguration :: PackageName,
@@ -348,9 +386,15 @@ instance HasCodec ServerSection where
         []
         "Extra hostnames this server should also answer on (full FQDNs). A name under a configured base domain (the default apps domain or an operator/connected base) is wildcard-covered — no DNS action. Any other name is a bare custom domain and needs an A/CNAME record pointing at the garnix host (see the Servers page (i) menu). Each must be declared here (or in the Configure page) to be routed and get a cert."
       .= _serverSectionDomains
-      <*> optionalField
-        "logFile"
-        "Absolute path of a service log file to stream into the Servers-page Logs modal. Garnix follows this file over its private deploy SSH channel and retains bounded in-memory scrollback."
+      <*> optionalFieldWithDefaultWith
+        "applicationLog"
+        ( dimapCodec
+            resolveServerApplicationLog
+            encodeServerApplicationLog
+            (codec :: JSONCodec ServerApplicationLog)
+        )
+        Nothing
+        "Optional application-log stream. Disabled by default; enable it to follow the configured absolute guest path over Garnix's private deploy SSH channel with bounded in-memory scrollback."
       .= _serverSectionLogFile
 
 data DeploySection

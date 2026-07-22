@@ -63,7 +63,7 @@ data HostsAPI route = HostsAPI
     -- GET /api/hosts.
     _hostsAPIGetServerStats :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "stats" :> Get '[JSON] ServerStatsHistory,
     -- | Bounded, process-local application log stream collected from the
-    -- optional garnix.yaml servers[].logFile over private deploy SSH.
+    -- optional garnix.yaml servers[].applicationLog over private deploy SSH.
     _hostsAPIGetServerLogs :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "logs" :> Get '[JSON] ServerLogStream.ServerLogSnapshot
   }
   deriving (Generic)

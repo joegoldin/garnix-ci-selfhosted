@@ -1608,8 +1608,8 @@ data ServerToSpinUp = ServerToSpinUp
     tcpPorts :: [(Text, Int)],
     -- | garnix.yaml servers[].domains: extra hostnames the server answers on.
     domains :: [Text],
-    -- | garnix.yaml servers[].logFile: absolute guest file followed over the
-    -- private deploy SSH channel, with bounded control-plane memory.
+    -- | Resolved garnix.yaml servers[].applicationLog path: an absolute guest
+    -- file followed over private deploy SSH with bounded control-plane memory.
     logFile :: Maybe Text
   }
   deriving stock (Show, Eq, Generic)

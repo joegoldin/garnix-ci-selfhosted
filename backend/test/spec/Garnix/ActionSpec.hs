@@ -62,7 +62,7 @@ spec = do
                 {
                   # If you update this, update also places where it matches.
                   # Search for INNER_NIXPKGS_MATCHES
-                  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+                  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
                   outputs = { self, nixpkgs }: {
                     apps.x86_64-linux.test-action = {
                       type = "app";
@@ -201,7 +201,7 @@ spec = do
                 {
                   # If you update this, update also places where it matches.
                   # Search for INNER_NIXPKGS_MATCHES
-                  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11-small";
+                  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
                   outputs = { self, nixpkgs }: {
                     apps.x86_64-linux.test-action = {
                       type = "app";

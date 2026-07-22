@@ -10,7 +10,10 @@
         { nixpkgs.overlays = overlays; }
         ../nix/modules
         {
-          fileSystems."/".device = "foo";
+          fileSystems."/" = {
+            device = "foo";
+            fsType = "ext4";
+          };
           boot.loader.systemd-boot.enable = true;
           system.stateVersion = "25.11";
           # TODO: move into garnix.garnixServer.enable
@@ -41,7 +44,10 @@
         { nixpkgs.overlays = overlays; }
         ../nix/modules
         {
-          fileSystems."/".device = "foo";
+          fileSystems."/" = {
+            device = "foo";
+            fsType = "ext4";
+          };
           boot.loader.systemd-boot.enable = true;
           system.stateVersion = "25.11";
           garnix = {
@@ -68,7 +74,10 @@
         { nixpkgs.overlays = overlays; }
         ../nix/modules
         ({ lib, config, ... }: {
-          fileSystems."/".device = "foo";
+          fileSystems."/" = {
+            device = "foo";
+            fsType = "ext4";
+          };
           boot.loader.systemd-boot.enable = true;
           system.stateVersion = "25.11";
           garnix = {
