@@ -1,4 +1,7 @@
+import Image from "next/image";
 import { useState } from "react";
+import dashIcon from "@/components/icons/dash.svg";
+import crossIcon from "@/components/icons/cross.svg";
 import { Link } from "@/components/link";
 import { Text } from "@/components/text";
 import { WaitNode } from "@/services/waiting";
@@ -10,7 +13,10 @@ const WaitingNode = ({ node, depth }: { node: WaitNode; depth: number }) => {
 
   return (
     <li className={styles.node}>
-      <div className={styles.row} style={{ paddingLeft: `${depth * 20}px` }}>
+      <div
+        className={styles.row}
+        style={{ paddingLeft: `${12 + depth * 20}px` }}
+      >
         {expandable ? (
           <button
             type="button"
@@ -19,7 +25,11 @@ const WaitingNode = ({ node, depth }: { node: WaitNode; depth: number }) => {
             aria-expanded={expanded}
             onClick={() => setExpanded((value) => !value)}
           >
-            {expanded ? "−" : "+"}
+            <Image
+              src={expanded ? dashIcon : crossIcon}
+              alt={expanded ? "close" : "open"}
+              className={styles.toggleIcon}
+            />
           </button>
         ) : (
           <span className={styles.togglePlaceholder} aria-hidden="true" />

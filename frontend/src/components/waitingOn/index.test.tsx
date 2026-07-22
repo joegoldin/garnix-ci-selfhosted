@@ -34,7 +34,12 @@ describe("WaitingOn", () => {
 
     expect(screen.getByText("Waiting on")).toBeInTheDocument();
     expect(screen.queryByText("farum-azula")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /scarab/i }));
+    const expandButton = screen.getByRole("button", { name: /scarab/i });
+    expect(expandButton.parentElement).toHaveStyle({ paddingLeft: "12px" });
+    expect(screen.getByAltText("open")).toBeInTheDocument();
+
+    fireEvent.click(expandButton);
     expect(screen.getByText("farum-azula")).toBeInTheDocument();
+    expect(screen.getByAltText("close")).toBeInTheDocument();
   });
 });

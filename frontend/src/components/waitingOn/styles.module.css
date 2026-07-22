@@ -43,21 +43,32 @@
 .togglePlaceholder {
   width: 22px;
   min-width: 22px;
+  height: 22px;
 }
 
 .toggle {
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
   padding: 0;
   background: transparent;
-  color: var(--color-stone-600);
   cursor: pointer;
-  font: inherit;
-  font-size: 17px;
-  line-height: 1;
 }
 
 .toggle:hover {
-  color: var(--color-stone-900);
+  border-color: var(--color-stone-300);
+  background: var(--color-stone-100);
+}
+
+.toggle:focus-visible {
+  outline: 1px solid var(--color-stone-600);
+  outline-offset: 1px;
+}
+
+.toggleIcon {
+  display: block;
+  margin: 0;
 }
 
 .kind {
