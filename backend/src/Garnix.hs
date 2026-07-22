@@ -35,7 +35,7 @@ import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.LocalProvisioner (localProvisionerInterface)
 import Garnix.Monad
-import Garnix.Monad.Concurrency (forkM)
+import Garnix.Monad.Concurrency (forkDetachedM)
 import Garnix.Monad.Metrics (registerMetrics, serveMetrics)
 import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig, fromNetRcFile)
@@ -521,7 +521,7 @@ runWith opts = do
           env
           ( do
               resumable <- DB.getResumableOrphanedBuilds
-              forM_ resumable $ \build -> forkM $ Orchestrator.resumeBuild (build ^. reqUser) build
+              forM_ resumable $ \build -> forkDetachedM $ Orchestrator.resumeBuild (build ^. reqUser) build
               pure resumable
           )
           >>= \case
