@@ -7,6 +7,7 @@ module Garnix.Build.FodCheck
     __isBootstrapSeedBuilder,
     __patchCargoVendorBuildPhase,
     __patchGoVendorFlags,
+    __remoteStoreArgs,
     __isRemoteStoreConnectionError,
     __isSourceUnavailableError,
     __rebuildFod,
@@ -486,6 +487,13 @@ isHistoricalLdexplFailure stderr =
     && "HTTP error 404"
     `Text.isInfixOf` stderr
 
+-- | @--eval-store@ is a @nix build@ option, not a global remote-store option.
+-- Commands such as @nix derivation show/add@ reject it.
+__remoteStoreArgs :: Bool -> Text -> [Text]
+__remoteStoreArgs needsEvalStore url =
+  ["--store", url]
+    <> if needsEvalStore then ["--eval-store", "auto"] else []
+
 -- | Prepare and then rebuild a FOD on the same store. Nix's @--rebuild@
 -- refuses to check an output that is not already valid in that store, which
 -- is normally the case on a freshly provisioned self-host guest. The first
@@ -497,7 +505,7 @@ rebuildFod = do
     nixConfig <- view #userNixConfig
     remoteBuilderUrl <- __pickRemoteBuilder system
     builder <- getFodBuilder drvPath
-    let runNix remoteBuilder args stdin = do
+    let runNix needsEvalStore remoteBuilder args stdin = do
           stdinHandle <- forM stdin $ \contents -> do
             (readEnd, writeEnd) <- liftIO safeCreatePipe
             void . fork . liftIO $ LBS.hPutStr writeEnd contents >> hClose writeEnd
@@ -507,7 +515,7 @@ rebuildFod = do
                   & addArgs
                     ( args
                         <> case remoteBuilder of
-                          Just (url, _sshKey) -> ["--store", url, "--eval-store", "auto"]
+                          Just (url, _sshKey) -> __remoteStoreArgs needsEvalStore url
                           Nothing -> []
                     )
                   & addNixConfigEnvironment nixConfig
@@ -525,20 +533,20 @@ rebuildFod = do
                 ]
                   <> ["--rebuild" | shouldRebuild]
            in do
-                (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- runNix remoteBuilder commonArgs Nothing
+                (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- runNix True remoteBuilder commonArgs Nothing
                 pure $ case exitCode of
                   ExitFailure _ -> Left stderr
                   ExitSuccess -> Right stdout
         createCompatibilityDrv patchDerivation remoteBuilder = do
           (showExit, derivationJson, StderrRaw (cs -> showError)) <-
-            runNix remoteBuilder ["derivation", "show", cs drvPath :: Text] Nothing
+            runNix False remoteBuilder ["derivation", "show", cs drvPath :: Text] Nothing
           case showExit of
             ExitFailure _ -> pure $ Left showError
             ExitSuccess -> case patchDerivation derivationJson of
               Left patchError -> pure $ Left patchError
               Right patched -> do
                 (addExit, StdoutRaw (cs -> addedPath), StderrRaw (cs -> addError)) <-
-                  runNix remoteBuilder ["derivation", "add"] (Just $ Aeson.encode patched)
+                  runNix False remoteBuilder ["derivation", "add"] (Just $ Aeson.encode patched)
                 pure $ case addExit of
                   ExitFailure _ -> Left addError
                   ExitSuccess -> Right $ Text.strip addedPath <> "^*"
@@ -549,6 +557,7 @@ rebuildFod = do
         verifyHistoricalLdexpl remoteBuilder prepared strictError = do
           (sourceExit, StdoutRaw (cs -> nixpkgsPath), StderrRaw (cs -> sourceError)) <-
             runNix
+              False
               Nothing
               [ "eval",
                 "--impure",
@@ -562,7 +571,7 @@ rebuildFod = do
             ExitSuccess -> do
               let sourceFile = Text.strip nixpkgsPath <> "/pkgs/os-specific/linux/minimal-bootstrap/mes/ldexpl.c"
               (addExit, StdoutRaw (cs -> addedPath), StderrRaw (cs -> addError)) <-
-                runNix remoteBuilder ["store", "add", "--mode", "flat", "--name", "ldexpl.c", sourceFile] Nothing
+                runNix False remoteBuilder ["store", "add", "--mode", "flat", "--name", "ldexpl.c", sourceFile] Nothing
               case addExit of
                 ExitFailure _ -> pure $ Left $ strictError <> "\nCould not add current nixpkgs' authoritative ldexpl.c source:\n" <> addError
                 ExitSuccess -> case singleBuildOutputs prepared of

@@ -325,6 +325,12 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
     it "refuses ambiguous or unrelated Go flags" $ do
       __patchGoVendorFlags "-trimpath" `shouldBeM` Left "Go vendor FOD does not have one unambiguous -mod=vendor flag"
 
+  describe "__remoteStoreArgs" $ do
+    it "uses --eval-store only for nix build" $ do
+      let url = "ssh-ng://builder@example.test" :: Text
+      __remoteStoreArgs False url `shouldBeM` ["--store", url]
+      __remoteStoreArgs True url `shouldBeM` ["--store", url, "--eval-store", "auto"]
+
   describe "remote-store retries" $ do
     it "recognizes the production SSH reset without calling it a fetch failure" $ do
       let stderr =
