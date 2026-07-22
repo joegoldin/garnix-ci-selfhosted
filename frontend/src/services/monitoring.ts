@@ -114,7 +114,6 @@ const monitoringSchema = z
 
 export type Monitoring = z.infer<typeof monitoringSchema>;
 export type MonitoringInstance = Monitoring["instance"];
-export type MonitoringHost = Monitoring["host"];
 export type MonitoringBuilder = Monitoring["builders"][number];
 export type MonitoringJobs = Monitoring["jobs"];
 

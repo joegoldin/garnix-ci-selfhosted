@@ -97,7 +97,7 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
             )
             `shouldBeM` [["first", "second"], ["second"], ["second"]]
           Build.rerunBuilds mempty [firstBuild, secondBuild & reqUser .~ "another-user"] commitInfo
-            `shouldThrowM` (OtherError "Cannot share a rerun scope across different commits or authorization contexts")
+            `shouldThrowM` OtherError "Cannot share a rerun scope across different commits or authorization contexts"
           withMock
             #buildPkgMock
             ( \(_, _, _, _, _, _, build) -> do

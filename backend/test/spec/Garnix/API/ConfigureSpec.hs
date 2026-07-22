@@ -67,7 +67,7 @@ spec = do
         __verifyConfiguredDomain
           (const $ throw $ OtherError "resolver must not run")
           "not-configured.example"
-          `shouldThrowM` (OtherError "Domain is not Nix-configured")
+          `shouldThrowM` OtherError "Domain is not Nix-configured"
 
     it "rejects non-admin callers on configured-domain routes"
       $ local (#hostingDomain .~ "configured.example")
