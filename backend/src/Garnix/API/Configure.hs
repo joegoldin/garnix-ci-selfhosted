@@ -20,6 +20,7 @@ module Garnix.API.Configure
     ConnectedDomainDto (..),
     AddDomainDto (..),
     RepoRefDto (..),
+    __verifyConfiguredDomain,
   )
 where
 
@@ -41,46 +42,53 @@ data ConfigureAPI route = ConfigureAPI
     _configureAPISetDefault ::
       route
         :- "default"
-          :> ReqBody '[JSON] SetTimeoutDto
-          :> Put '[JSON] NoContent,
+        :> ReqBody '[JSON] SetTimeoutDto
+        :> Put '[JSON] NoContent,
     _configureAPISetRepo ::
       route
         :- "repo"
-          :> Capture "owner" GhRepoOwner
-          :> Capture "repo" GhRepoName
-          :> ReqBody '[JSON] SetTimeoutDto
-          :> Put '[JSON] NoContent,
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> ReqBody '[JSON] SetTimeoutDto
+        :> Put '[JSON] NoContent,
     _configureAPIDeleteRepo ::
       route
         :- "repo"
-          :> Capture "owner" GhRepoOwner
-          :> Capture "repo" GhRepoName
-          :> Delete '[JSON] NoContent,
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> Delete '[JSON] NoContent,
     _configureAPISetArtifactDefaults ::
       route
         :- "artifacts"
-          :> "default"
-          :> ReqBody '[JSON] SetArtifactDefaultsDto
-          :> Put '[JSON] NoContent,
+        :> "default"
+        :> ReqBody '[JSON] SetArtifactDefaultsDto
+        :> Put '[JSON] NoContent,
     _configureAPISetArtifactRepo ::
       route
         :- "artifacts"
-          :> "repo"
-          :> Capture "owner" GhRepoOwner
-          :> Capture "repo" GhRepoName
-          :> ReqBody '[JSON] SetArtifactRepoDto
-          :> Put '[JSON] NoContent,
+        :> "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> ReqBody '[JSON] SetArtifactRepoDto
+        :> Put '[JSON] NoContent,
     _configureAPIDeleteArtifactRepo ::
       route
         :- "artifacts"
-          :> "repo"
-          :> Capture "owner" GhRepoOwner
-          :> Capture "repo" GhRepoName
-          :> Delete '[JSON] NoContent,
+        :> "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> Delete '[JSON] NoContent,
     _configureAPIListDomains ::
       route :- "domains" :> Get '[JSON] [ConnectedDomainDto],
     _configureAPIAddDomain ::
       route :- "domains" :> ReqBody '[JSON] AddDomainDto :> Post '[JSON] ConnectedDomainDto,
+    _configureAPIVerifyConfiguredDomain ::
+      route
+        :- "domains"
+        :> "configured"
+        :> "verify"
+        :> ReqBody '[JSON] AddDomainDto
+        :> Post '[JSON] ConnectedDomainDto,
     _configureAPIVerifyDomain ::
       route :- "domains" :> Capture "id" Int64 :> "verify" :> Post '[JSON] ConnectedDomainDto,
     _configureAPIDeleteDomain ::
@@ -217,13 +225,14 @@ instance ToJSON SetArtifactRepoDto where
 instance FromJSON SetArtifactRepoDto where
   parseJSON = ourParseJSON
 
--- | A registered connected domain (operator-owned base or single custom host)
--- and whether its DNS-points-here verification has passed.
+-- | A configured or registered hosting domain and whether its
+-- DNS-points-here verification has passed. Configured rows have no database ID.
 data ConnectedDomainDto = ConnectedDomainDto
-  { _connectedDomainDtoId :: Int64,
+  { _connectedDomainDtoId :: Maybe Int64,
     _connectedDomainDtoDomain :: Text,
     _connectedDomainDtoIsWildcard :: Bool,
-    _connectedDomainDtoVerified :: Bool
+    _connectedDomainDtoVerified :: Bool,
+    _connectedDomainDtoNixConfigured :: Bool
   }
   deriving stock (Eq, Show, Generic)
 
@@ -318,12 +327,33 @@ configureAPI auth =
       _configureAPIListDomains = do
         requireSelfHostConfig auth
         rows <- DB.getConnectedDomains
-        pure [ConnectedDomainDto cid d w (isJust v) | (cid, d, w, v) <- rows],
+        configured <- configuredDomainNames
+        configuredVerifications <- DB.getConfiguredDomainVerifications
+        let configuredDtos =
+              [ ConnectedDomainDto
+                  Nothing
+                  domain
+                  True
+                  (isJust $ lookup domain configuredVerifications)
+                  True
+                | domain <- configured
+              ]
+            registeredDtos =
+              [ ConnectedDomainDto (Just cid) domain wildcard (isJust verifiedAt) False
+                | (cid, domain, wildcard, verifiedAt) <- rows,
+                  domain `notElem` configured
+              ]
+        pure $ configuredDtos <> registeredDtos,
       _configureAPIAddDomain = \dto -> do
         requireSelfHostConfig auth
         let d = _addDomainDtoDomain dto
+        configured <- configuredDomainNames
+        when (d `elem` configured) $ throw $ OtherError "Domain is already Nix-configured"
         cid <- DB.addConnectedDomain d True
-        pure $ ConnectedDomainDto cid d True False,
+        pure $ ConnectedDomainDto (Just cid) d True False False,
+      _configureAPIVerifyConfiguredDomain = \dto -> do
+        requireSelfHostConfig auth
+        __verifyConfiguredDomain resolvesToHostingIp (_addDomainDtoDomain dto),
       _configureAPIVerifyDomain = \cid -> do
         requireSelfHostConfig auth
         rows <- DB.getConnectedDomains
@@ -335,7 +365,7 @@ configureAPI auth =
             let probe = if w then "garnix-verify." <> d else d
             ok <- resolvesToHostingIp probe
             when ok $ DB.markConnectedDomainVerified cid
-            pure $ ConnectedDomainDto cid d w (ok || isJust v),
+            pure $ ConnectedDomainDto (Just cid) d w (ok || isJust v) False,
       _configureAPIDeleteDomain = \cid -> do
         requireSelfHostConfig auth
         DB.deleteConnectedDomain cid
@@ -352,6 +382,21 @@ configureAPI auth =
     -- would make the reaper delete rows the moment they are created.)
     clamp :: Int32 -> Int32
     clamp = min 32767 . max 0
+
+configuredDomainNames :: M [Text]
+configuredDomainNames = do
+  primary <- view #hostingDomain
+  extras <- view #extraHostingDomains
+  pure $ nub $ filter (/= "") (primary : extras)
+
+__verifyConfiguredDomain :: (Text -> M Bool) -> Text -> M ConnectedDomainDto
+__verifyConfiguredDomain resolver domain = do
+  configured <- configuredDomainNames
+  unless (domain `elem` configured) $ throw $ OtherError "Domain is not Nix-configured"
+  prior <- lookup domain <$> DB.getConfiguredDomainVerifications
+  ok <- resolver ("garnix-verify." <> domain)
+  when ok $ DB.markConfiguredDomainVerified domain
+  pure $ ConnectedDomainDto Nothing domain True (ok || isJust prior) True
 
 toLockedArtifactBuildDto :: Artifacts.ArtifactRow -> LockedArtifactBuildDto
 toLockedArtifactBuildDto row =

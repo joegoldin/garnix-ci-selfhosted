@@ -1826,6 +1826,23 @@ markConnectedDomainVerified :: Int64 -> M ()
 markConnectedDomainVerified cid =
   void $ pgExec [pgSQL|UPDATE connected_domains SET verified_at = now() WHERE id = ${cid}|]
 
+-- | Durable DNS verification for read-only bases supplied by Nix config. This
+-- table intentionally does not participate in routing; configured bases are
+-- routable only while they remain in the backend environment.
+getConfiguredDomainVerifications :: M [(Text, UTCTime)]
+getConfiguredDomainVerifications =
+  pgQuery [pgSQL|SELECT domain, verified_at FROM configured_domain_verifications ORDER BY domain|]
+
+markConfiguredDomainVerified :: Text -> M ()
+markConfiguredDomainVerified domain =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO configured_domain_verifications (domain)
+        VALUES (${domain})
+        ON CONFLICT (domain) DO NOTHING
+      |]
+
 -- * Server pool
 
 newServerInPool :: ServerTier -> M PreprovisionedServerId

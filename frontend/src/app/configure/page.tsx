@@ -29,6 +29,7 @@ import {
   setRepoArtifactSettings,
   setRepoBuildTimeout,
   verifyConnectedDomain,
+  verifyConfiguredDomain,
 } from "@/services/configure";
 import {
   artifactLatestZipUrl,
@@ -50,7 +51,7 @@ const minutesToHours = (m: number | null): string =>
   m == null ? "" : String(+(m / 60).toFixed(2));
 
 const Page = () => {
-  const { githubAppName, giteaUrl, selfHostMode, hostingBases } = useConfig();
+  const { githubAppName, giteaUrl, selfHostMode } = useConfig();
   const settings = useLoading(getConfigureSettings);
   const domains = useLoading(getConnectedDomains);
   const repos = useLoading(getBuiltRepos);
@@ -90,11 +91,11 @@ const Page = () => {
           </Text>
           <Text className={styles.help}>
             Cap how long a build may run before it is stopped. The cap applies
-            to both the evaluation and build phases, including the pre-build
-            nix commands (garnix config eval, attribute discovery, flake
-            metadata) — so a stuck evaluation fails instead of pending forever.
-            Defaults to 1 hour when left empty; enter 0 for no limit. Lowering
-            a limit also cancels any in-progress build already past it.
+            to both the evaluation and build phases, including the pre-build nix
+            commands (garnix config eval, attribute discovery, flake metadata) —
+            so a stuck evaluation fails instead of pending forever. Defaults to
+            1 hour when left empty; enter 0 for no limit. Lowering a limit also
+            cancels any in-progress build already past it.
           </Text>
           {settings.loading ? (
             <Loading />
@@ -151,7 +152,6 @@ const Page = () => {
           ) : (
             <ConnectedDomainsSettings
               domains={domains.data.data}
-              hostingBases={hostingBases}
               reload={domains.reload}
             />
           )}
@@ -164,7 +164,8 @@ const Page = () => {
             Repositories
           </Text>
           <Text className={styles.help}>
-            Every repository garnix has built for — jump to a repo&apos;s builds.
+            Every repository garnix has built for — jump to a repo&apos;s
+            builds.
           </Text>
           {repos.loading ? (
             <Loading />
@@ -315,24 +316,15 @@ const BuildTimeoutSettings = ({
   );
 };
 
-const ConnectedDomainsSettings = ({
+export const ConnectedDomainsSettings = ({
   domains,
-  hostingBases,
   reload,
 }: {
   domains: Array<ConnectedDomain>;
-  hostingBases: Array<string>;
   reload: () => void;
 }) => {
   const [newDomain, setNewDomain] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  // Operator wildcard bases (default hosting domain + nix extraHostingDomains)
-  // shown read-only. Exclude any that are also in the editable registry so a
-  // verified connected domain isn't listed twice.
-  const operatorBases = hostingBases.filter(
-    (b) => !domains.some((d) => d.domain === b),
-  );
-
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     await fn();
@@ -348,10 +340,17 @@ const ConnectedDomainsSettings = ({
       setNewDomain("");
     });
   };
-  const verify = (d: ConnectedDomain) =>
-    run(() => verifyConnectedDomain(d.id));
-  const remove = (d: ConnectedDomain) =>
-    run(() => deleteConnectedDomain(d.id));
+  const verify = (d: ConnectedDomain) => {
+    if (d.nix_configured) return run(() => verifyConfiguredDomain(d.domain));
+    const id = d.id;
+    if (id == null) return;
+    return run(() => verifyConnectedDomain(id));
+  };
+  const remove = (d: ConnectedDomain) => {
+    const id = d.id;
+    if (id == null || d.nix_configured) return;
+    return run(() => deleteConnectedDomain(id));
+  };
 
   return (
     <div className={styles.timeout}>
@@ -368,24 +367,21 @@ const ConnectedDomainsSettings = ({
         </Button>
       </div>
 
-      {domains.length === 0 && operatorBases.length === 0 ? (
+      {domains.length === 0 ? (
         <Text className={styles.help}>No connected domains yet.</Text>
       ) : (
         <ul className={styles.overrideList}>
-          {operatorBases.map((b) => (
-            <li key={`base-${b}`} className={styles.overrideRow}>
-              <span className={styles.overrideRepo}>{b}</span>
-              <span className={`${styles.badge} ${styles.badgeBase}`}>
-                wildcard base
-              </span>
-              <span className={styles.overrideActions}>
-                <span className={styles.readonlyNote}>nix-configured</span>
-              </span>
-            </li>
-          ))}
           {domains.map((d) => (
-            <li key={d.id} className={styles.overrideRow}>
+            <li
+              key={`${d.nix_configured ? "configured" : "connected"}-${d.domain}`}
+              className={styles.overrideRow}
+            >
               <span className={styles.overrideRepo}>{d.domain}</span>
+              {d.nix_configured && (
+                <span className={`${styles.badge} ${styles.badgeBase}`}>
+                  wildcard base
+                </span>
+              )}
               <span
                 className={`${styles.badge} ${
                   d.verified ? styles.badgeVerified : styles.badgeUnverified
@@ -394,20 +390,27 @@ const ConnectedDomainsSettings = ({
                 {d.verified ? "resolves here" : "not verified"}
               </span>
               <span className={styles.overrideActions}>
-                <Button
-                  style="secondary"
-                  onClick={() => verify(d)}
-                  loading={busy}
-                >
-                  Verify
-                </Button>
-                <Button
-                  style="warning"
-                  onClick={() => remove(d)}
-                  loading={busy}
-                >
-                  Delete
-                </Button>
+                {d.nix_configured && (
+                  <span className={styles.readonlyNote}>nix-configured</span>
+                )}
+                {!d.verified && (
+                  <Button
+                    style="secondary"
+                    onClick={() => verify(d)}
+                    loading={busy}
+                  >
+                    Verify
+                  </Button>
+                )}
+                {!d.nix_configured && d.id != null && (
+                  <Button
+                    style="warning"
+                    onClick={() => remove(d)}
+                    loading={busy}
+                  >
+                    Delete
+                  </Button>
+                )}
               </span>
             </li>
           ))}
@@ -580,15 +583,9 @@ const ArtifactSettings = ({
                 {o.repoUser}/{o.repoName}
               </span>
               <span className={styles.overrideValue}>
-                {o.retentionDays == null
-                  ? "inherit"
-                  : `${o.retentionDays}d`}{" "}
-                · keep latest:{" "}
-                {o.keepLatest == null
-                  ? "inherit"
-                  : o.keepLatest
-                    ? "on"
-                    : "off"}
+                {o.retentionDays == null ? "inherit" : `${o.retentionDays}d`} ·
+                keep latest:{" "}
+                {o.keepLatest == null ? "inherit" : o.keepLatest ? "on" : "off"}
               </span>
               <span className={styles.overrideActions}>
                 <Button style="secondary" onClick={() => editOverride(o)}>

@@ -189,6 +189,8 @@ truncateDBMNoInsert = do
           cache_store_hashes,
           cache_store_hash_tags,
           repo_config,
+          connected_domains,
+          configured_domain_verifications,
           modules,
           module_user_repo,
           module_values,

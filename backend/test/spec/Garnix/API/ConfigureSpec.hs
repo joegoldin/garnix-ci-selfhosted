@@ -4,8 +4,9 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Lens (key, _String)
 import Garnix.API.Configure
+import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts qualified as Artifacts
-import Garnix.Monad (ArtifactBucket (..), M)
+import Garnix.Monad (ArtifactBucket (..), M, throw)
 import Garnix.Prelude
 import Garnix.TestHelpers (testBuild, truncateDBM)
 import Garnix.TestHelpers.Monad
@@ -22,6 +23,60 @@ import Test.Hspec
 
 spec :: Spec
 spec = do
+  describe "Garnix.API.Configure (domains)" $ inM $ beforeM_ truncateDBM $ do
+    it "lists configured and manual domains once with durable status"
+      $ local
+        ( (#hostingDomain .~ "configured.example")
+            . (#extraHostingDomains .~ ["extra.example"])
+        )
+      $ asAdmin
+      $ \api -> do
+        manualId <- DB.addConnectedDomain "manual.example" True
+        duplicateId <- DB.addConnectedDomain "extra.example" True
+        DB.markConnectedDomainVerified duplicateId
+        DB.markConfiguredDomainVerified "configured.example"
+
+        domains <- _configureAPIListDomains api
+
+        map
+          ( \domain ->
+              ( _connectedDomainDtoId domain,
+                _connectedDomainDtoDomain domain,
+                _connectedDomainDtoVerified domain,
+                _connectedDomainDtoNixConfigured domain
+              )
+          )
+          domains
+          `shouldBeM` [ (Nothing, "configured.example", True, True),
+                        (Nothing, "extra.example", False, True),
+                        (Just manualId, "manual.example", False, False)
+                      ]
+
+    it "persists successful configured-domain verification and rejects other names"
+      $ local
+        ( (#hostingDomain .~ "configured.example")
+            . (#extraHostingDomains .~ [])
+        )
+      $ do
+        verified <- __verifyConfiguredDomain (const $ pure True) "configured.example"
+        _connectedDomainDtoVerified verified `shouldBeM` True
+
+        stillVerified <- __verifyConfiguredDomain (const $ pure False) "configured.example"
+        _connectedDomainDtoVerified stillVerified `shouldBeM` True
+
+        __verifyConfiguredDomain
+          (const $ throw $ OtherError "resolver must not run")
+          "not-configured.example"
+          `shouldThrowM` (OtherError "Domain is not Nix-configured")
+
+    it "rejects non-admin callers on configured-domain routes"
+      $ local (#hostingDomain .~ "configured.example")
+      $ asUser FreeSubscription
+      $ \api -> do
+        _configureAPIListDomains api `shouldThrowM` Unauthorized
+        _configureAPIVerifyConfiguredDomain api (AddDomainDto "configured.example")
+          `shouldThrowM` Unauthorized
+
   describe "Garnix.API.Configure (artifacts)" $ inM $ beforeM_ truncateDBM $ do
     it "roundtrips the default artifact settings through the handlers" $ asAdmin $ \api -> do
       _configureAPISetArtifactDefaults api (SetArtifactDefaultsDto 7 True)

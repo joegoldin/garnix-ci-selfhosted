@@ -1082,13 +1082,18 @@ menu can render exact `A`-record instructions for bare custom domains;
 without it, the menu only offers the CNAME-to-a-garnix-domain option (fine
 for subdomains — apex domains need the IP).
 
-**Connected domains (Configure page, admin-only).** Register a domain
-without touching nix: add it, point its DNS at garnix (`A`, `CNAME`, or a
-wildcard record, as appropriate), then click **Verify**. Verification is a
-**DNS-points-here** check — an A/wildcard lookup confirming the domain
-already resolves to the host — not a TXT token or ownership challenge. Once
-verified, the domain joins the known bases above, so any `servers[].domains`
-entry under it becomes wildcard-covered with no further DNS changes.
+**Connected domains (Configure page, admin-only).** The page lists both
+Nix-configured wildcard bases and domains registered at runtime. Every row
+shows its DNS status; unverified rows have a **Verify** button, while verified
+rows keep their successful status across restarts and no longer show the
+button. Nix-configured rows are read-only. To add another domain without
+touching Nix, register it, point its DNS at garnix (`A`, `CNAME`, or a wildcard
+record, as appropriate), then click **Verify**. Verification is a
+**DNS-points-here** check — an A/wildcard lookup confirming the domain already
+resolves to the host — not a TXT token or ownership challenge. Once a
+registered domain is verified, it joins the known bases above, so any
+`servers[].domains` entry under it becomes wildcard-covered with no further
+DNS changes.
 
 **Servers page (i) menu.** Each running server's controls include an **(i)**
 button listing its declared domains and, per domain, the exact record to set
