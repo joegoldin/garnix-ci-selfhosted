@@ -6,6 +6,7 @@ module Garnix.Hosting.Deploy
     redeployServer,
     checkDeployPlan,
     statsEnvContents,
+    parseLoginUsers,
   )
 where
 
@@ -671,7 +672,7 @@ parseLoginUsers raw =
     garnixIfPresent = ["garnix" | any ((== Just "garnix") . listToMaybe) entries]
     loginUser fields = case fields of
       (name : _ : _ : _ : _ : _ : shell : _)
-        | not (hasNologinShell shell) -> Just name
+        | name /= "root" && not (hasNologinShell shell) -> Just name
       _ -> Nothing
     hasNologinShell shell =
       "nologin" `T.isSuffixOf` shell || "false" `T.isSuffixOf` shell
