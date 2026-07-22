@@ -13,10 +13,11 @@
 #   - sshd with the hosting public key for root and the garnix user;
 #     passwordless sudo for wheel (redeploys run `sudo switch-to-configuration`
 #     as the garnix user)
-{ lib
-, config
-, pkgs
-, ...
+{
+  lib,
+  config,
+  pkgs,
+  ...
 }:
 let
   # Resource reporter: one /proc read, a short CPU sample, and a POST (with a
@@ -207,14 +208,15 @@ in
           PasswordAuthentication = false;
           KbdInteractiveAuthentication = false;
         };
-        # The deploy drops /var/garnix/keys/authorized_keys at RUNTIME when a
-        # server opts in via authorizeDeployerGithubKeys / authorizedSSHKeys
-        # (copyAuthorizedKeys), so sshd must read it at auth time — scoped to the
-        # garnix user only. (authorizedKeys.keyFiles would read it at build time,
-        # which both breaks pure eval and can never see the runtime file.) sshd
-        # tolerates the file being absent: the garnix user stays login-closed
-        # until it exists. Declare your own login users in the guest config for
-        # the user-module pattern.
+        # The NixOS-managed key file always carries the standing hosting key the
+        # backend needs for deploys and post-activation account discovery. The
+        # deploy additionally drops /var/garnix/keys/authorized_keys at RUNTIME
+        # when a server opts into deployer/explicit human keys, so sshd must read
+        # both paths at auth time — scoped to the garnix user only.
+        # (authorizedKeys.keyFiles would read the runtime path at build time,
+        # which both breaks pure eval and can never see the delivered file.)
+        # Declare your own login users in the guest config for the user-module
+        # pattern.
         # Trust the DEDICATED web-terminal certificate authority (finding H3) as a
         # user-certificate authority — NOT the hosting/deploy key. This lets the
         # backend mint short-lived, per-session SSH certificates (signed by the
@@ -230,7 +232,7 @@ in
         extraConfig = ''
           TrustedUserCAKeys /var/lib/garnix/terminal-ca.pub
           Match User garnix
-            AuthorizedKeysFile .ssh/authorized_keys /var/garnix/keys/authorized_keys
+            AuthorizedKeysFile %h/.ssh/authorized_keys /etc/ssh/authorized_keys.d/%u /var/garnix/keys/authorized_keys
           Match all
         '';
       };

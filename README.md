@@ -86,9 +86,11 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **SSH into deployed servers + extra ports** — `garnix.yaml` `servers[]` gains
   `exposeSSH` (public DNAT), `authorizeDeployerGithubKeys`, `authorizedSSHKeys`,
   and `ports`; reach guests via tailscale, ProxyJump, or DNAT, and expose extra
-  http/tcp ports. The guest's `garnix` user is login-closed and password auth is
-  off by default. The Servers page also provides an authenticated browser
-  terminal using short-lived certificates from a dedicated SSH CA, separate
+  http/tcp ports. Password auth is off, and direct human SSH to the guest's
+  `garnix` user is closed until explicit human keys are delivered; the standing
+  hosting key remains authorized for backend deploys. The Servers page also
+  provides an authenticated browser terminal as `garnix` or any captured guest
+  login user, using short-lived certificates from a dedicated SSH CA separate
   from the hosting/deploy key. See
   [SSH into a deployed server](#ssh-into-a-deployed-server-and-expose-extra-ports).
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
@@ -934,13 +936,18 @@ servers:
       - { name: db,  port: 5432, type: tcp }
 ```
 
-**Hardened by default.** The guest's `garnix` user is the deploy identity, not a
-login account: password authentication is disabled (`PasswordAuthentication no`,
-`KbdInteractiveAuthentication no`), root is key-only, and the `garnix` user has
-**no authorized keys** unless you opt in. It only becomes loginable when you set
-`authorizeDeployerGithubKeys: true` and/or list `authorizedSSHKeys` (garnix then
-writes `/var/garnix/keys/authorized_keys` at deploy time). Once authorized,
-three ways to reach it, shown with copyable commands on the **Servers** page:
+**Hardened by default.** Password authentication is disabled
+(`PasswordAuthentication no`, `KbdInteractiveAuthentication no`) and root is
+key-only. The `garnix` account always authorizes the operator-controlled hosting
+key in NixOS's managed key file so the backend can activate configurations,
+redeploy, and discover login accounts after activation. It has **no human
+authorized keys** unless you set `authorizeDeployerGithubKeys: true` and/or list
+`authorizedSSHKeys`; those opt-ins write
+`/var/garnix/keys/authorized_keys` at deploy time. The authenticated browser
+terminal is separate: its short-lived terminal-CA certificate may log in as
+`garnix` or another account captured from the guest. Once human keys are
+authorized, three direct-SSH routes are shown with copyable commands on the
+**Servers** page:
 
 - **Tailscale** — advertise the guest subnet from the host
   (`services.tailscale.useRoutingFeatures = "server"` +
