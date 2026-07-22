@@ -39,6 +39,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
   margin-bottom: 24px;
 }
 
@@ -46,13 +47,11 @@
   margin-bottom: 0;
 }
 
-.filters {
+.headerLeft {
   display: flex;
-  margin-bottom: 16px;
-}
-
-.filters > * {
-  margin-right: 10px;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .link {

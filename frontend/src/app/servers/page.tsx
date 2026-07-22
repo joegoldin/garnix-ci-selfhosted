@@ -32,14 +32,19 @@ const statusToColor: Record<RunningServer["status"], string> = {
 const Page = () => {
   const { sshHost } = useConfig();
   const serversResult = useLoading(getRunningServers, { poll: fromSecs(5) });
+  const filters = useFilters();
   if (serversResult.loading) return null;
   // Root-relative: both upstream and the self-host docs mirror serve /docs.
   const hostingDocs = "/docs/hosting/introduction";
+  const servers = serversResult.data.ok ? serversResult.data.data : [];
   return (
     <div className={styles.container}>
-      <Text type="h1" className={styles.h1}>
-        Servers
-      </Text>
+      <div className={styles.header}>
+        <Text type="h1">Servers</Text>
+        {servers.length > 0 && (
+          <ServerFilters servers={servers} {...filters} />
+        )}
+      </div>
       <div className={styles.section}>
         {match(serversResult.data)
           .with(Err(P.select()), (error) => error.message)
@@ -57,6 +62,7 @@ const Page = () => {
             <ServersTable
               servers={servers}
               sshHost={sshHost}
+              filters={filters}
               onRequestReload={serversResult.reload}
             />
           ))
@@ -225,9 +231,9 @@ const RedeployButton = ({
 const ServersTable = (props: {
   servers: Array<RunningServer>;
   sshHost: string;
+  filters: ReturnType<typeof useFilters>;
   onRequestReload: () => void;
 }) => {
-  const filters = useFilters();
   const [currentLogsModal, setCurrentLogsModal] = React.useState<null | string>(
     null,
   );
@@ -258,7 +264,6 @@ const ServersTable = (props: {
           }}
         />
       )}
-      <ServerFilters servers={props.servers} {...filters} />
       <Table>
         <thead>
           <tr>
@@ -287,7 +292,7 @@ const ServersTable = (props: {
           </tr>
         </thead>
         <tbody>
-          {props.servers.filter(filters.shouldDisplay).map((server) => {
+          {props.servers.filter(props.filters.shouldDisplay).map((server) => {
             const repoUrl = `https://github.com/${server.repo_owner}/${server.repo_name}`;
             return (
               <tr key={server.id}>

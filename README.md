@@ -33,10 +33,21 @@ NixOS machine. Everything below uses example values — substitute your own:
   - billing/Stripe entirely bypassed (every org gets a synthetic unlimited plan);
   - open registration disabled: login is only allowed for requests that came
     through an authenticating reverse proxy which injects
-    `X-Auth-Request-Groups`; membership of `adminGroup` ⇒ garnix admin;
+    `X-Auth-Request-Groups` **and** a private `X-Garnix-Proxy-Auth`
+    provenance marker matched by the backend; membership of `adminGroup` ⇒
+    garnix admin, and missing/mismatched marker configuration fails closed;
   - public repos may depend on **private flake inputs**: the guard auto-allows
     it and routes that repo's store paths to the **authenticated** cache bucket
     so nothing private leaks via the public cache.
+- **Restart-safe package builds** — evaluation checkpoints the derivation before
+  FOD checking and realization. A `garnixServer` deploy resumes checkpointed
+  builds on startup instead of cancelling them; work interrupted before that
+  point, and external run processes that cannot be reattached, is closed out
+  honestly as Cancelled rather than hanging forever.
+- **Hardened FOD verification** — prepare and strict-rebuild happen on the same
+  checker store, only recognized source-fetch failures may skip, unknown errors
+  fail, transient remote-store errors retry, and direct external-builder work
+  has its own `maxRemoteFodJobs` cap.
 - **Per-bucket S3 credentials** (`S3_CACHE_PRIVATE_ACCESS_KEY_ID`/`…_SECRET_…`)
   — needed for providers like Backblaze B2 whose keys are all-buckets or
   one-bucket (upstream assumed one key pair for both cache buckets).
@@ -67,7 +78,9 @@ NixOS machine. Everything below uses example values — substitute your own:
   [the Gitea section](#optional-gitea-as-a-second-forge).
 - **Monitoring page** (`/monitoring`, sidebar → "Monitoring") — a self-host
   dashboard of instance (Prometheus), host (node-exporter), job, and deployment
-  stats. See [Monitoring](#monitoring).
+  stats. Claimed guests receive a full control-plane stats endpoint; pre-warm
+  guests cannot report before claim, and the ingestion route is guest-subnet
+  gated. See [Monitoring](#monitoring).
 - **SSH into deployed servers + extra ports** — `garnix.yaml` `servers[]` gains
   `exposeSSH` (public DNAT), `authorizeDeployerGithubKeys`, `authorizedSSHKeys`,
   and `ports`; reach guests via tailscale, ProxyJump, or DNAT, and expose extra
@@ -90,12 +103,19 @@ NixOS machine. Everything below uses example values — substitute your own:
   bubblewrap sandbox instead of upstream's runner fleet (`garnix.actionRunner`
   + `services.garnixServer.actionHost`). Required setup if you use actions —
   see [Actions](#actions-running-actions-on-a-self-host-runner).
+- **Transactional local hosting** — the provisioner applies public exposure as
+  an atomic compensating transaction, tears VMs down in dependency order, and
+  keeps deploy-delivered guest keys in RAM-only tmpfs. See
+  [Server deployments](#server-deployments-self-host-microvm-hosting).
 - **Build artifacts** — `garnix.yaml` `artifacts:` publishes declared
   packages' build outputs as downloadable artifacts (file browser + `all.zip`,
   stable latest-URLs, content-addressed dedupe, retention/locking) — a GitHub
   Actions artifacts replacement. See [Artifacts](#artifacts).
 - **sops made optional** — bring your own secrets manager (agenix, sops, plain
   files); the backend reads `/run/secrets/<name>` paths or env vars.
+- **Operator-focused UI and docs** — inline status filters on Builds/Commit
+  pages, inline repo/deploy/status filters on Servers, restart/cancel controls,
+  and a hosted **Self-host fork** guide alongside the mirrored upstream docs.
 - Single-host adaptations: no Hetzner fleet required (`buildMachines` for
   remote builders is optional), frontend/back-end/postgres/opensearch on one
   box behind one reverse proxy.
@@ -147,6 +167,8 @@ via netrc).
     url = "https://garnix.example.com";
     selfHostMode = true;
     adminGroup = "garnix-admins";        # proxy-injected group ⇒ admin
+    # Must match X-Garnix-Proxy-Auth injected only after forward_auth.
+    proxySharedSecretFile = "/run/secrets/garnix_proxy_shared_secret";
     githubAppName = "garnix-example";    # slug of the app you create in step 6
     modulesOrg = "youruser";             # org allowed to publish modules
     opensearchUrl = "http://[::1]:9200/_msearch";
@@ -165,6 +187,8 @@ via netrc).
 
     enableNginx = false;                 # we bring Caddy below
     maxLocalJobs = 8;                    # concurrent package builds
+    maxConcurrentBuilds = 8;             # fair Garnix-side build queue
+    maxRemoteFodJobs = 1;                # direct remote-store FOD sessions
     buildMachines = [ ];                 # optional remote builders (see step 10)
 
     # Optional: authenticate sandboxed builds to extra substituters (attic…).
@@ -203,6 +227,7 @@ these with agenix/sops/whatever — **never** in the Nix store:
 | `cache-priv-key` | Nix cache signing key (`nix key generate-secret --key-name garnix-cache.example.com-1`) |
 | `database-password` | postgres |
 | `garnix-jwt-key` | session JWTs |
+| `garnix_proxy_shared_secret` | Random proxy-provenance marker. The trusted gateway injects it as `X-Garnix-Proxy-Auth` only after successful authentication; the backend compares it with `proxySharedSecretFile` before trusting identity headers. |
 | `opensearch-garnix` | opensearch auth |
 | `repo-secrets-key`, `repo-secrets-key-pub` | age keypair for repo secrets |
 | `garnix_action_runner_ssh` | SSH key the backend uses to reach the action runner (only if you run `actions` — see [Actions](#actions-running-actions-on-a-self-host-runner)). **Must be mode 0400** — OpenSSH rejects a group-readable key. |
@@ -226,18 +251,24 @@ append `\n`; GitHub rejects `client_secret\n` and S3 rejects
 
 ## Step 4 — Reverse proxy (Caddy)
 
-Two vhosts. Three rules are **security-critical**:
-1. strip inbound `X-Auth-Request-*` on every vhost (only `forward_auth` may set them);
-2. the cache vhost must expose **only** `/api/cache` (never the whole backend —
+Two vhosts. Four rules are **security-critical**:
+
+1. Strip inbound `X-Auth-Request-*` and `X-Garnix-Proxy-Auth` on every vhost.
+2. Inject `X-Garnix-Proxy-Auth` into backend API requests **only after**
+   `forward_auth` succeeds; its value must match `proxySharedSecretFile`.
+3. The cache vhost must expose **only** `/api/cache` (never the whole backend —
    otherwise anyone can forge the groups header on the login endpoint and
    become admin);
-3. webhooks and the cache bypass SSO, everything else goes through it.
+4. Keep SSO bypasses narrow: webhooks are signature-verified, artifact/cache
+   routes enforce their own access tokens, and guest stats are source-subnet
+   gated. Everything else goes through the interactive gate.
 
 ```caddyfile
 garnix.example.com {
   request_header -X-Auth-Request-User
   request_header -X-Auth-Request-Email
   request_header -X-Auth-Request-Groups
+  request_header -X-Garnix-Proxy-Auth
 
   @webhook path /api/events/github/*
   handle @webhook { reverse_proxy 127.0.0.1:8321 }
@@ -258,7 +289,10 @@ garnix.example.com {
       handle_response @error { redir * /oauth2/start?rd={scheme}://{host}{uri} }
     }
     @api path /api/*
-    reverse_proxy @api 127.0.0.1:8321
+    reverse_proxy @api 127.0.0.1:8321 {
+      # Read per request; grant the Caddy service user read access.
+      header_up X-Garnix-Proxy-Auth {file./run/secrets/garnix_proxy_shared_secret}
+    }
     reverse_proxy 127.0.0.1:3000
   }
 }
@@ -267,6 +301,7 @@ garnix-cache.example.com {
   request_header -X-Auth-Request-User
   request_header -X-Auth-Request-Email
   request_header -X-Auth-Request-Groups
+  request_header -X-Garnix-Proxy-Auth
   # Nix hits /nix-cache-info, /<hash>.narinfo, …; backend serves them under
   # /api/cache. The rewrite makes ONLY the cache surface reachable here.
   rewrite * /api/cache{uri}
@@ -278,9 +313,12 @@ garnix-cache.example.com {
 
 ## Step 5 — SSO gate (oauth2-proxy + Authentik)
 
-In self-host mode the backend trusts `X-Auth-Request-Groups` as the sole
-authority for who may log in and who is admin — safe because it listens on
-loopback and the proxy strips the header from clients.
+In self-host mode the backend accepts proxy identity only when the request has
+both `X-Auth-Request-Groups` and the private `X-Garnix-Proxy-Auth` marker whose
+value matches `proxySharedSecretFile`. Loopback alone is not provenance: any
+local process can connect to a loopback listener. The gateway must strip both
+headers from clients, authenticate the request, then inject the marker only on
+the authenticated backend hop. Missing marker configuration fails closed.
 
 Authentik side:
 1. Create an OAuth2/OIDC provider + application for
@@ -401,6 +439,22 @@ whole commit is re-run) and **Cancel all** (stops every queued/running build)
 — both with confirmation. Cancelled builds render as an orange ✗, distinct
 from red failures.
 
+**Backend deploy/restart recovery:** after package evaluation succeeds, Garnix
+stores the derivation and output map *before* starting FOD verification or
+realization. On startup it resumes non-terminal build rows with that checkpoint
+in place; re-running the derivation joins or replaces the interrupted Nix work
+and preserves the original row. A concurrent user cancellation cannot be
+overwritten by the checkpoint. Work interrupted before evaluation produced a
+derivation, plus action/deployment `runs` whose external process cannot be
+reattached, is still marked Cancelled. This is recovery from a process restart,
+not live migration of arbitrary commands.
+
+**Filtering busy instances:** the Builds-page status filter sits beside its
+title; each Commit page has its own All/Active/Complete/Failed filter; and the
+Servers page keeps repo, deployment-type, and status filters beside its title.
+All three header groups wrap on narrow screens without separating the controls
+from the page they filter.
+
 **Triggering a branch build from the UI:** a repo's builds page has a **Trigger
 Builds** button (next to _View on GitHub_) that opens a branch picker and runs a
 fresh eval against the chosen branch's latest commit — handy for a first build,
@@ -426,6 +480,12 @@ at its own runner fleet, so on a self-host box **actions stay Pending forever
 until you stand up a local runner** (this is a required setup step if you use
 `actions`). The fork's `action-runner` module does that, isolating each action
 in a bubblewrap + slirp4netns sandbox on the garnix host itself.
+
+In upstream managed mode, `sandboxType: shared-resources` is restricted to an
+operator allowlist. In `selfHostMode`, that cloud allowlist is deliberately
+bypassed: the self-host operator owns the runner and may use SharedResources
+from any repository. This is separate from `modulesOrg`, which controls which
+owner may publish Garnix modules (set it to your own user or organization).
 
 1. **Secret.** Provision an SSH keypair as `garnix_action_runner_ssh` (see the
    secrets table). It **must be mode 0400** — OpenSSH refuses a group-readable
@@ -716,6 +776,13 @@ only then removes the VM/spec directories, gcroots, and dnsmasq state. This
 keeps cleanup safe after partial creates and prevents deleted working
 directories from breaking systemd `ExecStop` actions.
 
+Exposure changes are transactional. Before mutating nftables state, the
+provisioner validates the complete desired SSH/raw-TCP rule set and records the
+current registry. Rule additions/removals and the atomic registry write form a
+compensating transaction: a failure rolls back already-applied mutations in
+reverse order, and a rollback failure reports both errors instead of hiding the
+original cause. Port ranges are validated before any firewall change.
+
 Host wiring (the fork stays input-free, so you import microvm.nix yourself):
 
 ```nix
@@ -784,6 +851,14 @@ injects the actual terminal-CA public key for first boot, and the backend owns
 the durable copy after that. See
 [`examples/hello-server/flake.nix`](examples/hello-server/flake.nix) for a
 complete user repo.
+
+The guest profile mounts `/var/garnix/keys` as tmpfs. Repo decryption keys,
+default-Authentik credentials, and deploy-delivered authorized keys therefore
+live only in RAM and are absent from the persistent root image. Because tmpfs
+is empty after reboot, the backend re-delivers the runtime material during
+claim/redeployment before activating the repository configuration. After a
+standalone guest reboot, redeploy it before expecting services that consume
+those runtime credentials to start successfully.
 
 Pick a size per server with `deployment.machine` in `garnix.yaml` (default
 `i1x1`); the tier name encodes `<vCPU>x<GiB>` and maps to guest resources
@@ -1212,7 +1287,7 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | "Github didn't give us a user token" | trailing `\n` in the GitHub client secret |
 | White page, `/_next` 404s | proxy must serve `/_next/*` from the frontend package |
 | `getInstalledOrgs … 401` | expired 8h user token — re-login; disable token expiry on the App |
-| Jobs stuck "Pending" forever | orphaned by a `garnixServer` restart (deploy) mid-build — the backend cancels these on startup now. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
+| Jobs interrupted by a `garnixServer` restart (deploy) | package builds checkpoint their derivation immediately after evaluation and are resumed on startup; work interrupted before that checkpoint, plus action/deployment run processes that cannot be reattached, is marked Cancelled. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
 | every eval hangs; plain `nix` commands block on the host | nix-daemon deadlock — for us it was `min-free`/`max-free` **auto-GC** deadlocking on `gc.lock` against a concurrent `addToStore`. Don't run auto-GC on the garnix host; use a scheduled `nix-collect-garbage` job instead, and if it happens find the fork holding the `gc.lock` flock in `/proc/locks` and kill it |
 | **Logs** panel empty on a *finished* build | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog |
 | `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |

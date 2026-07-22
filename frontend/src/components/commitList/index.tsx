@@ -104,23 +104,23 @@ export const CommitList = (props: {
   return commits.length > 0 ? (
     <div className={styles.container}>
       <div className={styles.header}>
-        <Text type="h1" className={styles.h1}>
-          Builds
-        </Text>
+        <div className={styles.headerLeft}>
+          <Text type="h1" className={styles.h1}>
+            Builds
+          </Text>
+          <Select
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              [null, "All Builds"],
+              ["Running", "Running"],
+              ["Failed", "Failed"],
+              ["Succeeded", "Succeeded"],
+              ["Cancelled", "Cancelled"],
+            ]}
+          />
+        </div>
         {props.headerRight}
-      </div>
-      <div className={styles.filters}>
-        <Select
-          value={statusFilter}
-          onChange={setStatusFilter}
-          options={[
-            [null, "All Builds"],
-            ["Running", "Running"],
-            ["Failed", "Failed"],
-            ["Succeeded", "Succeeded"],
-            ["Cancelled", "Cancelled"],
-          ]}
-        />
       </div>
       <ol>
         {shown.map((commit) => (

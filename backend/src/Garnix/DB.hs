@@ -1608,6 +1608,23 @@ reportBuildResultDB build = do
     1 -> pure ()
     _ -> throw $ OtherError "Somehow updated more than 0 or 1 columns"
 
+-- | Persist the result of package evaluation before FOD checking or
+-- realization begins. A backend restart can then identify the build as
+-- resumable while the long-running work is still in progress. Restrict the
+-- update to a non-terminal row so this checkpoint can never undo a concurrent
+-- cancellation.
+checkpointBuildEvaluation :: BuildId -> DrvPath -> BuildOutputs -> M ()
+checkpointBuildEvaluation buildId derivation outputs =
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE builds
+        SET drv_path = ${cs derivation :: FilePath},
+            output_paths = ${BuildOutputsPgColumn outputs}
+        WHERE id = ${buildId}
+          AND status IS NULL
+      |]
+
 -- | Mark a build as having started executing (idempotent: only the first
 -- call sets the timestamp).
 markBuildRunning :: BuildId -> M ()

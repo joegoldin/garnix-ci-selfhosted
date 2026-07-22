@@ -129,7 +129,7 @@ spec = do
             buildReports `GH.reportsShouldBe` [RunReportStatusInProgress, RunReportStatusFailure]
 
       context "running actions" $ do
-        it "does not run SharedResources action for orgs that are not garnix-io" $ GH.withFakeGithubInterface $ \ghState -> do
+        it "rejects SharedResources for an unallowlisted org in managed mode" $ GH.withFakeGithubInterface $ \ghState -> do
           let commitInfo =
                 defaultCommitInfo
                   & repoInfo . ghRepoOwner .~ "some-other-org"

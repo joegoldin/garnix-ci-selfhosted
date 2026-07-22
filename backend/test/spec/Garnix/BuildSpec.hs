@@ -719,6 +719,26 @@ spec = do
                   st <- mResult
                   pure $ b & status ?~ st
               )
+
+      it "persists the derivation path before FOD checking so an interrupted build is resumable" $ GH.withFakeGithubInterface $ \ghState -> do
+        user <- DB.newUser (GhLogin "owner") "owner@owner.com" FreeSubscription True
+        checkpointObserved <- liftIO $ newMVar False
+        GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup simpleFlake) $ \commitInfo -> do
+          withMock
+            #fodCheckMock
+            ( \(_, evaluatedDrvPath) -> do
+                build <-
+                  DB.getBuilds user
+                    <&> filter (\b -> b ^. packageType /= TypeOverall)
+                    <&> fromSingleton
+                liftIO
+                  $ modifyMVar_ checkpointObserved
+                  $ const
+                  $ pure (build ^. drvPath == Just (cs evaluatedDrvPath))
+            )
+            $ testHandleCommit commitInfo
+        liftIO (readMVar checkpointObserved) `shouldReturnM` True
+
       context "commits table" $ do
         it "writes and reads commits to and from the db correctly" $ do
           DB.newCommit "owner" "repo" "aaaaaa"

@@ -117,19 +117,30 @@ buildPkg = curry7
     case evalRes of
       Right evaluationResult -> do
         let drvPath' = evaluationResult ^. #derivation
+        let evaluatedBuild =
+              build
+                & drvPath ?~ cs drvPath'
+                & outputPaths ?~ BuildOutputsPgColumn (evaluationResult ^. #outputs)
+        -- Checkpoint the derivation before FOD checking and realization. Both
+        -- can be long-running; startup recovery needs this row populated to
+        -- resume an interrupted build after a backend deploy/restart.
+        DB.checkpointBuildEvaluation
+          (build ^. id)
+          drvPath'
+          (evaluationResult ^. #outputs)
         FodCheck.fodCheck fodChecker drvPath'
-        build <-
+        finishedBuild <-
           if null $ evaluationResult ^. #toUpload
             then do
               log Informational $ "No derivations to upload for " <> cs drvPath'
               DB.setBuildUploaded (build ^. id)
-              pure $ build
+              pure $ evaluatedBuild
                 & status ?~ Success
                 & alreadyBuilt ?~ True
             else do
-              let builder = runNixBuild runReporter productPlan cacheDir workingDir build drvPath'
+              let builder = runNixBuild runReporter productPlan cacheDir workingDir evaluatedBuild drvPath'
               status' <- withAsync builder $ \q -> do
-                abortOnCancellation build q
+                abortOnCancellation evaluatedBuild q
               log Informational "buildPkg: build finished, checking status"
               forkM $ do
                 S3Cache.upload runReporter (build ^. repoUser) (build ^. repoName) evaluationResult (build ^. repoIsPublic)
@@ -138,13 +149,11 @@ buildPkg = curry7
                 Failure -> log Warning "build failed"
                 Cancelled -> log Notice "build cancelled"
                 _ -> pure ()
-              pure $ build
+              pure $ evaluatedBuild
                 & status ?~ status'
                 & alreadyBuilt ?~ False
         buildEnd <- liftIO getCurrentTime
-        pure $ build
-          & drvPath ?~ cs (evaluationResult ^. #derivation)
-          & outputPaths ?~ BuildOutputsPgColumn (evaluationResult ^. #outputs)
+        pure $ finishedBuild
           & endTime ?~ buildEnd
       Left err -> do
         build <- do
