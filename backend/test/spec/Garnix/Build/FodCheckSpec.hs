@@ -284,6 +284,47 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       __isSourceUnavailableError "builder failed with exit code 1" `shouldBeM` False
       __isSourceUnavailableError "ssh: connect to host builder: Connection refused" `shouldBeM` False
 
+  describe "__classifyFodBuilder" $ do
+    it "accepts executable paths and Nix builtin builders" $ do
+      __classifyFodBuilder "/nix/store/00000000000000000000000000000000-bash/bin/bash" `shouldBeM` Nothing
+      __classifyFodBuilder "builtin:fetchurl" `shouldBeM` Nothing
+
+    it "diagnoses pre-seeded bootstrap placeholders without treating them as verified" $ do
+      let placeholder =
+            T.unlines
+              [ "#",
+                "# Neither your store nor your substituters seems to have:",
+                "# /1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9",
+                "# nix-store --add-fixed --recursive sha256 ./stage0-posix-1.9.1-source",
+                "# nix-build '<nixpkgs>' -A make-minimal-bootstrap-sources"
+              ]
+      __classifyFodBuilder placeholder
+        `shouldBeM` Just
+          "This fixed-output derivation cannot be independently rebuilt: its builder field is not an executable path or Nix builtin. It may be a pre-seeded bootstrap source supplied only by a substituter. Garnix has not verified it and is failing closed."
+
+      __isBootstrapSeedBuilder placeholder `shouldBeM` True
+
+  describe "__patchCargoVendorBuildPhase" $ do
+    it "applies the current nixpkgs crates.io compatibility repair narrowly" $ do
+      let buildPhase =
+            "runHook preBuild\nfetch-cargo-vendor-util create-vendor-staging ./Cargo.lock \"$out\"\nrunHook postBuild\n"
+      let patched = fromRight $ __patchCargoVendorBuildPhase buildPhase
+      patched `shouldSatisfyM` T.isInfixOf "478e4912ec6e3325a2d329d9965b5690e08f5138d5008c2ddc12eb76a7a92f98"
+      patched `shouldSatisfyM` T.isInfixOf "nixpkgs-fetchCargoVendor/2 (https://github.com/NixOS/nixpkgs)"
+      patched `shouldSatisfyM` T.isInfixOf "https://static.crates.io/crates/"
+      patched `shouldSatisfyM` T.isInfixOf buildPhase
+
+    it "refuses to rewrite unrelated FOD builders" $ do
+      __patchCargoVendorBuildPhase "curl https://example.com > $out"
+        `shouldBeM` Left "not a nixpkgs fetchCargoVendor staging build"
+
+  describe "__patchGoVendorFlags" $ do
+    it "uses module mode for the complete vendor generation FOD" $ do
+      __patchGoVendorFlags "-mod=vendor -trimpath" `shouldBeM` Right "-mod=mod -trimpath"
+
+    it "refuses ambiguous or unrelated Go flags" $ do
+      __patchGoVendorFlags "-trimpath" `shouldBeM` Left "Go vendor FOD does not have one unambiguous -mod=vendor flag"
+
   describe "remote-store retries" $ do
     it "recognizes the production SSH reset without calling it a fetch failure" $ do
       let stderr =

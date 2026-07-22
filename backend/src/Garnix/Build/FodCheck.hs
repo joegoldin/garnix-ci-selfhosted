@@ -3,6 +3,10 @@ module Garnix.Build.FodCheck
     fodCheck,
     -- exported for testing:
     __findAllFodsRecursively,
+    __classifyFodBuilder,
+    __isBootstrapSeedBuilder,
+    __patchCargoVendorBuildPhase,
+    __patchGoVendorFlags,
     __isRemoteStoreConnectionError,
     __isSourceUnavailableError,
     __rebuildFod,
@@ -23,8 +27,11 @@ import Control.Monad.Extra (mapMaybeM)
 import Control.Retry (RetryPolicyM, fullJitterBackoff, limitRetries, retrying)
 import Cradle
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonMap
 import Data.Aeson.Types qualified as Aeson
 import Data.Attoparsec.Text hiding (try, (<?>))
+import Data.ByteString.Lazy qualified as LBS
 import Data.Either.Extra (mapLeft)
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict (Map)
@@ -49,9 +56,11 @@ import Garnix.Nix.StorePath (unwrapDerivations)
 import Garnix.Nix.Types qualified as Nix
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude hiding (Alternative)
+import Garnix.SafeUnix (safeCreatePipe)
 import Garnix.Types
 import Garnix.YamlConfig qualified as YamlConfig
 import System.Directory (doesFileExist)
+import System.IO (hClose)
 import System.Metrics.Prometheus.Metric.Histogram qualified as Prometheus
 
 withFodChecker :: Reporter -> CommitInfo -> ProductPlan -> (Maybe FodChecker -> M a) -> M a
@@ -187,10 +196,7 @@ __findAllFodsRecursively drvPath = do
       $ cmd "nix"
       & addArgs ["derivation", "show", "--recursive", cs drvPath :: Text]
       & addNixConfigEnvironment nixConfig
-  value :: Aeson.Value <- aesonDecode "nix derivation show output" parseJSON (cs stdout)
-  derivations :: NixDerivationShowJson <-
-    either (\e -> throw $ DecodeError {original = cs stdout, message = "decoding derivations: " <> cs e}) pure
-      $ Aeson.parseEither parseJSON (unwrapDerivations value)
+  derivations <- decodeNixDerivations (StdoutRaw stdout)
   (Set.fromList <$>) $ flip mapMaybeM (Map.toList derivations) $ \(drvPathText, info) -> do
     case (info ^. #env . #outputHash, info ^. #env . #system) of
       (Nothing, _) -> pure Nothing
@@ -216,7 +222,7 @@ __findAllFodsRecursively drvPath = do
 type NixDerivationShowJson =
   Map.Map
     Text
-    (Rec ("env" .== NixDerivationShowEnvJson))
+    (Rec ("builder" .== Text .+ "env" .== NixDerivationShowEnvJson))
 
 data NixDerivationShowEnvJson = NixDerivationShowEnvJson
   { outputHash :: Maybe Text,
@@ -226,17 +232,99 @@ data NixDerivationShowEnvJson = NixDerivationShowEnvJson
 
 instance FromJSON NixDerivationShowEnvJson
 
+decodeNixDerivations :: StdoutRaw -> M NixDerivationShowJson
+decodeNixDerivations (StdoutRaw stdout) = do
+  value :: Aeson.Value <- aesonDecode "nix derivation show output" parseJSON (cs stdout)
+  either (\e -> throw $ DecodeError {original = cs stdout, message = "decoding derivations: " <> cs e}) pure
+    $ Aeson.parseEither parseJSON (unwrapDerivations value)
+
+getFodBuilder :: Nix.DrvPath -> M Text
+getFodBuilder drvPath = do
+  nixConfig <- view #userNixConfig
+  stdout <-
+    runSubProcess
+      $ cmd "nix"
+      & addArgs ["derivation", "show", cs drvPath :: Text]
+      & addNixConfigEnvironment nixConfig
+  derivations <- decodeNixDerivations stdout
+  case Map.elems derivations of
+    [derivation] -> pure $ derivation ^. #builder
+    [] -> throw $ OtherError $ "nix derivation show returned no derivation for " <> cs drvPath
+    _ -> throw $ OtherError $ "nix derivation show returned multiple derivations for " <> cs drvPath
+
+-- | Diagnose derivations such as nixpkgs' pre-seeded bootstrap sources. Their
+-- @builder@ is deliberately an explanatory error message rather than a program,
+-- so no checker can execute it. This classification changes only the error
+-- text: the FOD still fails closed and is never recorded as verified.
+__classifyFodBuilder :: Text -> Maybe Text
+__classifyFodBuilder builder
+  | validExecutableBuilder = Nothing
+  | otherwise =
+      Just
+        "This fixed-output derivation cannot be independently rebuilt: its builder field is not an executable path or Nix builtin. It may be a pre-seeded bootstrap source supplied only by a substituter. Garnix has not verified it and is failing closed."
+  where
+    validExecutableBuilder =
+      ("/" `Text.isPrefixOf` builder || "builtin:" `Text.isPrefixOf` builder)
+        && not (Text.any (`elem` ['\n', '\r']) builder)
+
+__isBootstrapSeedBuilder :: Text -> Bool
+__isBootstrapSeedBuilder builder =
+  "make-minimal-bootstrap-sources"
+    `Text.isInfixOf` builder
+    && "nix-store --add-fixed --recursive"
+    `Text.isInfixOf` builder
+
+-- | Older nixpkgs fetchCargoVendor helpers use the rate-limited crates.io API
+-- without the identifying User-Agent now required by crates.io. Current
+-- nixpkgs uses the static CDN and a descriptive User-Agent. Reproduce that
+-- upstream repair inside a temporary copy of the helper, leaving the rest of
+-- the FOD builder untouched; Nix still checks the rebuilt output hash.
+__patchCargoVendorBuildPhase :: Text -> Either Text Text
+__patchCargoVendorBuildPhase buildPhase
+  | not ("fetch-cargo-vendor-util create-vendor-staging" `Text.isInfixOf` buildPhase) =
+      Left "not a nixpkgs fetchCargoVendor staging build"
+  | otherwise = Right $ compatibilityPrefix <> buildPhase
+  where
+    compatibilityPrefix =
+      Text.unlines
+        [ "garnixOriginalCargoVendorUtil=\"$(command -v fetch-cargo-vendor-util)\"",
+          "garnixCargoVendorBin=\"$TMPDIR/garnix-fod-cargo-vendor-bin\"",
+          "mkdir -p \"$garnixCargoVendorBin\"",
+          "garnixPatchedCargoVendorUtil=\"$garnixCargoVendorBin/fetch-cargo-vendor-util\"",
+          "test \"$(tail -n +2 \"$garnixOriginalCargoVendorUtil\" | sha256sum | cut -d ' ' -f 1)\" = \"478e4912ec6e3325a2d329d9965b5690e08f5138d5008c2ddc12eb76a7a92f98\"",
+          "grep -F '    session = requests.Session()' \"$garnixOriginalCargoVendorUtil\" >/dev/null",
+          "grep -F 'https://crates.io/api/v1/crates/' \"$garnixOriginalCargoVendorUtil\" >/dev/null",
+          "sed -e '/    session = requests.Session()/a\\    session.headers[\"User-Agent\"] = \"nixpkgs-fetchCargoVendor/2 (https://github.com/NixOS/nixpkgs)\"' -e 's#https://crates.io/api/v1/crates/#https://static.crates.io/crates/#g' \"$garnixOriginalCargoVendorUtil\" > \"$garnixPatchedCargoVendorUtil\"",
+          "chmod +x \"$garnixPatchedCargoVendorUtil\"",
+          "export PATH=\"$garnixCargoVendorBin:$PATH\""
+        ]
+
+-- | Some nixpkgs buildGoModule FODs accidentally inherit
+-- @GOFLAGS=-mod=vendor@ while their builder is trying to create that vendor
+-- tree. Use module mode for the complete generation FOD (including preBuild
+-- hooks such as @go generate@), while preserving every other Go flag.
+__patchGoVendorFlags :: Text -> Either Text Text
+__patchGoVendorFlags flags
+  | Text.count "-mod=vendor" flags /= 1 = Left "Go vendor FOD does not have one unambiguous -mod=vendor flag"
+  | otherwise = Right $ Text.replace "-mod=vendor" "-mod=mod" flags
+
+getFodBuilderDiagnosis :: Nix.DrvPath -> M (Maybe Text)
+getFodBuilderDiagnosis drvPath = do
+  builderResult :: Either ErrorWithContext Text <- try $ getFodBuilder drvPath
+  pure $ either (const Nothing) __classifyFodBuilder builderResult
+
 checkFod :: FodChecker -> Nix.DrvPath -> System -> M (Either Text ())
 checkFod fodChecker drvPath system = do
   log Informational $ "checking fod: " <> cs drvPath <> ", system: " <> system ^. systemTextIso
   result <- rebuildFod system drvPath
   case result of
     Left stderr -> do
+      builderDiagnosis <- getFodBuilderDiagnosis drvPath
       let errorMessage =
             "Failure when checking FOD '"
               <> cs drvPath
               <> "':\n"
-              <> stderr
+              <> maybe stderr (\diagnosis -> diagnosis <> "\n\nOriginal rebuild failure:\n" <> stderr) builderDiagnosis
       log Error errorMessage
       reportLogs (fodChecker ^. #runReporter) $ LogLine (Just $ PackageName $ cs drvPath <> " (failed)") Nothing errorMessage
       pure $ Left errorMessage
@@ -316,6 +404,88 @@ __runRemoteFodTransaction slots copyPhase preparePhase checkPhase =
 
 type NixBuildOutput = [Rec ("drvPath" .== Text .+ "outputs" .== Map.Map Text Text)]
 
+singleBuildOutputs :: Text -> Either Text (Map.Map Text Text)
+singleBuildOutputs stdout = do
+  parsed <- mapLeft cs $ Aeson.eitherDecodeStrict' @NixBuildOutput (cs stdout)
+  case parsed of
+    [derivation] -> Right $ derivation ^. #outputs
+    _ -> Left "expected exactly one derivation in nix build JSON output"
+
+sameBuildOutputs :: Text -> Text -> Either Text Bool
+sameBuildOutputs prepared rebuilt = (==) <$> singleBuildOutputs prepared <*> singleBuildOutputs rebuilt
+
+patchDerivationBuildPhaseJson :: (Text -> Either Text Text) -> StdoutRaw -> Either Text Aeson.Value
+patchDerivationBuildPhaseJson patchBuildPhase (StdoutRaw stdout) = do
+  value <- mapLeft cs $ Aeson.eitherDecodeStrict' @Aeson.Value stdout
+  derivation <- case unwrapDerivations value of
+    Aeson.Object derivations -> case AesonMap.elems derivations of
+      [single] -> Right single
+      [] -> Left "nix derivation show returned no derivation"
+      _ -> Left "nix derivation show returned multiple derivations"
+    _ -> Left "nix derivation show did not return an object"
+  case derivation of
+    Aeson.Object fields -> do
+      environment <- case AesonMap.lookup (AesonKey.fromText "env") fields of
+        Just (Aeson.Object env) -> Right env
+        _ -> Left "cargo vendor derivation has no environment object"
+      buildPhase <- case AesonMap.lookup (AesonKey.fromText "buildPhase") environment of
+        Just (Aeson.String phase) -> Right phase
+        _ -> Left "cargo vendor derivation has no textual buildPhase"
+      patchedPhase <- patchBuildPhase buildPhase
+      let patchedEnvironment = AesonMap.insert (AesonKey.fromText "buildPhase") (Aeson.String patchedPhase) environment
+      pure $ Aeson.Object $ AesonMap.insert (AesonKey.fromText "env") (Aeson.Object patchedEnvironment) fields
+    _ -> Left "nix derivation show returned a non-object derivation"
+
+patchGoVendorDerivationJson :: StdoutRaw -> Either Text Aeson.Value
+patchGoVendorDerivationJson (StdoutRaw stdout) = do
+  value <- mapLeft cs $ Aeson.eitherDecodeStrict' @Aeson.Value stdout
+  derivation <- case unwrapDerivations value of
+    Aeson.Object derivations -> case AesonMap.elems derivations of
+      [single] -> Right single
+      [] -> Left "nix derivation show returned no derivation"
+      _ -> Left "nix derivation show returned multiple derivations"
+    _ -> Left "nix derivation show did not return an object"
+  case derivation of
+    Aeson.Object fields -> do
+      environment <- case AesonMap.lookup (AesonKey.fromText "env") fields of
+        Just (Aeson.Object env) -> Right env
+        _ -> Left "Go vendor derivation has no environment object"
+      goFlags <- case AesonMap.lookup (AesonKey.fromText "GOFLAGS") environment of
+        Just (Aeson.String flags) -> Right flags
+        _ -> Left "Go vendor derivation has no textual GOFLAGS"
+      patchedFlags <- __patchGoVendorFlags goFlags
+      let patchedEnvironment = AesonMap.insert (AesonKey.fromText "GOFLAGS") (Aeson.String patchedFlags) environment
+      pure $ Aeson.Object $ AesonMap.insert (AesonKey.fromText "env") (Aeson.Object patchedEnvironment) fields
+    _ -> Left "nix derivation show returned a non-object derivation"
+
+isCratesApiCompatibilityFailure :: Text -> Bool
+isCratesApiCompatibilityFailure stderr =
+  "crates.io/api/v1/crates/"
+    `Text.isInfixOf` stderr
+    && "Status code: 403"
+    `Text.isInfixOf` stderr
+
+isGoVendorCompatibilityFailure :: Text -> Bool
+isGoVendorCompatibilityFailure stderr =
+  "not marked as explicit in vendor/modules.txt"
+    `Text.isInfixOf` stderr
+    && "To sync the vendor directory"
+    `Text.isInfixOf` stderr
+
+isKnownGoVendorCompatibilityDrv :: Nix.DrvPath -> Bool
+isKnownGoVendorCompatibilityDrv drvPath =
+  (cs drvPath :: Text)
+    `elem` [ "/nix/store/asb48s9c1ln8vdbywflr2f48fl4cbl2z-git-lfs-3.7.1-go-modules.drv",
+             "/nix/store/wyidwysp38f2zbi5ahmmhd142dk4jsdn-git-lfs-3.7.1-go-modules.drv"
+           ]
+
+isHistoricalLdexplFailure :: Text -> Bool
+isHistoricalLdexplFailure stderr =
+  "https://gitlab.com/janneke/mes/-/raw/c837abed8edb341d4e56913729fbe9803b4de47c/lib/math/ldexpl.c"
+    `Text.isInfixOf` stderr
+    && "HTTP error 404"
+    `Text.isInfixOf` stderr
+
 -- | Prepare and then rebuild a FOD on the same store. Nix's @--rebuild@
 -- refuses to check an output that is not already valid in that store, which
 -- is normally the case on a freshly provisioned self-host guest. The first
@@ -326,36 +496,123 @@ rebuildFod = do
   curry $ mockable #rebuildFodMock $ \(system, drvPath) -> withBubbling $ \bubble -> do
     nixConfig <- view #userNixConfig
     remoteBuilderUrl <- __pickRemoteBuilder system
-    let runBuild remoteBuilder shouldRebuild =
+    builder <- getFodBuilder drvPath
+    let runNix remoteBuilder args stdin = do
+          stdinHandle <- forM stdin $ \contents -> do
+            (readEnd, writeEnd) <- liftIO safeCreatePipe
+            void . fork . liftIO $ LBS.hPutStr writeEnd contents >> hClose writeEnd
+            pure readEnd
+          let process =
+                cmd "nix"
+                  & addArgs
+                    ( args
+                        <> case remoteBuilder of
+                          Just (url, _sshKey) -> ["--store", url, "--eval-store", "auto"]
+                          Nothing -> []
+                    )
+                  & addNixConfigEnvironment nixConfig
+                  & case remoteBuilder of
+                    Just (_url, sshKey) -> modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords (remoteBuilderSshArgs sshKey))
+                    Nothing -> identity
+                  & maybe identity setStdinHandle stdinHandle
+          run process
+        runBuild remoteBuilder buildable shouldRebuild =
           let commonArgs =
                 [ "build",
-                  cs drvPath <> "^*",
+                  buildable,
                   "--no-link",
                   "--json"
                 ]
                   <> ["--rebuild" | shouldRebuild]
            in do
-                (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- case remoteBuilder of
-                  Just (url, sshKey) ->
-                    run
-                      $ cmd "nix"
-                      & addArgs (commonArgs <> ["--store", url, "--eval-store", "auto"])
-                      & modifyEnvVar "NIX_SSHOPTS" (const $ Just $ unwords (remoteBuilderSshArgs sshKey))
-                      & addNixConfigEnvironment nixConfig
-                  Nothing ->
-                    run
-                      $ cmd "nix"
-                      & addArgs commonArgs
-                      & addNixConfigEnvironment nixConfig
+                (exitCode, StdoutRaw (cs -> stdout), StderrRaw (cs -> stderr)) <- runNix remoteBuilder commonArgs Nothing
                 pure $ case exitCode of
                   ExitFailure _ -> Left stderr
                   ExitSuccess -> Right stdout
+        createCompatibilityDrv patchDerivation remoteBuilder = do
+          (showExit, derivationJson, StderrRaw (cs -> showError)) <-
+            runNix remoteBuilder ["derivation", "show", cs drvPath :: Text] Nothing
+          case showExit of
+            ExitFailure _ -> pure $ Left showError
+            ExitSuccess -> case patchDerivation derivationJson of
+              Left patchError -> pure $ Left patchError
+              Right patched -> do
+                (addExit, StdoutRaw (cs -> addedPath), StderrRaw (cs -> addError)) <-
+                  runNix remoteBuilder ["derivation", "add"] (Just $ Aeson.encode patched)
+                pure $ case addExit of
+                  ExitFailure _ -> Left addError
+                  ExitSuccess -> Right $ Text.strip addedPath <> "^*"
+        verifyCompatibleOutput prepared rebuilt = case sameBuildOutputs prepared rebuilt of
+          Right True -> pure $ Right rebuilt
+          Right False -> pure $ Left "compatibility rebuild produced a different output path from the prepared FOD"
+          Left decodeError -> pure $ Left $ "could not compare compatibility rebuild output: " <> decodeError
+        verifyHistoricalLdexpl remoteBuilder prepared strictError = do
+          (sourceExit, StdoutRaw (cs -> nixpkgsPath), StderrRaw (cs -> sourceError)) <-
+            runNix
+              Nothing
+              [ "eval",
+                "--impure",
+                "--raw",
+                "--expr",
+                "(builtins.getFlake \"nixpkgs\").outPath"
+              ]
+              Nothing
+          case sourceExit of
+            ExitFailure _ -> pure $ Left $ strictError <> "\nCould not resolve the pinned nixpkgs source for ldexpl.c recovery:\n" <> sourceError
+            ExitSuccess -> do
+              let sourceFile = Text.strip nixpkgsPath <> "/pkgs/os-specific/linux/minimal-bootstrap/mes/ldexpl.c"
+              (addExit, StdoutRaw (cs -> addedPath), StderrRaw (cs -> addError)) <-
+                runNix remoteBuilder ["store", "add", "--mode", "flat", "--name", "ldexpl.c", sourceFile] Nothing
+              case addExit of
+                ExitFailure _ -> pure $ Left $ strictError <> "\nCould not add current nixpkgs' authoritative ldexpl.c source:\n" <> addError
+                ExitSuccess -> case singleBuildOutputs prepared of
+                  Left decodeError -> pure $ Left $ strictError <> "\nCould not compare recovered ldexpl.c output:\n" <> decodeError
+                  Right outputs -> case Map.elems outputs of
+                    [expected]
+                      | expected == Text.strip addedPath -> pure $ Right prepared
+                      | otherwise -> pure $ Left $ strictError <> "\nCurrent nixpkgs' ldexpl.c does not match the prepared FOD output path."
+                    _ -> pure $ Left $ strictError <> "\nHistorical ldexpl.c FOD did not have exactly one output."
+        recoverKnownFailure runOperation remoteBuilder prepared strictError
+          | __isBootstrapSeedBuilder builder = do
+              log Notice $ "Regenerating bootstrap source for FOD " <> cs drvPath <> " via nixpkgs#make-minimal-bootstrap-sources"
+              regenerated <- runOperation $ runBuild remoteBuilder "nixpkgs#make-minimal-bootstrap-sources" True
+              case regenerated of
+                Left recoveryError -> pure $ Left $ strictError <> "\nBootstrap regeneration also failed:\n" <> recoveryError
+                Right rebuilt -> verifyCompatibleOutput prepared rebuilt
+          | isCratesApiCompatibilityFailure strictError = do
+              log Notice $ "Retrying crates.io FOD " <> cs drvPath <> " with the current nixpkgs static-CDN/User-Agent compatibility repair"
+              compatibleDrv <- runOperation $ createCompatibilityDrv (patchDerivationBuildPhaseJson __patchCargoVendorBuildPhase) remoteBuilder
+              case compatibleDrv of
+                Left rewriteError -> pure $ Left $ strictError <> "\nCould not construct crates.io-compatible verifier derivation:\n" <> rewriteError
+                Right rewrittenDrv -> do
+                  rebuilt <- runOperation $ runBuild remoteBuilder rewrittenDrv True
+                  case rebuilt of
+                    Left recoveryError -> pure $ Left $ strictError <> "\nCrates.io-compatible rebuild also failed:\n" <> recoveryError
+                    Right rebuiltOutput -> verifyCompatibleOutput prepared rebuiltOutput
+          | isKnownGoVendorCompatibilityDrv drvPath && isGoVendorCompatibilityFailure strictError = do
+              log Notice $ "Retrying Go vendor FOD " <> cs drvPath <> " without the contradictory GOFLAGS=-mod=vendor generation flag"
+              compatibleDrv <- runOperation $ createCompatibilityDrv patchGoVendorDerivationJson remoteBuilder
+              case compatibleDrv of
+                Left rewriteError -> pure $ Left $ strictError <> "\nCould not construct Go-vendor-compatible verifier derivation:\n" <> rewriteError
+                Right rewrittenDrv -> do
+                  rebuilt <- runOperation $ runBuild remoteBuilder rewrittenDrv True
+                  case rebuilt of
+                    Left recoveryError -> pure $ Left $ strictError <> "\nGo-vendor-compatible rebuild also failed:\n" <> recoveryError
+                    Right rebuiltOutput -> verifyCompatibleOutput prepared rebuiltOutput
+          | isHistoricalLdexplFailure strictError = do
+              log Notice $ "Verifying historical ldexpl.c FOD " <> cs drvPath <> " against the authoritative file in the pinned current nixpkgs source"
+              verifyHistoricalLdexpl remoteBuilder prepared strictError
+          | otherwise = pure $ Left strictError
         prepareAndCheck runOperation remoteBuilder = do
-          void
-            $ (bubble =<< runOperation (runBuild remoteBuilder False))
-            <?> ("rebuildFod: preparing " <> cs drvPath)
-          (bubble =<< runOperation (runBuild remoteBuilder True))
-            <?> ("rebuildFod: checking " <> cs drvPath)
+          prepared <-
+            (bubble =<< runOperation (runBuild remoteBuilder (cs drvPath <> "^*") False))
+              <?> ("rebuildFod: preparing " <> cs drvPath)
+          strictResult <-
+            runOperation (runBuild remoteBuilder (cs drvPath <> "^*") True)
+              <?> ("rebuildFod: checking " <> cs drvPath)
+          bubble =<< case strictResult of
+            Right rebuilt -> pure $ Right rebuilt
+            Left strictError -> recoverKnownFailure runOperation remoteBuilder prepared strictError
     case remoteBuilderUrl of
       Nothing -> prepareAndCheck identity Nothing
       Just url -> do
@@ -366,13 +623,8 @@ rebuildFod = do
           ( (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (copyClosure sshKey drvPath url))
               <?> ("rebuildFod: copying closure of " <> cs drvPath <> " to " <> url)
           )
-          ( void
-              $ (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (runBuild (Just (url, sshKey)) False))
-              <?> ("rebuildFod: preparing " <> cs drvPath)
-          )
-          ( (bubble =<< __retryRemoteStoreOperation remoteStoreRetryPolicy (runBuild (Just (url, sshKey)) True))
-              <?> ("rebuildFod: checking " <> cs drvPath)
-          )
+          (pure ())
+          (prepareAndCheck (__retryRemoteStoreOperation remoteStoreRetryPolicy) (Just (url, sshKey)))
 
 __rebuildFod :: System -> Nix.DrvPath -> M (Either Text Text)
 __rebuildFod = rebuildFod

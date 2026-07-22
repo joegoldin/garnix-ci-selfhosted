@@ -118,10 +118,28 @@ used by the test implementation and satisfies Nix's requirement that a checked
 output be valid before `--rebuild`.
 
 Replace the blanket “every non-hash-mismatch is source unavailable” rule with
-a conservative fetch-error classifier. Recognized download/HTTP/mirror/manual
-source failures remain skipped-with-warning because they do not prove a hash.
-Unknown builder, Nix, SSH, or checker errors fail visibly, preventing verifier
-breakage or a deliberately failing builder from becoming a silent bypass.
+fail-closed verification. Builder stderr is attacker-controlled, so no
+download/HTTP-looking substring can authenticate a safe exception. A FOD is
+green only after a strict rebuild (or a previously recorded strict rebuild)
+produces its declared fixed-output path.
+
+Known historical nixpkgs breakages may use narrow reconstruction paths only
+when the reconstructed output is compared with the original prepared FOD:
+regenerate stage0 with `make-minimal-bootstrap-sources`, apply current
+nixpkgs' fingerprinted crates.io helper repair to the affected old helper,
+repair the two known git-lfs vendor-generation derivations, and source the
+removed Mes `ldexpl.c` from the pinned current nixpkgs tree. Unknown failures
+and manual/EULA-gated sources remain failures and are never inserted into
+`verified_fods`.
+
+The 2026-07-22 production journal audit covered all 30 recorded FOD failures in
+the inspected window and found five classes: 16 crates.io API rejections across
+eight Cargo vendor FODs, four bootstrap placeholder failures, four contradictory
+Go vendor-mode failures, two dead Mes `ldexpl.c` URL failures, and four
+DisplayLink `requireFile`/EULA failures. The first four classes have the narrow
+reconstruction paths above. DisplayLink remains an actionable, honest failure
+until its licensed source is supplied; there were no unclassified failures in
+the window.
 
 Direct `--store` operations bypass the Nix daemon scheduler, so add an
 independent `GARNIX_FOD_REMOTE_MAX_JOBS` semaphore (NixOS option

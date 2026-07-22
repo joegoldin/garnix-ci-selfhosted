@@ -445,6 +445,25 @@ would bypass the security check. The conclusion is therefore unambiguous:
 **every requested FOD is verified (or already known-good) → success; any failed
 prepare or strict rebuild → failure**.
 
+The checker also has narrow, hash-preserving recovery paths for historical
+nixpkgs FODs that cannot be rebuilt verbatim with today's source services:
+
+- pre-seeded `stage0-posix` placeholders are regenerated with
+  `nixpkgs#make-minimal-bootstrap-sources`;
+- older `fetchCargoVendor` helpers are retried with current nixpkgs' identifying
+  User-Agent and `static.crates.io` endpoint;
+- the two fingerprinted git-lfs `buildGoModule` vendor generators that
+  inherited the contradictory `GOFLAGS=-mod=vendor` are regenerated in module
+  mode (unknown Go failures are not rewritten); and
+- the removed Mes `ldexpl.c` GitLab URL is checked against the authoritative
+  file now carried in the pinned current nixpkgs source.
+
+Each recovery must produce the same fixed-output store path as the prepared
+original before it is recorded as verified. Unknown failures still fail closed.
+Manual/EULA-gated sources (for example DisplayLink's `requireFile`) cannot be
+verified unattended unless the operator supplies the licensed source; a cached
+output is not treated as proof that its builder and hash agree.
+
 **Check conclusions map to the forge's native ones.** A run/check reports one of
 `success`, `failure`, `timed out`, `cancelled`, or `skipped`. On GitHub these
 become check-run conclusions (`success`/`failure`/`timed_out`/`cancelled`/`skipped`);
@@ -1417,6 +1436,7 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | nix build: `can't find source for <new file>` | new files must be `git add`ed before a git-flake build sees them |
 | 401s from your private substituter inside builds | set `buildNetRcFile` (the sandbox can't read the host's root-only netrc) |
 | FOD prepare/rebuild reports “source unavailable” or `--rebuild and --check error if the derivation was not previously built` | the checker always prepares/substitutes the baseline on the same store before strict `--rebuild`; any remaining error fails closed. Never classify builder-controlled stderr as a trusted fetch exception |
+| FOD check reports a manual/EULA-gated `requireFile` source | provide the licensed source through the package's documented setup or remove that package from the checked graph. Garnix will not call a cached FOD “verified” when its source cannot legally/technically be reconstructed |
 
 ---
 
