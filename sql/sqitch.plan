@@ -15,3 +15,4 @@ add-server-stats 2026-07-17T20:00:00Z joegoldin <joe@joegold.in> # Per-server re
 add-server-domains 2026-07-18T10:00:00Z joegoldin <joe@joegold.in> # servers.domains: extra declared hostnames per hosted server
 add-connected-domains 2026-07-18T10:05:00Z joegoldin <joe@joegold.in> # connected_domains: operator-registered hosting domains (DNS-points-here verified)
 add-server-ssh-users 2026-07-18T10:10:00Z joegoldin <joe@joegold.in> # servers.ssh_users: real guest login usernames captured at deploy time
+add-private-input-fork-approval-requests 2026-07-21T18:20:00Z joegoldin <joe@joegold.in> # Record external-fork private-input blocks for explicit self-host approval

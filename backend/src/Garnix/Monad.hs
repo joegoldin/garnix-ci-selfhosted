@@ -685,7 +685,7 @@ log :: Severity -> Text -> M ()
 log sev txt = do
   spans <- asks spanCtx
   logger <- asks logger
-  liftIO $ logger (LogItem sev (nubOrd spans) (limitMessage txt))
+  liftIO $ logger (LogItem sev (nubOrd spans) (limitMessage $ obfuscateGithubToken txt))
   case sev of
     Critical -> incrementEvent #logsCritical
     Error -> incrementEvent #logsError

@@ -311,9 +311,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
     clientId <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_CLIENT_ID"
     secretFile <- lookupEnv "GARNIX_DEFAULT_AUTHENTIK_CLIENT_SECRET_FILE"
     pure $ DefaultAuthentikConfig <$> (cs <$> issuer) <*> (cs <$> clientId) <*> secretFile
-  -- Warm-pool sizing. Upstream keeps a large Hetzner pool; self-host keeps a
-  -- single small local VM warm unless GARNIX_SERVER_POOL overrides it
-  -- (format: "i2x4:1,i4x8:0").
+  -- Warm-pool sizing. The NixOS module renders its typed `serverPool` option as
+  -- GARNIX_SERVER_POOL; direct/manual launches may provide the same format.
   poolEnv <- lookupEnv "GARNIX_SERVER_POOL"
   let parseTier t = lookup (T.toLower t) (map swap serverTierTextMapping)
       parsePool s =
@@ -322,8 +321,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
             | entry <- T.splitOn "," (cs s),
               [tier, count] <- [T.splitOn ":" entry]
           ]
-      -- Self-host keeps a single default-size (i1x1) local VM warm unless
-      -- GARNIX_SERVER_POOL overrides it (format: "i1x1:1,i4x4:0").
+      -- Preserve one i1x1 as the fallback for non-module/manual launches.
       serverPool = maybe [(I1x1, 1)] parsePool poolEnv
   -- This fork provisions local microVMs only; the provisioner daemon socket is
   -- required (there is no Hetzner Cloud fallback).

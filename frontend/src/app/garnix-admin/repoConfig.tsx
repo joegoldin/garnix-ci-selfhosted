@@ -2,108 +2,94 @@
 
 import { useState } from "react";
 import { Button } from "@/components/button";
-import { getRepoConfig, setRepoConfig, RepoConfig } from "@/services/admin";
+import { Loading } from "@/components/loading";
+import { useLoading } from "@/hooks/useLoading";
+import {
+  PrivateInputForkRequest,
+  getPrivateInputForkRequests,
+  setPrivateInputForkApproval,
+} from "@/services/admin";
+import styles from "./repoConfig.module.css";
 
-// Admin-only editor for per-repo config. Lets an operator allow a public repo
-// to depend on private flake inputs, and route that repo's build outputs to the
-// private (authenticated) cache bucket so nothing leaks to the public cache.
+// Trusted self-host builds use private inputs automatically. This list is an
+// exception inbox: a row exists only after an external fork was blocked, so an
+// operator never has to pre-register ordinary repositories.
 const RepoConfigEditor = () => {
-  const [owner, setOwner] = useState("");
-  const [repo, setRepo] = useState("");
-  const [config, setConfig] = useState<RepoConfig | null>(null);
+  const requests = useLoading(getPrivateInputForkRequests);
+  const [busyRepo, setBusyRepo] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  const load = async () => {
+  const setAllowed = async (
+    request: PrivateInputForkRequest,
+    allowed: boolean,
+  ) => {
+    const key = `${request.repoUser}/${request.repoName}`;
     setStatus(null);
-    setBusy(true);
-    const res = await getRepoConfig(owner.trim(), repo.trim());
-    setBusy(false);
-    if (!res.ok) {
-      setConfig(null);
-      setStatus(`Error loading: ${res.error.message}`);
+    setBusyRepo(key);
+    const result = await setPrivateInputForkApproval(
+      request.repoUser,
+      request.repoName,
+      allowed,
+    );
+    setBusyRepo(null);
+    if (!result.ok) {
+      setStatus(`Error saving ${key}: ${result.error.message}`);
       return;
     }
-    setConfig(res.data);
-    setStatus(`Loaded config for ${owner.trim()}/${repo.trim()}.`);
-  };
-
-  const save = async () => {
-    if (config == null) return;
-    setStatus(null);
-    setBusy(true);
-    const res = await setRepoConfig(owner.trim(), repo.trim(), config);
-    setBusy(false);
     setStatus(
-      res.ok
-        ? `Saved config for ${owner.trim()}/${repo.trim()}.`
-        : `Error saving: ${res.error.message}`,
+      allowed
+        ? `External-fork private inputs are allowed for ${key}. Retry the blocked build.`
+        : `External-fork private-input approval revoked for ${key}.`,
     );
+    requests.reload();
   };
 
   return (
     <div>
-      <h2>Per-repo config</h2>
-      <p>
-        Allow a public repo to use private flake inputs. Pair it with
-        &ldquo;private cache&rdquo; so the resulting closures are only served to
-        authenticated clients.
+      <h2>External-fork private inputs</h2>
+      <p className={styles.help}>
+        Trusted pushes use private inputs automatically and their outputs go to
+        the authenticated cache. A repository appears here only after an
+        external fork requests private inputs and its build is blocked.
       </p>
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-        <input
-          placeholder="owner"
-          value={owner}
-          onChange={(e) => setOwner(e.target.value)}
-        />
-        <span>/</span>
-        <input
-          placeholder="repo"
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-        />
-        <Button
-          onClick={load}
-          loading={busy}
-          style="secondary"
-        >
-          Load
-        </Button>
-      </div>
-      {config != null && (
-        <div style={{ marginTop: "1rem" }}>
-          <label style={{ display: "block", marginBottom: "0.5rem" }}>
-            <input
-              type="checkbox"
-              checked={config.skipPrivateInputsCheck}
-              onChange={(e) =>
-                setConfig({
-                  ...config,
-                  skipPrivateInputsCheck: e.target.checked,
-                })
-              }
-            />{" "}
-            Allow private flake inputs (skip the public-repo private-deps check)
-          </label>
-          <label style={{ display: "block", marginBottom: "0.5rem" }}>
-            <input
-              type="checkbox"
-              checked={config.privateCache}
-              onChange={(e) =>
-                setConfig({ ...config, privateCache: e.target.checked })
-              }
-            />{" "}
-            Route cache to the private (authenticated) bucket
-          </label>
-          <Button onClick={save} loading={busy}>
-            Save
-          </Button>
-        </div>
+      {requests.loading ? (
+        <Loading />
+      ) : !requests.data.ok ? (
+        <p className={styles.error}>{requests.data.error.message}</p>
+      ) : requests.data.data.length === 0 ? (
+        <p className={styles.help}>No external-fork approvals requested.</p>
+      ) : (
+        <ul className={styles.requestList}>
+          {requests.data.data.map((request) => {
+            const key = `${request.repoUser}/${request.repoName}`;
+            return (
+              <li key={key} className={styles.requestRow}>
+                <div className={styles.requestDetails}>
+                  <span className={styles.requestRepo}>{key}</span>
+                  <span className={styles.requestTime}>
+                    Blocked {request.blockedAt.toLocaleString()}
+                  </span>
+                </div>
+                <span
+                  className={`${styles.badge} ${
+                    request.allowed ? styles.badgeAllowed : styles.badgeBlocked
+                  }`}
+                >
+                  {request.allowed ? "Allowed" : "Blocked"}
+                </span>
+                <Button
+                  style={request.allowed ? "warning" : "primary"}
+                  loading={busyRepo === key}
+                  onClick={() => setAllowed(request, !request.allowed)}
+                >
+                  {request.allowed ? "Revoke" : "Allow"}
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
       )}
-      {status && (
-        <p style={{ marginTop: "1rem" }}>
-          <em>{status}</em>
-        </p>
-      )}
+      {status && <p className={styles.status}>{status}</p>}
     </div>
   );
 };

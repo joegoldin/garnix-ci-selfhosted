@@ -140,12 +140,7 @@ spec = do
             [("Origin", cs appOrigin)]
         result `shouldHaveStatusCode` 426
 
-      -- @skip-ci: passes on a real host but flakes inside the CI action
-      -- sandbox — the client sees a raw TCP close (ConnectionClosed) instead
-      -- of the server's close frame, i.e. the websocket close handshake loses
-      -- a race under the sandbox's scheduling. Runs locally/dev; needs a look
-      -- from whoever owns the terminal feature.
-      it "upgrades an authenticated owned connection and closes when the shell exits @skip-ci" $ withServer $ \testServer -> do
+      it "upgrades an authenticated owned connection and closes when the shell exits" $ withServer $ \testServer -> do
         user <- testServer.login
         -- Point the "guest" at a closed local port: ssh fails immediately, the
         -- PTY hits EOF, and the server must close the websocket cleanly.
@@ -164,14 +159,31 @@ spec = do
             (terminalPath server)
             WS.defaultConnectionOptions
             [("Authorization", "Bearer " <> cs jwt)]
-            $ \conn ->
-              let drainUntilClose =
-                    (WS.receiveDataMessage conn >> drainUntilClose)
-                      `catch` \case
-                        WS.CloseRequest _ reason -> pure (cs reason :: Text)
-                        other -> Safe.throwIO other
-               in drainUntilClose
+            drainUntilClose
         closeReason `shouldBeM` Just "shell exited"
+
+      it "closes with a generic reason when session setup fails"
+        $ local (#sshTerminalCaKey .~ "/etc/hostname")
+        $ withServer
+        $ \testServer -> do
+          user <- testServer.login
+          server <- createSimpleServer user (ipv4Addr .~ "127.0.0.1:1")
+          jwtSettings' <- view #jwtSettings
+          jwt <-
+            liftIO (makeJWT (WebSession user (GhToken "tok")) jwtSettings' Nothing) >>= \case
+              Left err -> liftIO $ Safe.throwString ("makeJWT failed: " <> cs (show err))
+              Right jwt -> pure jwt
+          let port :: Int
+              port = read $ cs $ T.takeWhile isDigit $ T.drop (T.length "http://localhost:") (apiUrl testServer)
+          closeReason <- liftIO $ timeout (30 * 1000000) $ do
+            WS.runClientWith
+              "127.0.0.1"
+              port
+              (terminalPath server)
+              WS.defaultConnectionOptions
+              [("Authorization", "Bearer " <> cs jwt)]
+              drainUntilClose
+          closeReason `shouldBeM` Just "terminal session failed"
 
 terminalPath :: ServerInfo -> String
 terminalPath server = cs ("/api/terminal/" <> getHashId (getServerId (server ^. id)))
@@ -227,3 +239,10 @@ markServerDead :: ServerInfo -> M ()
 markServerDead serverInfo = do
   now <- liftIO getCurrentTime
   DB.updateServerPostDeploy $ serverInfo & endedAt ?~ now
+
+drainUntilClose :: WS.Connection -> IO Text
+drainUntilClose conn =
+  (WS.receiveDataMessage conn >> drainUntilClose conn)
+    `catch` \case
+      WS.CloseRequest _ reason -> pure (cs reason)
+      other -> Safe.throwIO other

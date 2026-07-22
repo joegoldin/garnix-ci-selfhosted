@@ -751,6 +751,7 @@ test-suite spec
       Garnix.AccessTokenSpec
       Garnix.ActionSpec
       Garnix.API.AccountSpec
+      Garnix.API.AdminSpec
       Garnix.API.ArtifactsSpec
       Garnix.API.AuthSpec
       Garnix.API.BadgesSpec

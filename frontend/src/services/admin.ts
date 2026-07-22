@@ -1,39 +1,44 @@
 import { z } from "zod";
-import { APIResult, Ok, fetchFromAPI } from ".";
+import { APIResult, fetchFromAPI } from ".";
 
-const repoConfigSchema = z.object({
-  skip_private_inputs_check: z.boolean(),
-  private_cache: z.boolean(),
-});
+const privateInputForkRequestSchema = z
+  .object({
+    repo_user: z.string(),
+    repo_name: z.string(),
+    allowed: z.boolean(),
+    blocked_at: z.coerce.date(),
+  })
+  .transform((request) => ({
+    repoUser: request.repo_user,
+    repoName: request.repo_name,
+    allowed: request.allowed,
+    blockedAt: request.blocked_at,
+  }));
 
-export type RepoConfig = {
-  skipPrivateInputsCheck: boolean;
-  privateCache: boolean;
-};
+export type PrivateInputForkRequest = z.infer<
+  typeof privateInputForkRequestSchema
+>;
 
-// Admin-only: read the per-repo config (whether a public repo may use private
-// flake inputs, and whether its cache is routed to the private bucket).
-export const getRepoConfig = async (
+// Only repositories that have actually been blocked after an external fork
+// requested private inputs are returned here. Trusted builds never create a
+// request even though their cache is automatically private.
+export const getPrivateInputForkRequests = async (): Promise<
+  APIResult<Array<PrivateInputForkRequest>>
+> =>
+  await fetchFromAPI(
+    z.array(privateInputForkRequestSchema),
+    "GET",
+    "admin/private-input-forks",
+  );
+
+export const setPrivateInputForkApproval = async (
   owner: string,
   repo: string,
-): Promise<APIResult<RepoConfig>> => {
-  const res = await fetchFromAPI(
-    repoConfigSchema,
-    "GET",
-    `admin/repo-config/${owner}/${repo}`,
+  allowed: boolean,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.unknown(),
+    "PUT",
+    `admin/private-input-forks/${owner}/${repo}`,
+    { body: JSON.stringify({ allowed }) },
   );
-  if (!res.ok) return res;
-  return Ok({
-    skipPrivateInputsCheck: res.data.skip_private_inputs_check,
-    privateCache: res.data.private_cache,
-  });
-};
-
-// Admin-only: upsert the per-repo config.
-export const setRepoConfig = (owner: string, repo: string, config: RepoConfig) =>
-  fetchFromAPI(z.unknown(), "POST", `admin/repo-config/${owner}/${repo}`, {
-    body: JSON.stringify({
-      skip_private_inputs_check: config.skipPrivateInputsCheck,
-      private_cache: config.privateCache,
-    }),
-  });

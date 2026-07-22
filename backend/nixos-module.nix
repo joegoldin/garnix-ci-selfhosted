@@ -8,6 +8,25 @@
 }:
 let
   buildLogsFluentBitPort = 8888;
+  serverTierNames = [
+    "i1x1"
+    "i1x2"
+    "i2x2"
+    "i2x3"
+    "i2x4"
+    "i4x2"
+    "i4x4"
+    "i4x8"
+    "i8x8"
+    "i8x16"
+    "i16x16"
+    "i16x32"
+  ];
+  serverPoolEnv = lib.concatStringsSep "," (
+    lib.mapAttrsToList (tier: count: "${tier}:${toString count}") (
+      lib.filterAttrs (_: count: count > 0) config.services.garnixServer.serverPool
+    )
+  );
 
   logsDir = pkgs.writeShellScriptBin "logsDir" ''
     if [ -d /var/lib/garnix/logs ]; then
@@ -322,6 +341,25 @@ in
           type = lib.types.bool;
           default = false;
         };
+        serverPool = lib.mkOption {
+          type = lib.types.submodule {
+            options = lib.genAttrs serverTierNames (
+              _:
+              lib.mkOption {
+                type = lib.types.ints.unsigned;
+                default = 0;
+              }
+            );
+          };
+          default = {
+            i1x1 = 1;
+          };
+          description = ''
+            Number of pre-warmed local hosting guests for each machine tier.
+            A deployment can only claim a tier present in this pool. This is
+            rendered as GARNIX_SERVER_POOL for the backend.
+          '';
+        };
         maxLocalJobs = lib.mkOption {
           type = lib.types.int;
           default = 0;
@@ -626,6 +664,9 @@ in
         ]
         ++ lib.optionals (config.services.garnixServer.provisionerSocket != null) [
           "GARNIX_PROVISIONER_SOCKET=${config.services.garnixServer.provisionerSocket}"
+        ]
+        ++ lib.optionals config.services.garnixServer.provisionServerPool [
+          "GARNIX_SERVER_POOL=${serverPoolEnv}"
         ]
         ++ lib.optionals (config.services.garnixServer.actionHost != null) [
           "GARNIX_ACTION_HOST=${config.services.garnixServer.actionHost}"

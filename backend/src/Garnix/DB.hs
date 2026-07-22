@@ -143,7 +143,8 @@ setDefaultBuildTimeout mMinutes =
 -- | Every repo that has a per-repo build/eval timeout override (minutes).
 getReposWithBuildTimeout :: M [(GhRepoOwner, GhRepoName, Int32)]
 getReposWithBuildTimeout =
-  catMaybes . map (\(o, r, m) -> (o,r,) <$> m)
+  catMaybes
+    . map (\(o, r, m) -> (o,r,) <$> m)
     <$> pgQuery
       [pgSQL|
         SELECT repo_user, repo_name, build_timeout_minutes
@@ -201,21 +202,76 @@ cancelRunningBuildsExceeding minutes scope
                 )
             |]
 
--- | Upsert the admin-configurable fields of a repo's config. Used by the admin
--- API to allow a public repo to use private flake inputs and to route its cache
--- to the private (authenticated) bucket.
-upsertRepoConfig :: GhRepoOwner -> GhRepoName -> Bool -> Bool -> M ()
-upsertRepoConfig repoOwner repoName skipInputChecks privateCache =
+-- | Permanently route a repo's outputs to the authenticated cache without
+-- changing its external-fork approval. Called as soon as a trusted self-host
+-- build discovers a private input.
+ensureRepoPrivateCache :: GhRepoOwner -> GhRepoName -> M ()
+ensureRepoPrivateCache repoOwner repoName =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config (repo_user, repo_name, private_cache)
+          VALUES (${repoOwner}, ${repoName}, TRUE)
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET private_cache = TRUE
+      |]
+
+-- | Record the first time an external fork was blocked from using private
+-- inputs. The cache is made private immediately so an eventual approved retry
+-- cannot race configuration. Repeated blocked attempts keep the original time.
+recordPrivateInputForkBlock :: GhRepoOwner -> GhRepoName -> M ()
+recordPrivateInputForkBlock repoOwner repoName =
   void
     $ pgExec
       [pgSQL|
         INSERT INTO repo_config
-          (repo_user, repo_name, skip_private_inputs_check_for_collaborators, private_cache)
-          VALUES (${repoOwner}, ${repoName}, ${skipInputChecks}, ${privateCache})
+          (repo_user, repo_name, private_cache, private_input_fork_blocked_at)
+          VALUES (${repoOwner}, ${repoName}, TRUE, now())
           ON CONFLICT (repo_user, repo_name)
           DO UPDATE SET
-            skip_private_inputs_check_for_collaborators = ${skipInputChecks},
-            private_cache = ${privateCache}
+            private_cache = TRUE,
+            private_input_fork_blocked_at = COALESCE(
+              repo_config.private_input_fork_blocked_at,
+              EXCLUDED.private_input_fork_blocked_at
+            )
+      |]
+
+-- | Repositories that have actually encountered the external-fork private
+-- input restriction. Ordinary private-cache rows are intentionally absent.
+getPrivateInputForkApprovalRequests :: M [(GhRepoOwner, GhRepoName, Bool, UTCTime)]
+getPrivateInputForkApprovalRequests =
+  catMaybes
+    . fmap
+      ( \(repoOwner, repoName, allowed, mBlockedAt) ->
+          (repoOwner,repoName,allowed,) <$> mBlockedAt
+      )
+    <$> pgQuery
+      [pgSQL|
+        SELECT
+          repo_user,
+          repo_name,
+          skip_private_inputs_check_for_collaborators,
+          private_input_fork_blocked_at
+        FROM repo_config
+        WHERE private_input_fork_blocked_at IS NOT NULL
+        ORDER BY private_input_fork_blocked_at DESC, repo_user, repo_name
+      |]
+
+-- | Allow or revoke private inputs for external fork PRs. Only a recorded
+-- block is mutable through this path; arbitrary repos cannot be made to appear
+-- in the approval UI by calling the endpoint directly.
+setPrivateInputForkApproval :: GhRepoOwner -> GhRepoName -> Bool -> M ()
+setPrivateInputForkApproval repoOwner repoName allowed =
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE repo_config
+        SET
+          skip_private_inputs_check_for_collaborators = ${allowed},
+          private_cache = TRUE
+        WHERE repo_user = ${repoOwner}
+          AND repo_name = ${repoName}
+          AND private_input_fork_blocked_at IS NOT NULL
       |]
 
 getBuild :: BuildId -> M Build
@@ -2109,7 +2165,7 @@ getServerStatsHistory serverId = do
   pure
     $ reverse
       [ ServerStatsSample cpuPct memUsedKb memTotalKb sampledAt
-      | (cpuPct, memUsedKb, memTotalKb, sampledAt) <- rows
+        | (cpuPct, memUsedKb, memTotalKb, sampledAt) <- rows
       ]
 
 -- | The latest sample per server, as an assoc list keyed by ServerId (which
@@ -2127,7 +2183,7 @@ getLatestServerStats = do
       |]
   pure
     [ (serverId, ServerStatsSample cpuPct memUsedKb memTotalKb sampledAt)
-    | (serverId, cpuPct, memUsedKb, memTotalKb, sampledAt) <- rows
+      | (serverId, cpuPct, memUsedKb, memTotalKb, sampledAt) <- rows
     ]
 
 getRunningServersOf :: RepoInfo -> DeploymentType -> M [ServerInfo]

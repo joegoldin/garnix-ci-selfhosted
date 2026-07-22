@@ -1,0 +1,65 @@
+.help {
+  color: #555;
+  line-height: 1.35;
+  margin-bottom: 16px;
+}
+
+.error {
+  color: #b91c1c;
+}
+
+.requestList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #aaa;
+}
+
+.requestRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #ddd;
+}
+
+.requestRow:last-child {
+  border-bottom: none;
+}
+
+.requestDetails {
+  display: flex;
+  flex: 1;
+  min-width: 240px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.requestRepo {
+  font-weight: 600;
+}
+
+.requestTime {
+  color: #666;
+  font-size: 12px;
+}
+
+.badge {
+  padding: 3px 9px;
+  border: 1px solid currentcolor;
+  font-size: 12px;
+}
+
+.badgeAllowed {
+  color: #166534;
+}
+
+.badgeBlocked {
+  color: #9f1239;
+}
+
+.status {
+  margin-top: 12px;
+  font-style: italic;
+}

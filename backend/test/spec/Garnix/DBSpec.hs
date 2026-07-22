@@ -21,6 +21,35 @@ import Test.QuickCheck (generate, shuffle)
 
 spec :: Spec
 spec = do
+  describe "private-input fork approval requests" $ inM $ beforeM_ truncateDBM $ do
+    it "records only actually blocked repos and forces their cache private" $ do
+      DB.getPrivateInputForkApprovalRequests `shouldReturnM` []
+      DB.recordPrivateInputForkBlock "owner" "repo"
+      requests <- DB.getPrivateInputForkApprovalRequests
+      fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) requests
+        `shouldBeM` [("owner", "repo", False)]
+      config <- DB.getRepoConfig "owner" "repo"
+      config ^. privateCache `shouldBeM` True
+      config ^. skipPrivateInputsCheckForCollaborators `shouldBeM` False
+
+    it "allows and revokes a recorded repo without exposing unblocked private-cache rows" $ do
+      DB.ensureRepoPrivateCache "automatic" "repo"
+      DB.getPrivateInputForkApprovalRequests `shouldReturnM` []
+
+      DB.recordPrivateInputForkBlock "blocked" "repo"
+      DB.setPrivateInputForkApproval "blocked" "repo" True
+      approved <- DB.getPrivateInputForkApprovalRequests
+      fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) approved
+        `shouldBeM` [("blocked", "repo", True)]
+      approvedConfig <- DB.getRepoConfig "blocked" "repo"
+      approvedConfig ^. privateCache `shouldBeM` True
+      approvedConfig ^. skipPrivateInputsCheckForCollaborators `shouldBeM` True
+
+      DB.setPrivateInputForkApproval "blocked" "repo" False
+      revoked <- DB.getPrivateInputForkApprovalRequests
+      fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) revoked
+        `shouldBeM` [("blocked", "repo", False)]
+
   describe "newBuild" $ inM $ beforeM_ truncateDBM $ do
     it "allows duplicate builds" $ do
       user <-

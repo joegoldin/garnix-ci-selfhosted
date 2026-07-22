@@ -269,6 +269,17 @@ logout = do
 sessionJwtTtl :: NominalDiffTime
 sessionJwtTtl = 30 * 60
 
+-- | Apply the browser-session lifetime relative to a supplied time. Keeping
+-- this transformation pure makes the security boundary deterministic in tests:
+-- the cookie expiry and Max-Age must describe the same 30-minute window that
+-- servant-auth-server writes into the JWT @exp@ claim.
+sessionCookieSettingsAt :: UTCTime -> CookieSettings -> CookieSettings
+sessionCookieSettingsAt now cookieSettings' =
+  cookieSettings'
+    { cookieExpires = Just (addUTCTime sessionJwtTtl now),
+      cookieMaxAge = Just (secondsToDiffTime (round sessionJwtTtl))
+    }
+
 -- | The Env cookie settings with expiry stamped relative to now.
 -- servant-auth-server's 'acceptLogin' uses 'cookieExpires' verbatim as the
 -- JWT @exp@, so this must be computed per login rather than at startup.
@@ -276,11 +287,7 @@ sessionCookieSettings :: M CookieSettings
 sessionCookieSettings = do
   cookieSettings' <- view #cookieSettings
   now <- liftIO getCurrentTime
-  pure
-    $ cookieSettings'
-      { cookieExpires = Just (addUTCTime sessionJwtTtl now),
-        cookieMaxAge = Just (secondsToDiffTime (round sessionJwtTtl))
-      }
+  pure $ sessionCookieSettingsAt now cookieSettings'
 
 signup :: M SignupLinks
 signup = do

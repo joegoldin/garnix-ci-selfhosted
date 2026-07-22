@@ -9,7 +9,8 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens
 import Data.ByteString.Base64 qualified as Base64
 import Data.String.Interpolate (i)
-import Garnix.API.Auth (selfHostLoginAllowed, selfHostProxyMarkerOk, subscriptionTypeForGroups)
+import Data.Time.Clock (secondsToDiffTime)
+import Garnix.API.Auth (selfHostLoginAllowed, selfHostProxyMarkerOk, sessionCookieSettingsAt, subscriptionTypeForGroups)
 import Garnix.AccessToken.Types
 import Garnix.Build (buildFlake)
 import Garnix.DB qualified as DB
@@ -24,7 +25,7 @@ import Garnix.TestHelpers.WithServer
 import Garnix.Types
 import Network.HTTP.Types (forbidden403)
 import Network.Wreq
-import Servant.Auth.Server (validationKeys)
+import Servant.Auth.Server (CookieSettings (..), defaultCookieSettings, validationKeys)
 import Test.Hspec
 
 spec :: Spec
@@ -34,6 +35,12 @@ spec = do
 
 selfHostDecisionSpec :: Spec
 selfHostDecisionSpec = do
+  describe "sessionCookieSettingsAt" $ do
+    it "sets matching 30-minute JWT and cookie expiries" $ do
+      let now = read "2026-07-21 12:00:00 UTC"
+          settings = sessionCookieSettingsAt now defaultCookieSettings
+      cookieExpires settings `shouldBe` Just (addUTCTime (30 * 60) now)
+      cookieMaxAge settings `shouldBe` Just (secondsToDiffTime (30 * 60))
   describe "selfHostLoginAllowed" $ do
     it "allows any login when self-host mode is off" $ do
       selfHostLoginAllowed False Nothing `shouldBe` True

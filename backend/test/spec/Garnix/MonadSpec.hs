@@ -37,6 +37,12 @@ spec = around_ silence $ do
     it "logs messages" $ do
       log Informational "Some log message" `shouldLog` ["Some log message"]
 
+    it "redacts github access tokens" $ do
+      log
+        Informational
+        "git clone https://x-access-token:ghs_ghsomegithubtoken0000000000000000000@github.com/owner/repo.git"
+        `shouldLog` ["git clone https://x-access-token:XXXXXXXXXXXXXXXX@github.com/owner/repo.git"]
+
     it "logs information from withSpans" $ do
       [logEntry] <- captureLogLines_ $ withSpan (PackageName "foo") $ do
         log Informational "Some log message"

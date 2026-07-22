@@ -330,9 +330,19 @@ terminalApp env login serverId target req respond
         conn <- WS.acceptRequest pending
         lifecycle Informational "terminal session opened"
         result <- tryAny (runSession conn target)
-        lifecycle Informational $ case result of
-          Right reason -> "terminal session closed (" <> reason <> ")"
-          Left _ -> "terminal session closed (error)"
+        case result of
+          Right reason ->
+            lifecycle Informational $ "terminal session closed (" <> reason <> ")"
+          Left _ -> do
+            -- Setup can fail after the upgrade but before 'runSession' reaches
+            -- its normal close path (for example, key generation/signing or
+            -- PTY spawn). Always send a generic close frame in that case: a
+            -- raw TCP close is ambiguous to browsers, was flaky under CI
+            -- scheduling, and can strand the UI without a terminal reason.
+            -- Keep the underlying exception out of the frame and logs because
+            -- it can contain host-side paths or process diagnostics.
+            closeGracefully conn "terminal session failed"
+            lifecycle Informational "terminal session closed (error)"
       where
         rejectOverCap = do
           lifecycle Notice "terminal: websocket rejected (too many concurrent sessions)"

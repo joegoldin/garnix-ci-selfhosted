@@ -3,12 +3,84 @@ module Garnix.FlakeInputAuthorizationSpec where
 import Data.Aeson (Value)
 import Data.Aeson.Types (parseEither)
 import Data.Yaml.TH (yamlQQ)
+import Garnix.DB qualified as DB
 import Garnix.FlakeInputAuthorization
 import Garnix.Prelude
+import Garnix.TestHelpers (defaultCommitInfo, truncateDBM)
+import Garnix.TestHelpers.GithubInterface qualified as GH
+import Garnix.TestHelpers.Monad
+import Garnix.Types
 import Test.Hspec
 
 spec :: Spec
 spec = do
+  describe "privateInputDecision" $ do
+    let owner = GhRepoOwner (GhLogin "joegoldin")
+    it "automatically allows private inputs for trusted self-host pushes"
+      $ privateInputDecision True owner Nothing False
+      `shouldBe` PrivateInputsAllowed
+
+    it "automatically allows a same-owner fork"
+      $ privateInputDecision True owner (Just (PrFromFork "joegoldin/repo-fork")) False
+      `shouldBe` PrivateInputsAllowed
+
+    it "compares github fork owners case-insensitively"
+      $ privateInputDecision True owner (Just (PrFromFork "JoeGoldin/repo-fork")) False
+      `shouldBe` PrivateInputsAllowed
+
+    it "requires approval after an external fork requests private inputs"
+      $ privateInputDecision True owner (Just (PrFromFork "someone-else/repo-fork")) False
+      `shouldBe` PrivateInputsNeedForkApproval
+
+    it "allows an approved external fork and keeps managed-mode policy separate" $ do
+      privateInputDecision True owner (Just (PrFromFork "someone-else/repo-fork")) True
+        `shouldBe` PrivateInputsAllowed
+      privateInputDecision False owner Nothing False
+        `shouldBe` PrivateInputsNeedRepoApproval
+      privateInputDecision False owner Nothing True
+        `shouldBe` PrivateInputsAllowed
+
+  describe "self-host private-input authorization" $ inM $ beforeM_ truncateDBM $ do
+    let privateInput = GithubFlakeInput "owner" "private-input"
+        publicCommit = defaultCommitInfo & repoPublicity .~ RepoIsPublic True
+
+    it "auto-private-caches a trusted public repo without creating an approval request"
+      $ GH.withFakeGithubInterface
+      $ \github -> do
+        GH.mkRepo github "owner" "repo" (#publicity .~ RepoIsPublic True)
+        GH.mkRepo github "owner" "private-input" (#publicity .~ RepoIsPublic False)
+
+        _ <-
+          local (#selfHostMode .~ True)
+            $ authorizeGithubPrivateInputs defaultRepoConfig publicCommit (publicCommit ^. repoInfo) [privateInput]
+        config <- DB.getRepoConfig "owner" "repo"
+        config ^. privateCache `shouldBeM` True
+        config ^. skipPrivateInputsCheckForCollaborators `shouldBeM` False
+        DB.getPrivateInputForkApprovalRequests `shouldReturnM` []
+
+    it "records an external-fork block, then permits an approved retry"
+      $ GH.withFakeGithubInterface
+      $ \github -> do
+        GH.mkRepo github "owner" "repo" (#publicity .~ RepoIsPublic True)
+        GH.mkRepo github "owner" "private-input" (#publicity .~ RepoIsPublic False)
+        let forkCommit = publicCommit & prFromFork ?~ PrFromFork "outsider/repo-fork"
+
+        void
+          $ try
+          $ local (#selfHostMode .~ True)
+          $ authorizeGithubPrivateInputs defaultRepoConfig forkCommit (forkCommit ^. repoInfo) [privateInput]
+        requests <- DB.getPrivateInputForkApprovalRequests
+        fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) requests
+          `shouldBeM` [("owner", "repo", False)]
+
+        DB.setPrivateInputForkApproval "owner" "repo" True
+        approvedConfig <- DB.getRepoConfig "owner" "repo"
+        _ <-
+          local (#selfHostMode .~ True)
+            $ authorizeGithubPrivateInputs approvedConfig forkCommit (forkCommit ^. repoInfo) [privateInput]
+        finalConfig <- DB.getRepoConfig "owner" "repo"
+        finalConfig ^. privateCache `shouldBeM` True
+
   describe "_extractPrivateReposFromErrors" $ do
     it "extracts a repo name from from nix error messages for private repos" $ do
       _extractPrivateReposFromErrors "while fetching the input 'github:foo'\n"

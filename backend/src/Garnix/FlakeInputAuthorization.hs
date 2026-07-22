@@ -6,8 +6,11 @@ module Garnix.FlakeInputAuthorization
   ( checkAuthorization,
     githubAccessTokenNixConfig,
     -- exported for tests
+    authorizeGithubPrivateInputs,
     FlakeInput (..),
     GithubFlakeInput (..),
+    PrivateInputDecision (..),
+    privateInputDecision,
     _parseFlakeMetaData,
     _extractPrivateReposFromErrors,
   )
@@ -104,29 +107,57 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
     [] -> pure $ NixConfig mempty
     _
       | isRepoPublic selfRepoPublicity -> do
-          -- A public repo may only depend on private flake inputs with the
-          -- explicit per-repo opt-in (skip_private_inputs_check_for_collaborators,
-          -- settable via the admin API) — the same policy as upstream, including
-          -- in self-host mode. When the opt-in allows it, self-host additionally
-          -- persists that this repo's cache is private (an idempotent upsert, so
-          -- it only writes the first time), keeping the resulting closures off
-          -- the unauthenticated public cache; S3Cache reads private_cache to
-          -- route the upload to the authenticated bucket.
           selfHost <- view #selfHostMode
-          let skipPrivateInputChecks = repoConfig ^. skipPrivateInputsCheckForCollaborators
-          unless skipPrivateInputChecks $ do
-            throw
-              $ OtherError
-              $ "Public repository has private dependencies, which is not allowed. Private dependencies: "
-              <> T.unwords (fmap showPretty privateInputs)
-          when (selfHost && not (repoConfig ^. privateCache))
-            $ DB.upsertRepoConfig (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) (repoConfig ^. skipPrivateInputsCheckForCollaborators) True
-          pure $ githubAccessTokenNixConfig $ repoInfo' ^. ghToken
-      | isJust $ commitInfo ^. prFromFork ->
-          throw
-            $ OtherError
-              "Repository has private dependencies, but PR is from fork."
+          let owner = repoInfo' ^. ghRepoOwner
+              repo = repoInfo' ^. ghRepoName
+              configuredApproval = repoConfig ^. skipPrivateInputsCheckForCollaborators
+          case privateInputDecision selfHost owner (commitInfo ^. prFromFork) configuredApproval of
+            PrivateInputsAllowed -> do
+              -- In self-host mode private inputs are automatic for trusted
+              -- pushes/branches. Persist private-cache routing before any
+              -- upload so their closures can never reach the public bucket.
+              when selfHost $ DB.ensureRepoPrivateCache owner repo
+              pure $ githubAccessTokenNixConfig $ repoInfo' ^. ghToken
+            PrivateInputsNeedForkApproval -> do
+              DB.recordPrivateInputForkBlock owner repo
+              throw
+                $ OtherError
+                $ "This external fork requested private flake inputs. An administrator must approve external-fork private inputs for "
+                <> showPretty owner
+                <> "/"
+                <> showPretty repo
+                <> " before retrying the build. Private dependencies: "
+                <> T.unwords (fmap showPretty privateInputs)
+            PrivateInputsNeedRepoApproval ->
+              throw
+                $ OtherError
+                $ "Public repository has private dependencies, which is not allowed. Private dependencies: "
+                <> T.unwords (fmap showPretty privateInputs)
     _ -> do
+      selfHost <- view #selfHostMode
+      case commitInfo ^. prFromFork of
+        Just _
+          | not selfHost ->
+              throw
+                $ OtherError
+                  "Repository has private dependencies, but PR is from fork."
+        _ ->
+          case privateInputDecision
+            selfHost
+            (repoInfo' ^. ghRepoOwner)
+            (commitInfo ^. prFromFork)
+            (repoConfig ^. skipPrivateInputsCheckForCollaborators) of
+            PrivateInputsNeedForkApproval -> do
+              DB.recordPrivateInputForkBlock (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName)
+              throw
+                $ OtherError
+                $ "This external fork requested private flake inputs. An administrator must approve external-fork private inputs for "
+                <> showPretty (repoInfo' ^. ghRepoOwner)
+                <> "/"
+                <> showPretty (repoInfo' ^. ghRepoName)
+                <> " before retrying the build. Private dependencies: "
+                <> T.unwords (fmap showPretty privateInputs)
+            _ -> pure ()
       baseRepoCollaborators' <- getRepoCollaborators iAuth (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) <?> "Getting repo collaborators"
       baseRepoCollaborators <- case baseRepoCollaborators' of
         RepoNotFound -> throw $ OtherError "checkAuthorization: base repo not found"
@@ -134,7 +165,7 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
       forM_ privateInputs $ \privateInput -> do
         when ((repoInfo' ^. ghRepoOwner) /= owner privateInput) $ do
           throw $ OtherError $ showPretty privateInput <> " is private or doesn't exist.\nIf it is private and you would like to use it, see https://garnix.io/docs/private_inputs."
-        let skipPrivateInputChecks = repoConfig ^. skipPrivateInputsCheckForCollaborators
+        let skipPrivateInputChecks = selfHost || repoConfig ^. skipPrivateInputsCheckForCollaborators
         unless skipPrivateInputChecks $ do
           thisInputCollaborators' <-
             getRepoCollaborators iAuth (repoInfo' ^. ghRepoOwner) (repo privateInput)
@@ -151,6 +182,29 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
             <> "). The users missing permissions are: "
             <> showPretty missingUsers
       pure $ githubAccessTokenNixConfig $ repoInfo' ^. ghToken
+
+-- | Decision at the public-repo/private-input boundary. Self-hosted trusted
+-- pushes and same-owner forks are automatic. A fork owned by somebody else
+-- needs the one-time repo approval surfaced after its first block. Managed mode
+-- retains upstream's explicit per-repo policy.
+data PrivateInputDecision
+  = PrivateInputsAllowed
+  | PrivateInputsNeedForkApproval
+  | PrivateInputsNeedRepoApproval
+  deriving stock (Eq, Show)
+
+privateInputDecision :: Bool -> GhRepoOwner -> Maybe PrFromFork -> Bool -> PrivateInputDecision
+privateInputDecision selfHost baseOwner mFork configuredApproval
+  | configuredApproval = PrivateInputsAllowed
+  | not selfHost = PrivateInputsNeedRepoApproval
+  | maybe False (not . forkOwnedBy baseOwner) mFork = PrivateInputsNeedForkApproval
+  | otherwise = PrivateInputsAllowed
+  where
+    forkOwnedBy :: GhRepoOwner -> PrFromFork -> Bool
+    forkOwnedBy (GhRepoOwner (GhLogin owner)) (PrFromFork fullName) =
+      case T.breakOn "/" fullName of
+        (forkOwner, slashAndRepo) ->
+          T.toCaseFold forkOwner == T.toCaseFold owner && not (T.null slashAndRepo)
 
 _extractPrivateReposFromErrors :: Text -> Maybe [Text]
 _extractPrivateReposFromErrors s =

@@ -36,9 +36,10 @@ NixOS machine. Everything below uses example values — substitute your own:
     `X-Auth-Request-Groups` **and** a private `X-Garnix-Proxy-Auth`
     provenance marker matched by the backend; membership of `adminGroup` ⇒
     garnix admin, and missing/mismatched marker configuration fails closed;
-  - public repos may depend on **private flake inputs**: the guard auto-allows
-    it and routes that repo's store paths to the **authenticated** cache bucket
-    so nothing private leaks via the public cache.
+  - trusted self-host builds may use **private flake inputs** automatically and
+    are permanently routed to the **authenticated** cache bucket. An external
+    fork is blocked on its first attempt and appears in the admin approval
+    inbox; approved retries keep the same private-cache routing.
 - **Restart-safe package builds** — evaluation checkpoints the derivation before
   FOD checking and realization. A `garnixServer` deploy resumes checkpointed
   builds on startup instead of cancelling them; work interrupted before that
@@ -59,8 +60,9 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **`buildNetRcFile`** — a netrc that is bound into the build sandbox so
   sandboxed evals/builds can substitute from *authenticated* caches (e.g. a
   private [attic](https://github.com/zhaofengli/attic)).
-- **Admin API + UI** (`/garnix-admin` → "Per-repo config", `/api/admin/repo-config`)
-  for per-repo overrides (`skip_private_inputs_check`, `private_cache`).
+- **External-fork approval inbox** (`/garnix-admin`) — ordinary repositories
+  need no setup and never appear there. If an external fork first attempts to
+  use private inputs, its base repo appears with Allow/Revoke controls.
 - **Configure page** (`/configure`, sidebar → "Configure") — a self-host web UI
   to set a **default max build time** and **per-repo overrides** (each caps the
   eval and build phases *and* the pre-build nix commands — garnix-config eval,
@@ -466,9 +468,19 @@ as viewing the repo.
 
 **Private flake inputs:** `git+ssh://` inputs can never work in CI (the sandbox
 has no SSH key) — use `github:` refs; garnix injects its App token for those.
-If a **public** repo has **private** `github:` inputs, self-host mode allows it
-automatically and routes that repo's closures to the private (authenticated)
-bucket. Override per-repo on `/garnix-admin` → "Per-repo config".
+If a trusted push, branch, or same-owner fork has private `github:` inputs,
+self-host mode injects the GitHub App token automatically and marks the base
+repo `private_cache` before any upload. If the App installation cannot read an
+input, the fetch fails normally and the build reports that real error.
+
+An external fork is different: letting arbitrary fork code name any private
+repo visible to a broadly installed GitHub App could expose that input through
+build output. Its first attempt is therefore blocked and recorded. Only then
+does the base repo appear under `/garnix-admin` → "External-fork private
+inputs"; Allow permits a retry, Revoke restores the block, and either state
+keeps every resulting closure in the authenticated cache. Private cache reads
+require a cache-scope Garnix token whose GitHub login is a collaborator on the
+base repo.
 
 ## Actions (running `actions` on a self-host runner)
 
@@ -887,8 +899,9 @@ servers:
 | `i16x16`          | 16   | 16384     |
 | `i16x32`          | 16   | 32768     |
 
-The pool pre-warms `provisionServerPool`-configured tiers; override the set with
-`GARNIX_SERVER_POOL` (format `i1x1:1,i4x4:0`).
+Enable pre-warming with `services.garnixServer.provisionServerPool`, then set
+the exact available tiers with `services.garnixServer.serverPool` (for example,
+`{ i2x4 = 1; }`). Each deployment's `machine` must match a pooled tier.
 
 Deferred (documented, not implemented): guest IPv6 (recorded as `""`),
 heartbeat-based reaping (disabled in self-host; deploys tear servers down),
@@ -1101,6 +1114,11 @@ control-plane endpoint with `services.garnixServer.statsReportUrl` (or
 or HTTP errors in `garnix-stats-reporter.service`. Keep `/api/hosts/stats`
 outside the interactive-login gate; the backend independently restricts it to
 the guest bridge source subnet.
+
+Set `services.garnixServer.serverPool` to the machine tiers deployments may
+claim. For example, `{ i2x4 = 1; }` keeps one 2-vCPU/4-GiB guest warm; the
+deployment must request the same tier with `deployment.machine = "i2x4"`.
+Unlisted tiers have no warm guests and cannot be claimed.
 
 When upgrading an existing deployment, update the repository's `garnix-ci`
 flake input and redeploy it once. The backend refreshes `stats.env` before the
