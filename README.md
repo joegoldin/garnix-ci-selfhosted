@@ -447,12 +447,15 @@ from red failures.
 **Backend deploy/restart recovery:** after package evaluation succeeds, Garnix
 stores the derivation and output map *before* starting FOD verification or
 realization. On startup it resumes non-terminal build rows with that checkpoint
-in place; re-running the derivation joins or replaces the interrupted Nix work
-and preserves the original row. A concurrent user cancellation cannot be
-overwritten by the checkpoint. Work interrupted before evaluation produced a
-derivation, plus action/deployment `runs` whose external process cannot be
-reattached, is still marked Cancelled. This is recovery from a process restart,
-not live migration of arbitrary commands.
+in place; packages from the same interrupted commit share one checkout,
+authorization context, and replacement FOD coordinator. Re-running each
+derivation joins or replaces the interrupted Nix work and preserves the
+original row without creating a separate “FOD checks” run per package. A
+concurrent user cancellation cannot be overwritten by the checkpoint. Work
+interrupted before evaluation produced a derivation, plus action/deployment
+`runs` whose external process cannot be reattached, is still marked Cancelled.
+This is recovery from a process restart, not live migration of arbitrary
+commands.
 
 **Filtering busy instances:** the Builds-page status filter sits beside its
 title; each Commit page has its own All/Active/Complete/Failed filter; and the

@@ -1,6 +1,8 @@
 module Garnix.Build
   ( buildFlake,
     rerunBuild,
+    rerunBuilds,
+    sameRerunScope,
     buildModule,
   )
 where
@@ -10,7 +12,6 @@ import Cradle hiding (ExitCode)
 import Garnix.Async
 import Garnix.Build.Checkout (withAuthorization)
 import Garnix.Build.Checkout qualified as Checkout
-import Garnix.GiteaInterface (giteaDoesFileExist, requireGiteaConfig)
 import Garnix.Build.Flake
 import Garnix.Build.FodCheck qualified as FodCheck
 import Garnix.Build.Helpers
@@ -21,8 +22,9 @@ import Garnix.Build.Reporting
 import Garnix.DB qualified as DB
 import Garnix.DB.ModuleValues qualified as ModuleValues
 import Garnix.Entitlements qualified as Entitlements
+import Garnix.GiteaInterface (giteaDoesFileExist, requireGiteaConfig)
 import Garnix.Monad
-import Garnix.Monad.Async (emptyPromise, spawn)
+import Garnix.Monad.Async (emptyPromise, joinAll_, resolve, spawn)
 import Garnix.Monad.Concurrency
 import Garnix.Prelude
 import Garnix.Reporters.GithubReporter (mkGithubReporter)
@@ -82,13 +84,7 @@ buildFlake = curry $ mockable #buildFlakeMock $ \(reporter, commitInfo) -> do
 
 rerunBuild :: Reporter -> Build -> CommitInfo -> M ()
 rerunBuild reporter build commitInfo = do
-  MetaCheck.update reporter commitInfo
-  runReporter <-
-    createNewRun reporter (ReportBuild (reportNameForBuild build) build)
-      >>= markRunningOnFirstLog build
-  let build' = build & githubRunId .~ Garnix.Monad.ghRunId runReporter
-  DB.reportBuildResultDB build' <?> "Adding build github ID to DB"
-  reportOnError runReporter build' commitInfo $ do
+  runPreparedBuild reporter build commitInfo $ \runReporter build' -> do
     repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
     plan <- Entitlements.getPlan (build ^. repoUser) >>= Entitlements.applyConfiguredTimeouts repoConfig
     Checkout.runWithCheckout Checkout.remoteWithConfig commitInfo $ \config -> do
@@ -98,3 +94,57 @@ rerunBuild reporter build commitInfo = do
           FodCheck.withFodChecker reporter commitInfo plan $ \fodChecker -> do
             doBuild fodChecker runReporter Webhook (config ^. flakeDir) repoConfig plan build'
         MetaCheck.update reporter commitInfo
+
+-- | Re-run several existing build rows from the same commit under one
+-- checkout and one FOD coordinator. Startup recovery uses this so a backend
+-- restart creates one replacement "FOD checks" run for the interrupted
+-- commit, rather than one per package.
+rerunBuilds :: Reporter -> [Build] -> CommitInfo -> M ()
+rerunBuilds _ [] _ = pure ()
+rerunBuilds reporter builds@(firstBuild : _) commitInfo = do
+  unless (all (sameRerunScope firstBuild) builds)
+    $ throw
+    $ OtherError "Cannot share a rerun scope across different commits or authorization contexts"
+  repoConfig <- DB.getRepoConfig (commitInfo ^. repoInfo . ghRepoOwner) (commitInfo ^. repoInfo . ghRepoName)
+  plan <- Entitlements.getPlan (firstBuild ^. repoUser) >>= Entitlements.applyConfiguredTimeouts repoConfig
+  Checkout.runWithCheckout Checkout.remoteWithConfig commitInfo $ \config -> do
+    withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
+      withInternalCacheToken (commitInfo ^. reqUser) $ do
+        FodCheck.withFodChecker reporter commitInfo plan $ \fodChecker -> do
+          promises <- forM builds $ \build ->
+            spawn $ runPreparedBuild reporter build commitInfo $ \runReporter build' -> do
+              reportBuildResult runReporter build'
+              void $ doBuild fodChecker runReporter Webhook (config ^. flakeDir) repoConfig plan build'
+              MetaCheck.update reporter commitInfo
+          resolve =<< joinAll_ promises
+
+-- | Equality boundary for resources shared by 'rerunBuilds'. In particular,
+-- repo publicity and requesting user are cache-authorization boundaries, so
+-- they must never be coalesced merely because the commit hash matches.
+sameRerunScope :: Build -> Build -> Bool
+sameRerunScope = (==) `on` rerunScope
+
+data RerunScope = RerunScope Forge GhRepoOwner GhRepoName CommitHash (Maybe Branch) (Maybe PrFromFork) RepoPublicity GhLogin
+  deriving stock (Eq)
+
+rerunScope :: Build -> RerunScope
+rerunScope build =
+  RerunScope
+    (build ^. forge)
+    (build ^. repoUser)
+    (build ^. repoName)
+    (build ^. gitCommit)
+    (build ^. branch)
+    (build ^. prFromFork)
+    (build ^. Types.repoIsPublic)
+    (build ^. Types.reqUser)
+
+runPreparedBuild :: Reporter -> Build -> CommitInfo -> (RunReporter -> Build -> M ()) -> M ()
+runPreparedBuild reporter build commitInfo action = do
+  MetaCheck.update reporter commitInfo
+  runReporter <-
+    createNewRun reporter (ReportBuild (reportNameForBuild build) build)
+      >>= markRunningOnFirstLog build
+  let build' = build & githubRunId .~ Garnix.Monad.ghRunId runReporter
+  DB.reportBuildResultDB build' <?> "Adding build github ID to DB"
+  reportOnError runReporter build' commitInfo $ action runReporter build'

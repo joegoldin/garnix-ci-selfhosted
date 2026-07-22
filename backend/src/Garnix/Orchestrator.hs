@@ -7,15 +7,17 @@ module Garnix.Orchestrator
     restartBuild,
     restartCommit,
     resumeBuild,
+    resumeBuilds,
     listRepoBranches,
     triggerBranchBuild,
     RerunEvent (..),
+    groupResumableBuilds,
   )
 where
 
 import Data.Time (defaultTimeLocale, formatTime)
 import Garnix.Async (Promise)
-import Garnix.Build (buildFlake, rerunBuild)
+import Garnix.Build (buildFlake, rerunBuild, rerunBuilds, sameRerunScope)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withInternalCacheToken)
 import Garnix.DB qualified as DB
@@ -151,14 +153,14 @@ restartBuild reqUser' oldBuild = do
     assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
     withSpan commitInfo $ rerunBuild reporter build' commitInfo
 
--- | Resume a build orphaned by a backend restart mid-flight (left
+-- | Resume builds orphaned by a backend restart mid-flight (left
 -- @status IS NULL@ with a non-null @drv_path@ -- see
 -- 'DB.getResumableOrphanedBuilds'). Unlike 'restartBuild'/'restartCommit',
--- this reuses the existing build row rather than cloning a fresh one: the
--- actual nix realization runs against the nix-daemon, which survives the
--- backend restart, so re-running 'rerunBuild' on the same row's @drv_path@
--- either re-attaches to the daemon's still-in-progress job (fast) or
--- cache-hits if it finished while the backend was down; only a drv the
+-- this reuses the existing build rows rather than cloning fresh ones: the
+-- actual nix realizations run against the nix-daemon, which survives the
+-- backend restart, so re-running the rows' derivations either re-attaches to
+-- the daemon's still-in-progress jobs (fast) or
+-- cache-hits if they finished while the backend was down; only a drv the
 -- daemon (and store) has since forgotten forces a full rebuild.
 --
 -- Best-effort: this runs unattended at startup, with nobody to retry it, so
@@ -166,42 +168,67 @@ restartBuild reqUser' oldBuild = do
 -- forever -- forge-auth lookups in 'commitInfoForBuild', or any other
 -- exception before a terminal status gets reported -- cancels it instead.
 -- 'catchEither' rather than plain 'catchAny' because 'commitInfoForBuild'
--- and 'rerunBuild' report most failures via 'MonadError' ('throwError'), not
+-- and 'rerunBuilds' report most failures via 'MonadError' ('throwError'), not
 -- thrown 'SomeException's.
 resumeBuild :: (HasCallStack) => GhLogin -> Build -> M ()
-resumeBuild reqUser' build =
+resumeBuild reqUser' build = resumeBuildGroup reqUser' [build]
+
+-- | Resume all orphaned packages in one commit/auth scope together. The
+-- shared rerun scope is what prevents startup recovery from creating a FOD
+-- coordinator per package.
+resumeBuilds :: (HasCallStack) => [Build] -> M ()
+resumeBuilds [] = pure ()
+resumeBuilds builds@(build : _) = resumeBuildGroup (build ^. Types.reqUser) builds
+
+resumeBuildGroup :: (HasCallStack) => GhLogin -> [Build] -> M ()
+resumeBuildGroup _ [] = pure ()
+resumeBuildGroup reqUser' builds@(build : _) =
   withSpan (build ^. id) $ resume `catchEither` cancelIfStillOrphaned
   where
     resume = do
       (commitInfo, reporter) <- commitInfoForBuild reqUser' build
       assertIsAllowedToBuild (build ^. repoUser) (build ^. repoName)
-      withSpan commitInfo $ rerunBuild reporter build commitInfo
+      withSpan commitInfo $ rerunBuilds reporter builds commitInfo
 
-    -- rerunBuild already reports a terminal status for failures it observes
-    -- itself (via reportOnError, which rethrows after reporting -- so we
+    -- rerunBuilds already reports a terminal status for failures it observes
+    -- (via reportOnError, which rethrows after reporting -- so we
     -- still land here). Re-fetch the row rather than trusting the stale
     -- in-memory `build`, so a real Failure it already reported is never
     -- clobbered with Cancelled; only a row that is genuinely still orphaned
     -- gets closed out.
     cancelIfStillOrphaned e = do
       log Error
-        $ "resumeBuild: failed to resume orphaned build "
-        <> show (build ^. id)
-        <> ", cancelling: "
+        $ "resumeBuilds: failed to resume orphaned build group for "
+        <> show (build ^. repoUser)
+        <> "/"
+        <> show (build ^. repoName)
+        <> "@"
+        <> show (build ^. gitCommit)
+        <> ", cancelling any builds still orphaned: "
         <> either show showDebug e
-      (DB.getBuild (build ^. id) >>= cancelIfNull)
-        `catchEither` \e' ->
-          log Error
-            $ "resumeBuild: failed to cancel orphaned build "
-            <> show (build ^. id)
-            <> " after failed resume: "
-            <> either show showDebug e'
+      forM_ builds $ \orphanedBuild ->
+        (DB.getBuild (orphanedBuild ^. id) >>= cancelIfNull)
+          `catchEither` \e' ->
+            log Error
+              $ "resumeBuilds: failed to cancel orphaned build "
+              <> show (orphanedBuild ^. id)
+              <> " after failed group resume: "
+              <> either show showDebug e'
 
     cancelIfNull fresh
       | isJust (fresh ^. status) = pure ()
       | otherwise = do
           now <- liftIO getCurrentTime
           DB.reportBuildResultDB (fresh & status ?~ Cancelled & endTime ?~ now)
+
+-- | Stable, order-preserving grouping for startup recovery. A shared checkout,
+-- authorization token, and FOD checker are safe only when all CommitInfo and
+-- cache-auth fields are identical.
+groupResumableBuilds :: [Build] -> [[Build]]
+groupResumableBuilds [] = []
+groupResumableBuilds (build : builds) =
+  let (sameCommit, rest) = partition (sameRerunScope build) builds
+   in (build : sameCommit) : groupResumableBuilds rest
 
 -- | Re-run the whole commit (fresh eval, then all builds/actions). Used when
 -- the failure is the eval/overall build itself, which has no per-package

@@ -535,16 +535,19 @@ runWith opts = do
           env
           ( do
               resumable <- DB.getResumableOrphanedBuilds
-              forM_ resumable $ \build -> forkDetachedM $ Orchestrator.resumeBuild (build ^. reqUser) build
-              pure resumable
+              let recoveryGroups = Orchestrator.groupResumableBuilds resumable
+              forM_ recoveryGroups $ \builds -> forkDetachedM $ Orchestrator.resumeBuilds builds
+              pure (length resumable, length recoveryGroups)
           )
           >>= \case
-            Right resumable
-              | not (null resumable) ->
+            Right (buildCount, groupCount)
+              | buildCount > 0 ->
                   hPutStrLn stderr
                     $ "Resuming "
-                    <> show (length resumable)
-                    <> " orphaned build(s) from previous process in the background"
+                    <> show buildCount
+                    <> " orphaned build(s) in "
+                    <> show groupCount
+                    <> " commit group(s) from the previous process in the background"
             Right _ -> pure ()
             Left err -> hPutStrLn stderr $ "Failed to look up/resume orphaned builds: " <> show err
       -- The heartbeat reaper needs the Traefik heartbeat middleware to be

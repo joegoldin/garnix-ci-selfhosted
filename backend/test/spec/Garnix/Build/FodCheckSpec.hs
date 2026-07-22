@@ -18,6 +18,7 @@ import Data.String.Interpolate.Util (unindent)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Database.PostgreSQL.Typed (pgSQL)
+import Garnix.Build qualified as Build
 import Garnix.Build.Checkout (withCheckout)
 import Garnix.Build.FodCheck
 import Garnix.DB qualified as DB
@@ -31,6 +32,7 @@ import Garnix.NixConfig (addNixConfigEnvironment, nixConfDefaults)
 import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
 import Garnix.Reporters.GithubReporter (mkGithubReporter)
+import Garnix.Reporters.OpenSearchReporter (openSearchReporter)
 import Garnix.TestHelpers
 import Garnix.TestHelpers.GithubInterface qualified as GH
 import Garnix.TestHelpers.Monad
@@ -60,6 +62,53 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
             plan <- Entitlements.getPlan "owner"
             withFodChecker mempty commitInfo plan $ \fodChecker -> do
               void fodChecker `shouldSatisfyM` isJust
+
+    it "creates one FOD run when a recovered commit resumes multiple builds" $ do
+      GH.withFakeGithubInterface $ \ghState -> do
+        void $ DB.newUser "owner" "owner@example.com" FreeSubscription True
+        let flake = "{ outputs = { self }: {}; }"
+            config = "fodChecks: true"
+            publicCommit = defaultCommitInfo & repoPublicity .~ RepoIsPublic True
+        GH.withLocalRepo ghState "owner" "repo" identity publicCommit (GH.setupWithConfig flake (Just config)) $ \commitInfo -> do
+          let orphan packageName =
+                testBuild
+                  ( (package .~ packageName)
+                      . (gitCommit .~ (commitInfo ^. commit))
+                      . (branch .~ (commitInfo ^. branch))
+                      . (repoUser .~ "owner")
+                      . (repoName .~ "repo")
+                      . (reqUser .~ "owner")
+                      . (repoIsPublic .~ RepoIsPublic True)
+                      . (prFromFork .~ Nothing)
+                      . (status .~ Nothing)
+                      . (endTime .~ Nothing)
+                      . (drvPath ?~ "/nix/store/00000000000000000000000000000000-recovered.drv")
+                  )
+          firstBuild <- orphan "first"
+          secondBuild <- orphan "second"
+          map
+            (map (^. package))
+            ( Orchestrator.groupResumableBuilds
+                [ firstBuild,
+                  secondBuild,
+                  secondBuild & gitCommit .~ "another-commit",
+                  secondBuild & reqUser .~ "another-user"
+                ]
+            )
+            `shouldBeM` [["first", "second"], ["second"], ["second"]]
+          Build.rerunBuilds mempty [firstBuild, secondBuild & reqUser .~ "another-user"] commitInfo
+            `shouldThrowM` (OtherError "Cannot share a rerun scope across different commits or authorization contexts")
+          withMock
+            #buildPkgMock
+            ( \(_, _, _, _, _, _, build) -> do
+                now <- liftIO getCurrentTime
+                pure $ build & status ?~ Success & endTime ?~ now
+            )
+            $ Build.rerunBuilds openSearchReporter [firstBuild, secondBuild] commitInfo
+
+          runs <- DB.getRuns "owner" "repo" (commitInfo ^. commit)
+          map (^. status) (filter ((== "FOD checks") . (^. name)) runs)
+            `shouldBeM` [Just Success]
 
   describe "__pickRemoteBuilderUrlFromMachinesFile" $ do
     let realMachinesFile =
