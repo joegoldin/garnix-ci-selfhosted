@@ -116,11 +116,16 @@ mergeRunCounts runCounts = map merge
       Nothing -> s
       Just (suc, fl, cnc, run, pnd) ->
         s
-          & succeeded %~ (+ suc)
-          & failed %~ (+ fl)
-          & cancelled %~ (+ cnc)
-          & running %~ (+ run)
-          & pending %~ (+ pnd)
+          & succeeded
+          %~ (+ suc)
+          & failed
+          %~ (+ fl)
+          & cancelled
+          %~ (+ cnc)
+          & running
+          %~ (+ run)
+          & pending
+          %~ (+ pnd)
 
 getSingleCommit :: Maybe User -> CommitHash -> M GetCommit
 getSingleCommit user' commit = do
@@ -148,11 +153,16 @@ getSingleCommit user' commit = do
        in summary
             -- Skipped is non-blocking (success for dependents); fold it into
             -- the succeeded tally so skipped runs are not dropped from counts.
-            & succeeded %~ (+ count (\r -> _runStatus r == Just Success || _runStatus r == Just Skipped))
-            & failed %~ (+ count (\r -> _runStatus r == Just Failure || _runStatus r == Just Timeout))
-            & cancelled %~ (+ count ((== Just Cancelled) . _runStatus))
-            & running %~ (+ count (\r -> isNothing (_runStatus r) && isJust (_runRunStartedAt r)))
-            & pending %~ (+ count (\r -> isNothing (_runStatus r) && isNothing (_runRunStartedAt r)))
+            & succeeded
+            %~ (+ count (\r -> _runStatus r == Just Success || _runStatus r == Just Skipped))
+            & failed
+            %~ (+ count (\r -> _runStatus r == Just Failure || _runStatus r == Just Timeout))
+            & cancelled
+            %~ (+ count ((== Just Cancelled) . _runStatus))
+            & running
+            %~ (+ count (\r -> isNothing (_runStatus r) && isJust (_runRunStartedAt r)))
+            & pending
+            %~ (+ count (\r -> isNothing (_runStatus r) && isNothing (_runRunStartedAt r)))
 
 -- | Cancel every still-pending build for a commit, including the "overall"
 -- eval/starting build the web UI never lists. Lets the user cancel a commit
@@ -179,6 +189,10 @@ cancelCommit user commit = do
   forM_ runs $ \r ->
     when (isNothing (_runStatus r))
       $ DB.setRunStatus (_runId r) (Just Cancelled)
+  -- An explicit cancellation is terminal. In particular, do not leave setup
+  -- marked Evaluating, since startup recovery interprets that as a backend
+  -- interruption and restarts the whole commit.
+  DB.setCommitStatus (summary ^. repoOwner) (summary ^. repoName) commit Evaluated
   pure NoContent
 
 -- | Restart every failed (failed/timed-out) build of a commit. Package builds

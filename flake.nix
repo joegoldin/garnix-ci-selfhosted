@@ -143,7 +143,11 @@
             namespace "backend" backend.checks //
             namespace "frontend" frontend.checks //
             namespace "frontend" (namespace "ageWasm" frontend-age-wasm.checks) //
-            namespace "provisioner" provisioner.checks;
+            namespace "provisioner" provisioner.checks //
+            {
+              opensearch-package =
+                self.nixosConfigurations.exampleOpenSearch.config.services.opensearch.package;
+            };
 
           packages =
             namespace "backend" backend.packages //

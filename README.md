@@ -40,13 +40,15 @@ NixOS machine. Everything below uses example values — substitute your own:
     are permanently routed to the **authenticated** cache bucket. An external
     fork is blocked on its first attempt and appears in the admin approval
     inbox; approved retries keep the same private-cache routing.
-- **Restart-safe package builds** — a `garnixServer` deploy resumes every
-  non-terminal package build on startup. Rows interrupted after evaluation
-  reuse their derivation checkpoint and reattach/cache-hit Nix; rows interrupted
-  earlier safely repeat evaluation. The recovered commit then continues its
-  idempotent artifact/module/deployment tail. Synthetic overall rows and
-  external run processes that cannot safely be replayed are closed out as
-  Cancelled rather than hanging forever.
+- **Restart-safe package builds** — a `garnixServer` deploy resumes package
+  builds only after the commit's complete build/action manifest was persisted.
+  Those rows reuse their derivation checkpoint and reattach/cache-hit Nix, or
+  repeat attribute evaluation if interrupted earlier. If the deploy interrupted
+  manifest creation itself, Garnix discards the partial pending rows and
+  restarts the whole commit evaluation so no attributes disappear. The
+  recovered commit then continues its idempotent artifact/module/deployment
+  tail. Synthetic overall rows and external run processes that cannot safely be
+  replayed are closed out as Cancelled rather than hanging forever.
 - **Hardened FOD verification** — prepare and strict-rebuild happen on the same
   checker store; every failed rebuild fails closed because builder-controlled
   stderr cannot authenticate a “source unavailable” exception. Transient
@@ -462,12 +464,17 @@ whole commit is re-run) and **Cancel all** (stops every queued/running build)
 — both with confirmation. Cancelled builds render as an orange ✗, distinct
 from red failures.
 
-**Backend deploy/restart recovery:** Garnix stores the derivation and output map
-immediately after evaluation, before FOD verification or realization. On
-startup it resumes _all_ non-terminal package rows: checkpointed rows reattach
-to or cache-hit the surviving Nix daemon, while pre-checkpoint rows repeat
-evaluation. Packages from one interrupted commit share a checkout,
-authorization context, and replacement FOD coordinator, then continue through
+**Backend deploy/restart recovery:** Garnix distinguishes a complete commit
+manifest from setup interrupted while package/action rows were still being
+created. Complete manifests resume their non-terminal package rows in place:
+checkpointed rows reattach to or cache-hit the surviving Nix daemon, while
+pre-checkpoint rows repeat attribute evaluation. Packages from one interrupted
+commit share a checkout, authorization context, and replacement FOD
+coordinator. An incomplete manifest is never resumed piecemeal; its pending
+partial rows are cancelled and the whole commit setup is restarted, including a
+legacy repair path for commits left `Evaluating` by older recovery code.
+Explicitly cancelling a commit marks setup terminal so startup will not undo
+the user's cancellation. Recovered work then continues through
 content-addressed artifact publication, module publication, and reconciliatory
 deployment. A half-claimed guest that never committed `ready_at` is removed
 first and the recovered deploy claims a clean guest. Persistent redeploys also
@@ -1403,7 +1410,7 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 | "Github didn't give us a user token" | trailing `\n` in the GitHub client secret |
 | White page, `/_next` 404s | proxy must serve `/_next/*` from the frontend package |
 | `getInstalledOrgs … 401` | expired 8h user token — re-login; disable token expiry on the App |
-| Jobs interrupted by a `garnixServer` restart (deploy) | all package rows resume on startup: pre-checkpoint work repeats evaluation, checkpointed work reattaches/cache-hits Nix, and the commit continues its artifact/module/deploy tail. Synthetic overall rows and non-idempotent external action/deployment run processes are marked Cancelled. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
+| Jobs interrupted by a `garnixServer` restart (deploy) | complete manifests resume package rows on startup: pre-checkpoint work repeats attribute evaluation, checkpointed work reattaches/cache-hits Nix, and the commit continues its artifact/module/deploy tail. If setup was interrupted before every attribute row existed, Garnix cancels that partial manifest and restarts the whole commit instead. Synthetic overall rows and non-idempotent external action/deployment run processes are marked Cancelled. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
 | every eval hangs; plain `nix` commands block on the host | nix-daemon deadlock — for us it was `min-free`/`max-free` **auto-GC** deadlocking on `gc.lock` against a concurrent `addToStore`. Don't run auto-GC on the garnix host; use a scheduled `nix-collect-garbage` job instead, and if it happens find the fork holding the `gc.lock` flock in `/proc/locks` and kill it |
 | **Logs** panel empty on a *finished* build | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog |
 | `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |

@@ -123,6 +123,12 @@ in
             url = "https://artifacts.opensearch.org/releases/bundle/opensearch/${finalAttrs.version}/opensearch-${finalAttrs.version}-linux-x64.tar.gz";
             hash = "sha256-t9s633qDzxvG1x+VVATpczzvD+ojnfTiwB/EambMKtA=";
           };
+          # nixpkgs' current package copies the `agent` directory shipped in
+          # OpenSearch 3.x. The pinned 2.12 bundle has no such directory.
+          installPhase = builtins.replaceStrings
+            [ "cp -R bin config lib modules plugins agent $out\n" ]
+            [ "cp -R bin config lib modules plugins $out\n" ]
+            prevAttrs.installPhase;
         });
 
         settings = {

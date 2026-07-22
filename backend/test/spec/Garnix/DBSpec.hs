@@ -224,8 +224,50 @@ spec = do
   -- lists, so nothing forces it in); clear it explicitly so the counts below
   -- are exact.
   describe "orphaned build/run resumability" $ inM $ beforeM_ truncateDBM $ do
-    it "resumes package builds even before evaluation, while cancelling overall rows and runs" $ do
+    it "restarts setup if the backend stopped before creating the commit row" $ do
       void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+      overall <- testBuild ((status .~ Nothing) . (packageType .~ TypeOverall) . (package .~ "overall"))
+
+      DB.getInterruptedEvaluatingBuilds `shouldReturnM` [overall]
+
+    it "restarts an interrupted commit setup instead of resuming its partial package rows" $ do
+      void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+      DB.newCommit "test-owner" "test-repo" "aaaaaa"
+
+      overall <- testBuild ((status .~ Nothing) . (packageType .~ TypeOverall) . (package .~ "overall"))
+      partialPackage <- testBuild ((status .~ Nothing) . (package .~ "partial"))
+
+      DB.getInterruptedEvaluatingBuilds `shouldReturnM` [overall]
+      DB.getResumableOrphanedBuilds `shouldReturnM` []
+
+      (cancelledBuilds, cancelledRuns) <- DB.cancelOrphanedWork
+      cancelledBuilds `shouldBeM` 2
+      cancelledRuns `shouldBeM` 0
+      cancelledPartial <- DB.getBuild (partialPackage ^. id)
+      cancelledPartial ^. status `shouldBeM` Just Cancelled
+
+    it "restarts a legacy interrupted setup after its partial rows were already recovered" $ do
+      void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+      DB.newCommit "test-owner" "test-repo" "aaaaaa"
+
+      overall <- testBuild ((status ?~ Cancelled) . (packageType .~ TypeOverall) . (package .~ "overall"))
+      void $ testBuild ((status ?~ Success) . (package .~ "partial"))
+
+      DB.getInterruptedEvaluatingBuilds `shouldReturnM` [overall]
+
+    it "does not restart an evaluating commit that the user cancelled" $ do
+      void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+      DB.newCommit "test-owner" "test-repo" "aaaaaa"
+
+      void $ testBuild ((status ?~ Cancelled) . (packageType .~ TypeOverall) . (package .~ "overall"))
+      void $ testBuild ((status ?~ Cancelled) . (package .~ "partial"))
+
+      DB.getInterruptedEvaluatingBuilds `shouldReturnM` []
+
+    it "resumes package builds for a fully evaluated commit, while cancelling overall rows and runs" $ do
+      void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+      DB.newCommit "test-owner" "test-repo" "aaaaaa"
+      DB.setCommitStatus "test-owner" "test-repo" "aaaaaa" Evaluated
 
       resumableWithDrv <- testBuild ((status .~ Nothing) . (drvPath ?~ "/nix/store/00000000000000000000000000000000-foo.drv"))
       resumableBeforeEval <- testBuild ((status .~ Nothing) . (package .~ "before-eval"))

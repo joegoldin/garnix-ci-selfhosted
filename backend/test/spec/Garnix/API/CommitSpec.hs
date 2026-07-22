@@ -18,6 +18,19 @@ import Test.Hspec hiding (shouldReturn, shouldThrow)
 
 spec :: Spec
 spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe "CommitSpec" $ do
+  describe "cancelCommit" $ do
+    it "marks an evaluating commit terminal so startup does not restart it" $ do
+      user <- testUser "test-user" "foo@example.com"
+      pending <- testBuild ((status .~ Nothing) . (packageType .~ TypeOverall))
+      testCommit ((hash .~ "aaaaaa") . (status .~ Evaluating))
+
+      void $ cancelCommit user "aaaaaa"
+
+      cancelled <- DB.getBuild (pending ^. id)
+      cancelled ^. status `shouldBeM` Just Cancelled
+      commit' <- DB.getCommit "test-owner" "test-repo" "aaaaaa"
+      commit' ^? _Just . status `shouldBeM` Just Evaluated
+
   describe "/api/commits/{commit}" $ around_ (addNixExperimentalFeatures ["nix-command", "flakes"]) $ do
     it "returns a commit summary and builds" $ do
       user <- testUser "test-user" "foo@example.com"

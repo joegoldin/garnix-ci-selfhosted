@@ -516,12 +516,14 @@ runWith opts = do
     $ \env -> do
       serveMetrics (env ^. #selfHostMode) (Garnix.metricsPort opts) (env ^. #metrics)
       -- Builds/runs left non-terminal by the previous process can never be
-      -- driven further by it (their threads died with it). Most can't finish
-      -- either and would show "running" forever, so cancel those. But a
-      -- package build can be resumed in place: before the drv checkpoint it
-      -- repeats evaluation; after it, Nix reattaches/cache-hits the surviving
-      -- daemon realization. Synthetic overall rows and side-effecting runs are
-      -- terminalized. Self-host only: a fleet needs process ownership first.
+      -- driven further by it (their threads died with it). Package builds from
+      -- a fully evaluated commit resume in place: before the drv checkpoint
+      -- they repeat evaluation; after it, Nix reattaches/cache-hits the
+      -- surviving daemon realization. A commit interrupted while its manifest
+      -- was still being created must instead restart setup as a whole, since
+      -- the package rows present at the crash are incomplete. Synthetic
+      -- overall rows and side-effecting runs are terminalized. Self-host only:
+      -- a fleet needs process ownership first.
       when (env ^. #selfHostMode) $ do
         runM env cleanupUnreadyServers >>= \case
           Right cleaned
@@ -529,36 +531,43 @@ runWith opts = do
                 hPutStrLn stderr $ "Removed " <> show cleaned <> " unready claimed guest(s) left by the previous process"
           Right _ -> pure ()
           Left err -> hPutStrLn stderr $ "Failed to clean unready claimed guests: " <> show err
-        runM env DB.cancelOrphanedWork >>= \case
-          Right (orphanedBuilds, orphanedRuns)
-            | orphanedBuilds + orphanedRuns > 0 ->
-                hPutStrLn stderr
-                  $ "Cancelled orphaned work from previous process: "
-                  <> show orphanedBuilds
-                  <> " builds, "
-                  <> show orphanedRuns
-                  <> " runs"
-          Right _ -> pure ()
-          Left err -> hPutStrLn stderr $ "Failed to cancel orphaned work: " <> show err
         runM
           env
           ( do
+              -- Classify both recovery modes before terminalizing anything.
+              -- That way a lookup failure leaves the rows intact for a later
+              -- startup instead of converting recoverable work into dead data.
+              interrupted <- DB.getInterruptedEvaluatingBuilds
               resumable <- DB.getResumableOrphanedBuilds
               let recoveryGroups = Orchestrator.groupResumableBuilds resumable
+              cancelled <- DB.cancelOrphanedWork
+              forM_ interrupted $ \build ->
+                forkDetachedM $ Orchestrator.restartCommit (build ^. reqUser) build
               forM_ recoveryGroups $ \builds -> forkDetachedM $ Orchestrator.resumeBuilds builds
-              pure (length resumable, length recoveryGroups)
+              pure (cancelled, length interrupted, length resumable, length recoveryGroups)
           )
           >>= \case
-            Right (buildCount, groupCount)
-              | buildCount > 0 ->
-                  hPutStrLn stderr
-                    $ "Resuming "
-                    <> show buildCount
-                    <> " orphaned build(s) in "
-                    <> show groupCount
-                    <> " commit group(s) from the previous process in the background"
-            Right _ -> pure ()
-            Left err -> hPutStrLn stderr $ "Failed to look up/resume orphaned builds: " <> show err
+            Right ((orphanedBuilds, orphanedRuns), interruptedCount, buildCount, groupCount) -> do
+              when (orphanedBuilds + orphanedRuns > 0)
+                $ hPutStrLn stderr
+                $ "Cancelled orphaned work from previous process: "
+                <> show orphanedBuilds
+                <> " builds, "
+                <> show orphanedRuns
+                <> " runs"
+              when (interruptedCount > 0)
+                $ hPutStrLn stderr
+                $ "Restarting setup for "
+                <> show interruptedCount
+                <> " commit(s) interrupted before evaluation completed"
+              when (buildCount > 0)
+                $ hPutStrLn stderr
+                $ "Resuming "
+                <> show buildCount
+                <> " orphaned build(s) in "
+                <> show groupCount
+                <> " fully evaluated commit group(s) from the previous process in the background"
+            Left err -> hPutStrLn stderr $ "Failed to classify/recover orphaned work: " <> show err
         runM env ServerLogStream.resumeServerLogStreams >>= \case
           Right resumed
             | resumed > 0 ->

@@ -510,22 +510,34 @@ makeNewBuildForBuildId reqUser buildId evalHost = do
     [] -> throw $ NoSuchBuild buildId
     _ -> throw $ OtherError "Impossible: more than one result"
 
--- | Close out orphaned work that is intentionally not replayed. Package build
--- rows are resumable even before evaluation: recovery can evaluate them again,
--- and an existing drv_path merely makes reattachment faster. The synthetic
--- TypeOverall row is not a package and cannot be fed to doBuild, while runs may
--- represent non-idempotent actions, so those are terminalized. Returns
--- (overall builds, runs) closed. Self-host only (single backend); a fleet would
--- need process ownership before touching another server's work.
+-- | Close out orphaned work that is intentionally not replayed. Package rows
+-- from a fully evaluated commit are resumed separately. If setup itself was
+-- interrupted, however, its partial package manifest must be discarded before
+-- the whole commit is evaluated again. Synthetic TypeOverall rows cannot be
+-- fed to doBuild, and runs may represent non-idempotent actions, so those are
+-- terminalized too. Returns (builds, runs) closed. Self-host only (single
+-- backend); a fleet would need process ownership before touching another
+-- server's work.
 cancelOrphanedWork :: M (Int, Int)
 cancelOrphanedWork = do
   now <- liftIO getCurrentTime
   orphanedBuilds <-
     pgExec
       [pgSQL|
-        UPDATE builds
+        UPDATE builds AS b
         SET status = ${Just Cancelled}, end_time = ${now}
-        WHERE status IS NULL AND package_type = ${TypeOverall}
+        WHERE b.status IS NULL
+          AND (
+            b.package_type = ${TypeOverall}
+            OR EXISTS (
+              SELECT 1
+              FROM commits AS c
+              WHERE c.repo_user = b.repo_user
+                AND c.repo_name = b.repo_name
+                AND c.git_commit = b.git_commit
+                AND c.status = ${Evaluating}
+            )
+          )
       |]
   orphanedRuns <-
     pgExec
@@ -536,11 +548,13 @@ cancelOrphanedWork = do
       |]
   pure (orphanedBuilds, orphanedRuns)
 
--- | Every orphaned package build. A row with drv_path reattaches to the
--- nix-daemon's realization (or cache-hits); a row interrupted before that
--- checkpoint safely re-evaluates the attribute. Excluding TypeOverall is
--- essential because it is a synthetic commit summary, not a buildable flake
--- attribute.
+-- | Every orphaned package build belonging to a complete manifest. A row with
+-- drv_path reattaches to the nix-daemon's realization (or cache-hits); a row
+-- interrupted before that checkpoint safely re-evaluates the attribute.
+-- Commits still marked Evaluating are excluded because their package rows are
+-- only a partial manifest; startup restarts those commits as a whole via
+-- 'getInterruptedEvaluatingBuilds'. Rows without a commits record are retained
+-- for compatibility with old data and tests.
 getResumableOrphanedBuilds :: M [Build]
 getResumableOrphanedBuilds =
   pgQueryPrism
@@ -570,8 +584,92 @@ getResumableOrphanedBuilds =
       uploaded_to_cache,
       already_built,
       forge
-    FROM builds
-    WHERE status IS NULL AND package_type <> ${TypeOverall}
+    FROM builds AS b
+    WHERE b.status IS NULL
+      AND b.package_type <> ${TypeOverall}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM commits AS c
+        WHERE c.repo_user = b.repo_user
+          AND c.repo_name = b.repo_name
+          AND c.git_commit = b.git_commit
+          AND c.status = ${Evaluating}
+      )
+  |]
+
+-- | One representative overall row for each commit whose setup was interrupted
+-- before its package/action manifest was complete. A pending latest overall row
+-- is the normal crash case; a missing commits row means the process stopped in
+-- the narrow window between creating the overall build and its meta-check. The
+-- second status branch recognizes data produced by the older recovery code: it
+-- cancelled the overall row, resumed the few package rows already inserted, and
+-- left the commit Evaluating. Requiring a terminal, non-cancelled package row
+-- distinguishes that legacy state from an explicit user cancellation.
+getInterruptedEvaluatingBuilds :: M [Build]
+getInterruptedEvaluatingBuilds =
+  pgQueryPrism
+    _Build
+    [pgSQL|
+    SELECT
+      b.id,
+      b.repo_user,
+      b.repo_name,
+      b.pr_from_fork,
+      b.branch,
+      b.repo_is_public,
+      b.git_commit,
+      b.package,
+      b.package_type,
+      b.system,
+      b.req_user,
+      b.status,
+      b.start_time,
+      b.end_time,
+      b.drv_path,
+      b.output_paths,
+      b.github_run_id,
+      b.persistence_name,
+      b.wants_incrementalism,
+      b.eval_host,
+      b.uploaded_to_cache,
+      b.already_built,
+      b.forge
+    FROM builds AS b
+    LEFT JOIN commits AS c
+      ON c.repo_user = b.repo_user
+      AND c.repo_name = b.repo_name
+      AND c.git_commit = b.git_commit
+    WHERE (
+        c.status = ${Evaluating}
+        OR (c.repo_user IS NULL AND b.status IS NULL)
+      )
+      AND b.package_type = ${TypeOverall}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM builds AS newer
+        WHERE newer.repo_user = b.repo_user
+          AND newer.repo_name = b.repo_name
+          AND newer.git_commit = b.git_commit
+          AND newer.package_type = ${TypeOverall}
+          AND newer.id > b.id
+      )
+      AND (
+        b.status IS NULL
+        OR (
+          b.status = ${Just Cancelled}
+          AND EXISTS (
+            SELECT 1
+            FROM builds AS terminal
+            WHERE terminal.repo_user = b.repo_user
+              AND terminal.repo_name = b.repo_name
+              AND terminal.git_commit = b.git_commit
+              AND terminal.package_type <> ${TypeOverall}
+              AND terminal.status IS NOT NULL
+              AND terminal.status <> ${Just Cancelled}
+          )
+        )
+      )
+    ORDER BY b.id
   |]
 
 -- | (runningBuilds, pendingBuilds, runningRuns, pendingRuns) across the whole
