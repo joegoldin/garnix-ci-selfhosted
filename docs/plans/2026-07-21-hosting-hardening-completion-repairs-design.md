@@ -14,9 +14,9 @@ cleanup defect after the repository test suite had passed:
 4. FOD verification calls `nix build --rebuild` on a fresh guest whose store
    does not contain the baseline output, then labels the resulting Nix
    precondition error as “source unavailable.”
-5. The FOD checker opens up to 20 direct remote-store sessions, bypassing the
-   external builder's Nix `maxJobs = 1` scheduler and causing SSH resets on the
-   2-core/12-GiB machine.
+5. The FOD checker opens remote builders as independent Nix stores, bypassing
+   the host daemon's canonical store, configured substituters, and
+   `buildMachines[*].maxJobs` scheduler.
 
 Completion also requires rolling out the already-pushed operator-skill update
 and executing every still-missing runtime and Authentik check in the original
@@ -123,31 +123,25 @@ download/HTTP-looking substring can authenticate a safe exception. A FOD is
 green only after a strict rebuild (or a previously recorded strict rebuild)
 produces its declared fixed-output path.
 
-Known historical nixpkgs breakages may use narrow reconstruction paths only
-when the reconstructed output is compared with the original prepared FOD:
-regenerate stage0 with `make-minimal-bootstrap-sources`, apply current
-nixpkgs' fingerprinted crates.io helper repair to the affected old helper,
-repair the two known git-lfs vendor-generation derivations, and source the
-removed Mes `ldexpl.c` from the pinned current nixpkgs tree. Unknown failures
-and manual/EULA-gated sources remain failures and are never inserted into
+The strict phase must execute the original derivation unchanged. Garnix must
+not rewrite builder scripts, regenerate the output through a different
+derivation, or accept cache presence as proof. Historical, upstream-network,
+and manual/EULA-gated failures remain failures and are never inserted into
 `verified_fods`.
 
 The 2026-07-22 production journal audit covered all 30 recorded FOD failures in
 the inspected window and found five classes: 16 crates.io API rejections across
 eight Cargo vendor FODs, four bootstrap placeholder failures, four contradictory
 Go vendor-mode failures, two dead Mes `ldexpl.c` URL failures, and four
-DisplayLink `requireFile`/EULA failures. The first four classes have the narrow
-reconstruction paths above. DisplayLink remains an actionable, honest failure
-until its licensed source is supplied; there were no unclassified failures in
-the window.
+DisplayLink `requireFile`/EULA failures. This taxonomy is diagnostic only; none
+of the classes authorizes changing the derivation under verification. There
+were no unclassified failures in the window.
 
-Direct `--store` operations bypass the Nix daemon scheduler, so add an
-independent `GARNIX_FOD_REMOTE_MAX_JOBS` semaphore (NixOS option
-`services.garnixServer.maxRemoteFodJobs`, default `1`). Hold one slot across the
-copy, prepare, and strict-rebuild sequence so each FOD is an indivisible unit
-of remote load. Retry only recognized SSH transport failures, with a bounded
-jittered backoff; never retry or reclassify a source-fetch or builder failure
-as a transport error.
+Both phases run through the host's canonical Nix daemon store. The prepare
+phase can use paths already hydrated on the host or any configured substituter;
+the strict phase rebuilds the original `.drv^*`. The daemon may dispatch that
+build to a matching remote builder, where `buildMachines[*].maxJobs` provides
+the concurrency cap, then copies the result back into the canonical store.
 
 ### Operator skill rollout
 
@@ -179,8 +173,8 @@ The implementation follows red-green cycles for:
 - ordered, idempotent cleanup of VM units, tap, paths, state, and failed units.
 - prepare-then-rebuild behavior for a previously unbuilt FOD, and strict
   separation of genuine fetch failures from verifier failures.
-- bounded direct remote-store concurrency and selective retry of transient SSH
-  transport failures.
+- canonical-daemon FOD execution, including hydrated host paths, configured
+  substituters, and normal distributed-builder scheduling.
 - isolated real-VM persistence/redeployment scenarios, each with its own pool
   and database lifecycle so asynchronous refill teardown cannot make them
   order-dependent under randomized Hspec execution.

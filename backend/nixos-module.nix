@@ -418,17 +418,6 @@ in
             GARNIX_MAX_CONCURRENT_BUILDS.
           '';
         };
-        maxRemoteFodJobs = lib.mkOption {
-          type = lib.types.ints.positive;
-          default = 1;
-          description = ''
-            Maximum number of fixed-output derivation checks allowed to use a
-            remote Nix store concurrently. FOD checks connect to the store
-            directly and bypass the Nix daemon's buildMachines.maxJobs
-            scheduler, so small external builders need this separate cap. Sets
-            GARNIX_FOD_REMOTE_MAX_JOBS.
-          '';
-        };
         enableNginx = lib.mkOption {
           type = lib.types.bool;
           default = true;
@@ -680,7 +669,6 @@ in
           "S3_CACHE_PRIVATE_BUCKET=${config.services.garnixServer.s3Cache.privateBucket}"
           "GARNIX_MODULES_ORG=${config.services.garnixServer.modulesOrg}"
           "GARNIX_MAX_CONCURRENT_BUILDS=${toString config.services.garnixServer.maxConcurrentBuilds}"
-          "GARNIX_FOD_REMOTE_MAX_JOBS=${toString config.services.garnixServer.maxRemoteFodJobs}"
         ]
         ++ lib.optionals config.services.garnixServer.selfHostMode [
           "GARNIX_SELF_HOST_MODE=1"

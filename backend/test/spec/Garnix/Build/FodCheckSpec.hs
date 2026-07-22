@@ -1,16 +1,11 @@
 module Garnix.Build.FodCheckSpec (spec) where
 
-import Control.Concurrent qualified as Concurrent
-import Control.Concurrent.QSem qualified as QSem
 import Control.Lens
 import Control.Monad.Trans.Control (liftBaseOp_)
-import Control.Retry (limitRetries)
 import Cradle
 import Data.Aeson.Key qualified as Aeson
 import Data.Aeson.KeyMap qualified as Aeson
 import Data.Aeson.Lens
-import Data.Containers.ListUtils (nubOrd)
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Map ((!))
 import Data.Map qualified as Map
 import Data.String.Interpolate (i)
@@ -112,118 +107,6 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
           map (^. status) (filter ((== "FOD checks") . (^. name)) runs)
             `shouldBeM` [Just Success]
 
-  describe "__pickRemoteBuilderUrlFromMachinesFile" $ do
-    let realMachinesFile =
-          [i|
-            ssh-ng://nix-ssh@macMini1 aarch64-darwin,x86_64-darwin /run/secrets/garnix_server_remote_builder_ssh 4 1 big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@macMini2 aarch64-darwin,x86_64-darwin /run/secrets/garnix_server_remote_builder_ssh 4 1 big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@garnix5 x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@garnix6 x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@garnix7 x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@garnix8 x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@garnix9 x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@arm-server-0 aarch64-linux /run/secrets/garnix_server_remote_builder_ssh 60 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            ssh-ng://nix-ssh@arm-server-1 aarch64-linux /run/secrets/garnix_server_remote_builder_ssh 8 1 nixos-test,kvm,big-parallel,recursive-nix - -
-          |]
-    let cases =
-          [ ( realMachinesFile,
-              AArch64Darwin,
-              [ "macMini1",
-                "macMini2"
-              ]
-            ),
-            ( realMachinesFile,
-              X8664Darwin,
-              [ "macMini1",
-                "macMini2"
-              ]
-            ),
-            ( realMachinesFile,
-              X8664Linux,
-              [ "garnix5",
-                "garnix6",
-                "garnix7",
-                "garnix8",
-                "garnix9"
-              ]
-            ),
-            ( realMachinesFile,
-              I686Linux,
-              [ "garnix5",
-                "garnix6",
-                "garnix7",
-                "garnix8",
-                "garnix9"
-              ]
-            ),
-            ( realMachinesFile,
-              OtherSystem "builtin",
-              [ "garnix5",
-                "garnix6",
-                "garnix7",
-                "garnix8",
-                "garnix9"
-              ]
-            ),
-            ( realMachinesFile,
-              AArch64Linux,
-              [ "arm-server-0",
-                "arm-server-1"
-              ]
-            )
-          ]
-    forM_ cases $ \(machinesFile, system, builders) -> do
-      it ("picks out a remote builder fairly for " <> cs (system ^. systemTextIso)) $ do
-        pickedBuilderUrl <- (sort . nubOrd . catMaybes <$>) $ replicateM 100 $ do
-          __pickRemoteBuilderUrlFromMachinesFile system (cs $ unindent machinesFile)
-        pickedBuilderUrl `shouldBeM` map (\builder -> "ssh-ng://nix-ssh@" <> builder) builders
-
-    it "returns Nothing when no builder serves the system (self-host rebuilds locally)" $ do
-      picked <- __pickRemoteBuilderUrlFromMachinesFile (OtherSystem "riscv64-linux") (cs $ unindent realMachinesFile)
-      picked `shouldBeM` Nothing
-
-  describe "__parseMachinesFile" $ do
-    let cases =
-          [ [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-              ssh-ng://nix-ssh@bar x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            |],
-            [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-              ssh-ng://nix-ssh@bar x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-
-            |],
-            [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-              ssh-ng://nix-ssh@bar x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -|],
-            [i|
-
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-              ssh-ng://nix-ssh@bar x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            |],
-            [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-
-              ssh-ng://nix-ssh@bar x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            |],
-            [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-              ssh-ng://nix-ssh@bar    x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            |],
-            [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-              ssh-ng://nix-ssh@bar x86_64-linux    /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            |],
-            [i|
-              ssh-ng://nix-ssh@foo x86_64-linux,i686-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-               ssh-ng://nix-ssh@bar x86_64-linux /run/secrets/garnix_server_remote_builder_ssh 28 4 nixos-test,kvm,big-parallel,recursive-nix - -
-            |]
-          ]
-    forM_ (zip [0 :: Int ..] cases) $ \(i, machinesFile) -> do
-      it ("parses differently formatted machines files (" <> cs (show i) <> ")") $ do
-        __parseMachinesFile (cs $ unindent machinesFile)
-          `shouldBeM` Right (X8664Linux ~> ["ssh-ng://nix-ssh@bar", "ssh-ng://nix-ssh@foo"] <> I686Linux ~> ["ssh-ng://nix-ssh@foo"])
-
   describe "__findAllFodsRecursively" $ do
     it "doesn't crash on a real derivation from nixpkgs" $ do
       nixpkgsCommitSha <- getNixpkgsCommitSha
@@ -302,92 +185,13 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
         `shouldBeM` Just
           "This fixed-output derivation cannot be independently rebuilt: its builder field is not an executable path or Nix builtin. It may be a pre-seeded bootstrap source supplied only by a substituter. Garnix has not verified it and is failing closed."
 
-      __isBootstrapSeedBuilder placeholder `shouldBeM` True
-
-  describe "__patchCargoVendorBuildPhase" $ do
-    it "applies the current nixpkgs crates.io compatibility repair narrowly" $ do
-      let buildPhase =
-            "runHook preBuild\nfetch-cargo-vendor-util create-vendor-staging ./Cargo.lock \"$out\"\nrunHook postBuild\n"
-      let patched = fromRight $ __patchCargoVendorBuildPhase buildPhase
-      patched `shouldSatisfyM` T.isInfixOf "478e4912ec6e3325a2d329d9965b5690e08f5138d5008c2ddc12eb76a7a92f98"
-      patched `shouldSatisfyM` T.isInfixOf "nixpkgs-fetchCargoVendor/2 (https://github.com/NixOS/nixpkgs)"
-      patched `shouldSatisfyM` T.isInfixOf "https://static.crates.io/crates/"
-      patched `shouldSatisfyM` T.isInfixOf buildPhase
-
-    it "refuses to rewrite unrelated FOD builders" $ do
-      __patchCargoVendorBuildPhase "curl https://example.com > $out"
-        `shouldBeM` Left "not a nixpkgs fetchCargoVendor staging build"
-
-  describe "__patchGoVendorFlags" $ do
-    it "uses module mode for the complete vendor generation FOD" $ do
-      __patchGoVendorFlags "-mod=vendor -trimpath" `shouldBeM` Right "-mod=mod -trimpath"
-
-    it "refuses ambiguous or unrelated Go flags" $ do
-      __patchGoVendorFlags "-trimpath" `shouldBeM` Left "Go vendor FOD does not have one unambiguous -mod=vendor flag"
-
-  describe "__remoteStoreArgs" $ do
-    it "uses --eval-store only for nix build" $ do
-      let url = "ssh-ng://builder@example.test" :: Text
-      __remoteStoreArgs False url `shouldBeM` ["--store", url]
-      __remoteStoreArgs True url `shouldBeM` ["--store", url, "--eval-store", "auto"]
-
-  describe "remote-store retries" $ do
-    it "recognizes the production SSH reset without calling it a fetch failure" $ do
-      let stderr =
-            "kex_exchange_identification: read: Connection reset by peer\n"
-              <> "error: failed to start SSH connection to 'farum-azula-builder'"
-      __isRemoteStoreConnectionError stderr `shouldBeM` True
-      __isSourceUnavailableError stderr `shouldBeM` False
-
-    it "retries a transient remote-store reset until it succeeds" $ do
-      attempts <- liftIO $ newIORef (0 :: Int)
-      result <-
-        __retryRemoteStoreOperation (limitRetries 3) $ do
-          attempt <- liftIO $ atomicModifyIORef' attempts $ \n -> (n + 1, n + 1)
-          pure
-            $ if attempt < 3
-              then Left "error: failed to start SSH connection to 'builder'"
-              else Right ("verified" :: Text)
-      result `shouldBeM` Right "verified"
-      liftIO (readIORef attempts) `shouldReturnM` 3
-
-    it "does not retry source-fetch or builder failures" $ do
-      attempts <- liftIO $ newIORef (0 :: Int)
-      result <-
-        __retryRemoteStoreOperation (limitRetries 3) $ do
-          liftIO $ atomicModifyIORef' attempts $ \n -> (n + 1, ())
-          pure (Left "curl: (22) The requested URL returned error: 403" :: Either Text Text)
-      result `shouldBeM` Left "curl: (22) The requested URL returned error: 403"
-      liftIO (readIORef attempts) `shouldReturnM` 1
-
-    it "stops after the configured number of remote-store retries" $ do
-      attempts <- liftIO $ newIORef (0 :: Int)
-      result <-
-        __retryRemoteStoreOperation (limitRetries 3) $ do
-          liftIO $ atomicModifyIORef' attempts $ \n -> (n + 1, ())
-          pure (Left "ssh: connect to host builder: Connection refused" :: Either Text Text)
-      result `shouldBeM` Left "ssh: connect to host builder: Connection refused"
-      liftIO (readIORef attempts) `shouldReturnM` 4
-
-  describe "remote-store concurrency" $ do
-    it "holds a one-job slot across each complete remote FOD transaction" $ do
-      slots <- liftIO $ QSem.newQSem 1
-      trace <- liftIO $ newIORef ([] :: [Int])
-      let phase transactionId = liftIO $ do
-            atomicModifyIORef' trace $ \xs -> (xs <> [transactionId], ())
-            Concurrent.threadDelay 10000
-          transaction transactionId =
-            __runRemoteFodTransaction slots (phase transactionId) (phase transactionId) (phase transactionId)
-      forConcurrently_ [1, 2 :: Int] transaction
-      observed <- liftIO $ readIORef trace
-      observed `shouldSatisfyM` (`elem` [[1, 1, 1, 2, 2, 2], [2, 2, 2, 1, 1, 1]])
-
-    it "releases the remote FOD slot when a transaction throws" $ do
-      slots <- liftIO $ QSem.newQSem 1
-      __runRemoteFodTransaction slots (throw $ OtherError "copy failed") (pure ()) (pure ())
-        `shouldThrowM` OtherError "copy failed"
-      __runRemoteFodTransaction slots (pure ()) (pure ()) (pure ("next" :: Text))
-        `shouldReturnM` ("next" :: Text)
+  describe "__fodBuildArgs" $ do
+    it "always rebuilds the original derivation through the canonical daemon store" $ do
+      let drvPath = fromRight $ Nix.parseDrvPath ("/nix/store/00000000000000000000000000000000-source.drv" :: Text)
+      __fodBuildArgs drvPath False
+        `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json"]
+      __fodBuildArgs drvPath True
+        `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json", "--rebuild"]
 
   describe "fodCheck" $ aroundM_ (withMock #rebuildFodMock rebuildFodTestImpl) $ do
     let test :: Nix.DrvPath -> M TestReport

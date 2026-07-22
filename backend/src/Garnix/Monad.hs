@@ -10,7 +10,6 @@ where
 import Amazonka.Env qualified as Amazonka (Env)
 import Amazonka.S3 qualified as Amazonka
 import Control.Concurrent (MVar, modifyMVar_, newMVar, readMVar)
-import Control.Concurrent.QSem (QSem)
 import Control.Exception.Safe qualified as SafeException
 import Control.Lens (IndexedTraversal')
 import Control.Lens.Regex.Text qualified as RE
@@ -168,10 +167,6 @@ data Env = Env
     githubLogDebounceDuration :: Duration,
     featureFlagConfig :: FeatureFlagConfig,
     fodCheckPool :: Garnix.Monad.Pool.Pool (),
-    -- | Slots for direct remote-store FOD operations. Those calls bypass the
-    -- Nix daemon scheduler and therefore do not honor buildMachines.maxJobs.
-    -- GARNIX_FOD_REMOTE_MAX_JOBS sizes this semaphore independently.
-    fodRemoteJobSlots :: QSem,
     -- | Live web-terminal websocket sessions per user (github login), backing
     -- the per-user concurrency cap on /api/terminal (see Garnix.API.Terminal).
     terminalSessions :: MVar (Map Text Int),

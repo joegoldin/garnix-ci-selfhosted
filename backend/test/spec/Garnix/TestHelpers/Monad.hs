@@ -32,7 +32,6 @@ module Garnix.TestHelpers.Monad
 where
 
 import Control.Concurrent.Lifted (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Concurrent.QSem qualified as QSem
 import Control.Exception.Lifted (throwIO)
 import Control.Exception.Safe qualified as Safe
 import Control.Lens
@@ -261,7 +260,6 @@ withTestEnvironment tempDir action = do
       Just emptyDir' <- lookupEnv "EMPTY_DIR"
       featureFlagConfig <- getFeatureFlagConfig
       fodCheckPool <- Garnix.Monad.Pool.newPool 40 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
-      fodRemoteJobSlots <- QSem.newQSem 40
       terminalSessions <- newMVar Map.empty
       serverLogStreams <- ServerLogStream.newServerLogStreams
       withDefaultLogger $ \defaultLogger -> do
@@ -322,7 +320,6 @@ withTestEnvironment tempDir action = do
                   githubLogDebounceDuration = fromSeconds 0,
                   featureFlagConfig,
                   fodCheckPool,
-                  fodRemoteJobSlots,
                   hostingDomain = "garnix.me",
                   statsReportUrl = "https://garnix.io/api/hosts/stats",
                   extraHostingDomains = [],

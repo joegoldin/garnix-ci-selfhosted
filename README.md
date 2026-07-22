@@ -49,11 +49,11 @@ NixOS machine. Everything below uses example values — substitute your own:
   recovered commit then continues its idempotent artifact/module/deployment
   tail. Synthetic overall rows and external run processes that cannot safely be
   replayed are closed out as Cancelled rather than hanging forever.
-- **Hardened FOD verification** — prepare and strict-rebuild happen on the same
-  checker store; every failed rebuild fails closed because builder-controlled
-  stderr cannot authenticate a “source unavailable” exception. Transient
-  remote-store errors retry, and the complete copy/prepare/check transaction on
-  an external builder has its own `maxRemoteFodJobs` cap.
+- **Hardened FOD verification** — prepare and strict-rebuild happen through the
+  host's canonical Nix daemon store, including its configured substituters and
+  distributed builders. Garnix always rebuilds the original derivation
+  unchanged, and every failed rebuild fails closed because builder-controlled
+  stderr cannot authenticate a “source unavailable” exception.
 - **Per-bucket S3 credentials** (`S3_CACHE_PRIVATE_ACCESS_KEY_ID`/`…_SECRET_…`)
   — needed for providers like Backblaze B2 whose keys are all-buckets or
   one-bucket (upstream assumed one key pair for both cache buckets).
@@ -203,7 +203,6 @@ via netrc).
     enableNginx = false;                 # we bring Caddy below
     maxLocalJobs = 8;                    # concurrent package builds
     maxConcurrentBuilds = 8;             # fair Garnix-side build queue
-    maxRemoteFodJobs = 1;                # direct remote-store FOD sessions
     buildMachines = [ ];                 # optional remote builders (see step 10)
 
     # Optional: authenticate sandboxed builds to extra substituters (attic…).
@@ -433,36 +432,29 @@ builds:
 ```
 
 **Fixed-output derivation (FOD) checks** (opt-in: `fodChecks: true` in
-`garnix.yaml`) — on the selected checker store, garnix first realizes or
-substitutes each FOD's baseline output, then rebuilds it while ignoring that
-output so a lying hash surfaces in CI. This two-step sequence is required on
-fresh self-hosted guests because Nix refuses `--rebuild` when the output is not
-already valid in that store. A source-fetch-looking failure (dead mirror, HTTP
-error, CDN block) still appears in the build log, but it is a failure:
+`garnix.yaml`) — through the host's canonical Nix daemon store, garnix first
+realizes or substitutes each FOD's baseline output, then rebuilds the original
+derivation unchanged while ignoring that output so a lying hash surfaces in
+CI. The prepare phase sees everything already hydrated in the host store plus
+configured substituters such as Attic. The daemon may dispatch the strict build
+to a matching `buildMachines` entry, but it retains the host store as the source
+of truth and copies the result back. This two-step sequence is required because
+Nix refuses `--rebuild` when the output is not already valid in that store. A
+source-fetch-looking failure (dead mirror, HTTP error, CDN block) still appears
+in the build log, but it is a failure:
 those diagnostics come from builder-controlled stderr, so a malicious FOD can
 print fetch-looking text itself. Treating any substring as a trusted exception
 would bypass the security check. The conclusion is therefore unambiguous:
 **every requested FOD is verified (or already known-good) → success; any failed
-prepare or strict rebuild → failure**.
+prepare or strict rebuild → failure**. Garnix does not patch builder scripts,
+rewrite derivations, or substitute a different generator for the strict phase.
 
-The checker also has narrow, hash-preserving recovery paths for historical
-nixpkgs FODs that cannot be rebuilt verbatim with today's source services:
-
-- pre-seeded `stage0-posix` placeholders are regenerated with
-  `nixpkgs#make-minimal-bootstrap-sources`;
-- older `fetchCargoVendor` helpers are retried with current nixpkgs' identifying
-  User-Agent and `static.crates.io` endpoint;
-- the two fingerprinted git-lfs `buildGoModule` vendor generators that
-  inherited the contradictory `GOFLAGS=-mod=vendor` are regenerated in module
-  mode (unknown Go failures are not rewritten); and
-- the removed Mes `ldexpl.c` GitLab URL is checked against the authoritative
-  file now carried in the pinned current nixpkgs source.
-
-Each recovery must produce the same fixed-output store path as the prepared
-original before it is recorded as verified. Unknown failures still fail closed.
-Manual/EULA-gated sources (for example DisplayLink's `requireFile`) cannot be
-verified unattended unless the operator supplies the licensed source; a cached
-output is not treated as proof that its builder and hash agree.
+Hydrating a manual/EULA-gated `requireFile` output (for example DisplayLink)
+lets the prepare phase find the expected output, but it does not make the
+original derivation independently rebuildable: `requireFile` deliberately uses
+a builder that prints download instructions and exits unsuccessfully. Such a
+FOD therefore fails closed rather than turning cache presence into a false
+verification claim.
 
 **Check conclusions map to the forge's native ones.** A run/check reports one of
 `success`, `failure`, `timed out`, `cancelled`, or `skipped`. On GitHub these
@@ -1315,10 +1307,6 @@ services.garnixServer.buildMachines = [{
   supportedFeatures = [ "big-parallel" ];
 }];
 
-# Direct FOD checker sessions bypass the Nix scheduler, so cap them separately.
-# A 2-core/12-GiB builder should normally stay at one.
-services.garnixServer.maxRemoteFodJobs = 1;
-
 # Optional operator monitoring for the local and remote builders.
 services.garnixServer.monitoringBuilders = [
   {
@@ -1336,12 +1324,12 @@ services.garnixServer.monitoringBuilders = [
 ];
 ```
 
-`buildMachines[*].maxJobs` limits ordinary builds scheduled by the Nix daemon.
-FOD verification uses `nix --store` directly so it can prepare and strictly
-rebuild on one specific store; those sessions are instead limited by
-`maxRemoteFodJobs` (default `1`) and transient SSH transport failures are
-retried with jittered backoff. The cap queues work in Garnix instead of opening
-too many simultaneous SSH sessions against a small builder.
+`buildMachines[*].maxJobs` limits all work scheduled to that builder by the Nix
+daemon, including FOD strict rebuilds. FOD verification never opens the remote
+machine as an independent store: it uses the host daemon so hydrated paths and
+substituters remain visible, while Nix handles closure transfer, scheduling,
+and copying results back into the canonical store. A 2-core/12-GiB builder
+should normally use `maxJobs = 1`.
 
 Remote node-exporters should never be internet-wide. Bind the exporter only
 as broadly as needed and enforce a source allowlist at both the host firewall
@@ -1383,11 +1371,6 @@ once. These controls keep that from swamping the box or the log pipeline:
   separately capped at 32. Sets `GARNIX_MAX_CONCURRENT_BUILDS`. The
   `garnix_server_*_queue_len` gauges report the number of *waiters* (0 while
   slots are free).
-- **`services.garnixServer.maxRemoteFodJobs`** (default `1`) caps direct
-  remote-store FOD sessions. This is separate from each build machine's
-  `maxJobs`, because the FOD checker deliberately targets a store with
-  `--store` and therefore bypasses the Nix daemon scheduler. Sets
-  `GARNIX_FOD_REMOTE_MAX_JOBS`.
 - Build logs ship best-effort from the server to a local fluent-bit HTTP input,
   then to OpenSearch. Under a heavy wave fluent-bit's default 128-slot accept
   backlog can saturate and silently drop lines (an empty **Logs** panel on a

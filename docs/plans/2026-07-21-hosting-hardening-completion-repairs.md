@@ -4,7 +4,7 @@
 
 **Goal:** Repair every failed or missing verification item so the original hosting-hardening plan is implemented, deployed, and supported by requirement-level evidence.
 
-**Architecture:** The backend owns the claim-time stats marker and receives an explicit control-domain URL; pre-warm guests contain inert reporter units but no marker. Provisioner teardown explicitly stops every path-dependent unit and removes the deterministic tap before deleting state. FOD verification prepares its baseline, strictly rebuilds it, fails every unsuccessful check closed, and independently caps direct remote-store sessions. Rollout and verification then cover the complete original plan, including Authentik and operator-skill installation.
+**Architecture:** The backend owns the claim-time stats marker and receives an explicit control-domain URL; pre-warm guests contain inert reporter units but no marker. Provisioner teardown explicitly stops every path-dependent unit and removes the deterministic tap before deleting state. FOD verification prepares its baseline and strictly rebuilds the original derivation through the host's canonical Nix daemon store, which owns substituters and distributed-builder scheduling. Rollout and verification then cover the complete original plan, including Authentik and operator-skill installation.
 
 **Tech Stack:** Haskell/Servant, Hspec, Python 3 `unittest`, NixOS modules, microvm.nix/systemd, Caddy, PostgreSQL, Authentik REST API, GitHub checks.
 
@@ -154,20 +154,19 @@
 - [ ] **Step 2: Write failing regressions.** Require a previously unbuilt FOD
   to pass the real rebuild implementation, and require the Nix precondition
   error to fail rather than produce a source-unavailable skip.
-- [ ] **Step 3: Prepare then rebuild on one store.** Copy the derivation closure
-  as before, run an ordinary `nix build` on the selected local/remote store,
-  then run `nix build --rebuild` on the same store.
+- [ ] **Step 3: Prepare then rebuild on the canonical store.** Run an ordinary
+  `nix build` and then `nix build --rebuild` for the original `.drv^*` through
+  the host daemon. Let its configured substituters hydrate inputs and its
+  `buildMachines` scheduler dispatch work without opening a second store.
 - [ ] **Step 4: Fail closed.** Treat download/fetch/HTTP/mirror/manual-source,
   builder, Nix, SSH, and checker errors as FOD failures. Builder-controlled
   stderr cannot authenticate a source-unavailable exemption.
-- [ ] **Step 5: Bound and retry direct remote-store work.** Add
-  `services.garnixServer.maxRemoteFodJobs` / `GARNIX_FOD_REMOTE_MAX_JOBS`
-  (default `1`), hold a slot across copy/prepare/check, and retry only
-  recognized SSH transport failures with bounded jittered backoff. Prove a
-  one-job configuration never exceeds one active remote operation.
+- [ ] **Step 5: Use normal builder scheduling.** Prove FOD commands omit
+  `--store`, operate on the original derivation, and honor each configured
+  build machine's `maxJobs` through the Nix daemon.
 - [ ] **Step 6: Run focused and complete FOD/backend tests.** Expected: new
   unbuilt-FOD and classification regressions pass, source 403s and lying FODs
-  fail, and remote retry/cap regressions pass.
+  fail, and canonical-daemon command regressions pass.
 
 ### Task 5: Update docs, format, and run all local gates
 
@@ -195,14 +194,13 @@
 - Modify: `~/dotfiles/flake.lock`
 
 **Interfaces:**
-- Consumes: new `services.garnixServer.statsReportUrl` and
-  `services.garnixServer.maxRemoteFodJobs`; pushed Garnix and agent-skills revisions.
-- Produces: erdtree closure with control-domain stats URL, a one-job FOD limit
-  for the small external builder, and the installed Task 22 runbook.
+- Consumes: new `services.garnixServer.statsReportUrl`; pushed Garnix and
+  agent-skills revisions.
+- Produces: erdtree closure with control-domain stats URL, normal Nix-daemon
+  builder limits, and the installed Task 22 runbook.
 
 - [ ] **Step 1: Replace the local-provisioner stats setting with
-  `services.garnixServer.statsReportUrl = "https://${domains.garnixDomain}/api/hosts/stats"`,
-  and set `services.garnixServer.maxRemoteFodJobs = 1`.**
+  `services.garnixServer.statsReportUrl = "https://${domains.garnixDomain}/api/hosts/stats"`.**
 - [ ] **Step 2: Push the verified Garnix commit.**
 - [ ] **Step 3: Update dotfiles `garnix-ci` and the correct `agent-skills` input; verify both locked revisions.**
 - [ ] **Step 4: Run `nixfmt`, `statix`, flake evaluation, and the complete erdtree toplevel build.**

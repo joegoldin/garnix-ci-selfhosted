@@ -4,7 +4,6 @@ import Amazonka qualified
 import Amazonka.Auth qualified as Amazonka
 import Amazonka.S3 qualified as Amazonka
 import Control.Concurrent (forkIO, getNumCapabilities, newMVar)
-import Control.Concurrent.QSem qualified as QSem
 import Control.Exception qualified
 import Control.Exception.Safe qualified as Safe
 import Cradle qualified
@@ -411,11 +410,6 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
   fodCheckPool <- Garnix.Monad.Pool.newPool 20 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
-  fodRemoteMaxJobs <-
-    lookupEnv "GARNIX_FOD_REMOTE_MAX_JOBS" >>= \case
-      Just s | Just n <- readMaybe s, n > 0 -> pure n
-      _ -> pure 1
-  fodRemoteJobSlots <- QSem.newQSem fodRemoteMaxJobs
   terminalSessions <- newMVar Map.empty
   serverLogStreams <- ServerLogStream.newServerLogStreams
   withDefaultLogger $ \defaultLogger -> do
@@ -490,7 +484,6 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               githubLogDebounceDuration = fromSeconds @Int 15,
               featureFlagConfig,
               fodCheckPool,
-              fodRemoteJobSlots,
               terminalSessions,
               serverLogStreams
             }
