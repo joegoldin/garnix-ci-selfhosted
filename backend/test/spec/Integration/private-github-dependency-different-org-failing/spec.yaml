@@ -1,6 +1,6 @@
 description: >-
   Fetching private dependencies from different org fails
-repo: "garnix-testing-org/maximal-collaborators-test"
+repo: "joegoldin/garnix-integration-minimal"
 results:
   - name: "Evaluate flake.nix"
     index: Last

@@ -1515,6 +1515,16 @@ via the provisioner mock, and the Action specs boot
 `SpecHook` fixes up the committed test SSH keys' permissions at suite start
 (git can't store 0600 modes).
 
+The private-input examples are live integration tests. They use a dedicated
+GitHub App with only `contents:read`, installed on selected fixture
+repositories. CI decrypts `secrets/backend-specs-github-app.age` with the
+`backend_specs` action key and fails before running tests if the credential is
+missing or malformed; there is no CI skip path. For a focused local run, export
+`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and `GITHUB_APP_PK`, then use the
+same command above with the relevant `--match` flags. Rotate the committed
+ciphertext against the current action public key whenever the App private key
+or installation changes.
+
 # Acknowledgments
 
 We erased git history when open sourcing, so we'll be explicit here about our

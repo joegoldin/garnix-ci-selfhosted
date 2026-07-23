@@ -17,16 +17,16 @@
     "privateDep": {
       "flake": false,
       "locked": {
-        "lastModified": 1742820088,
-        "narHash": "sha256-eP9l7+WJQBfq9UXVdBQQLO9Yr7SvnYWnGWkayTZcagY=",
-        "owner": "garnix-testing-org",
-        "repo": "minimal-collaborators-test",
-        "rev": "c1a2f550bdcc447680b27f12af5985058e0f7171",
+        "lastModified": 1784824191,
+        "narHash": "sha256-v/tEbXqxsiQyB46ocS7kBwGmRGtUTRPtT7QwNsSj/9o=",
+        "owner": "joegoldin",
+        "repo": "garnix-integration-private-input",
+        "rev": "aa4852f2ea61e91af698f8e48bc3ecc36211524f",
         "type": "github"
       },
       "original": {
-        "owner": "garnix-testing-org",
-        "repo": "minimal-collaborators-test",
+        "owner": "joegoldin",
+        "repo": "garnix-integration-private-input",
         "type": "github"
       }
     },

@@ -19,7 +19,7 @@ import Garnix.Monad.Async (resolve)
 import Garnix.Prelude
 import Garnix.TestHelpers
 import Garnix.TestHelpers.GithubInterface.Deprecated qualified as Deprecated
-import Garnix.TestHelpers.Monad (cleanDbConn, suppressLogsWhenPassing, withDevSecrets, withTestEnvironment)
+import Garnix.TestHelpers.Monad (cleanDbConn, getGithubAppInstallationId, suppressLogsWhenPassing, withDevSecrets, withTestEnvironment)
 import Garnix.Types hiding (base, context, description, head, name, packageType, repo)
 import GitHub qualified as GH
 import GitHub.App.Auth qualified as GHA
@@ -48,10 +48,10 @@ spec = removePrivateSourcePathsFromNixStore $ do
 -- | These are all the private inputs that we use for integration tests.
 privateSourceStorePaths :: [FilePath]
 privateSourceStorePaths =
-  [ -- garnix-testing-org/minimal-collaborators-test#cb20de6727ea9f283a9d11799e79c7b3f42ea8fa
-    "/nix/store/kvghk8fpv89i39swh9ap0bfhchvqd3lv-source",
-    -- garnix-testing-org/test-repo-private#863d27ecd3f01e1c8d1c6e1620e1cc4b1e130e8c
-    "/nix/store/pnsaxvxr87jmcxw619lj7s9kl8mgqz39-source"
+  [ -- joegoldin/garnix-integration-minimal#afca9df1517408cc37f1eaa465b5fe178d0318ed
+    "/nix/store/qzmfnb314ld81zipnm95yhp8gcjvxmnx-source",
+    -- joegoldin/garnix-integration-private-input#aa4852f2ea61e91af698f8e48bc3ecc36211524f
+    "/nix/store/kiq34nk3kjj4mf2a8xp7r3ypv0b3ima6-source"
   ]
 
 removePrivateSourcePathsFromNixStore :: Spec -> Spec
@@ -186,6 +186,7 @@ getTests = do
 
 testFlakeSpec :: FilePath -> FlakeSpec -> IO ()
 testFlakeSpec dir fspec = do
+  githubAppInstallationId <- getGithubAppInstallationId
   buildRef <- newIORef mempty
   withSystemTempDirectory "garnix-test" $ \tmp -> do
     Turtle.cptree (base </> dir) tmp
@@ -239,7 +240,7 @@ testFlakeSpec dir fspec = do
                     & installation
                     . _Just
                     . id
-                    .~ garnixIoTestAppInstallationId
+                    .~ githubAppInstallationId
                     & eventCommit
                     .~ commit
             notifyOfCommit event `catchError` const (pure ())
@@ -247,7 +248,7 @@ testFlakeSpec dir fspec = do
             toRepo <- case repo fspec of
               Nothing -> error "when using prFromRepo, please also specify repo"
               Just r -> pure r
-            notifyOfPr commit "test-branch" fromRepo toRepo garnixIoTestAppInstallationId
+            notifyOfPr commit "test-branch" fromRepo toRepo githubAppInstallationId
               `catchError` const (pure ())
         allBuilds <- readIORef buildRef
         testBuilds (join $ IntMap.elems allBuilds)
@@ -328,11 +329,6 @@ testFlakeSpec dir fspec = do
             BeforeLast -> testBuild False ss $ relevant !! 1
             First -> testBuild False ss $ last relevant
             Nowhere -> mapM_ (testBuild True ss) relevant
-
--- This is the installation id of our test app for garnix-io/garnix.
--- See here: https://github.com/settings/installations/63238749
-garnixIoTestAppInstallationId :: Int
-garnixIoTestAppInstallationId = 63238749
 
 notifyOfPr :: CommitHash -> Branch -> Text -> Text -> Int -> M ()
 notifyOfPr commit branch fromRepo toRepo id = do

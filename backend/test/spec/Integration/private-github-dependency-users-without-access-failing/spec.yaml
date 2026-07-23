@@ -1,12 +1,12 @@
 description: >-
   Fetching private dependencies fails: Some users don't have access to the private dependencies.
-repo: "garnix-testing-org/maximal-collaborators-test"
+repo: "joegoldin/garnix-integration-minimal"
 results:
   - name: "Evaluate flake.nix"
     index: Last
     outputLocation: Github
     outputRegex: >-
       Aborting, as some collaborators of this repository don't have access to a
-      required private dependency \(github:garnix-testing-org/minimal-collaborators-test\).
-      The users missing permissions are: .*jkarni.*
+      required private dependency \(github:joegoldin/garnix-integration-private-input\).
+      The users missing permissions are: .*joe-bastion.*
     result: failure

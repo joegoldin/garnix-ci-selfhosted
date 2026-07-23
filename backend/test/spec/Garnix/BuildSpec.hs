@@ -20,6 +20,7 @@ import Data.Yaml (encode)
 import GHC.IO.Unsafe (unsafePerformIO)
 import Garnix.API.Builds
 import Garnix.Build (buildFlake)
+import Garnix.Build.Package (evaluationMemoryFailureMessage)
 import Garnix.Build.Types (derivation)
 import Garnix.BuildLogs.Types (LogLine (LogLine))
 import Garnix.DB qualified as DB
@@ -52,6 +53,20 @@ import Text.Regex.PCRE.Light (compile, dollar_endonly)
 
 spec :: Spec
 spec = do
+  describe "evaluationMemoryFailureMessage" $ do
+    it "identifies allocation failures under the configured limit" $ do
+      evaluationMemoryFailureMessage
+        (fromGigabytes 32)
+        "error (ignored): writing packfile: -1, unable to create thread\nprlimit terminated by signal 11"
+        `shouldBe` Just
+          "Nix evaluation could not allocate memory under this repository's 32 GiB limit. Increase “Max evaluation memory” under Configure → Per-repo overrides."
+
+    it "does not mislabel unrelated evaluator crashes" $ do
+      evaluationMemoryFailureMessage
+        (fromGigabytes 32)
+        "prlimit terminated by signal 11"
+        `shouldBe` Nothing
+
   describe "builds" $ do
     inM . aroundM_ suppressLogsWhenPassing . beforeM_ truncateDBM $ do
       it "reports successes" $ GH.withFakeGithubInterface $ \ghState -> do

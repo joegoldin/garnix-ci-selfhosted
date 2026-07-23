@@ -3,6 +3,7 @@ module Garnix.API.ConfigureSpec (spec) where
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Lens (key, _String)
+import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.API.Configure
 import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts qualified as Artifacts
@@ -23,6 +24,58 @@ import Test.Hspec
 
 spec :: Spec
 spec = do
+  describe "Garnix.API.Configure (runtime overrides)" $ inM $ beforeM_ truncateDBM $ do
+    it "enforces the 16 GiB evaluation-memory floor on existing rows" $ asAdmin $ \api -> do
+      let tooSmall = fromGigabytes 4
+      void
+        $ DB.pgExec
+          [pgSQL|
+            INSERT INTO repo_config (repo_user, repo_name, max_eval_memory)
+              VALUES ('some-owner', 'some-repo', ${tooSmall})
+          |]
+      repoConfig <- DB.getRepoConfig "some-owner" "some-repo"
+      repoConfig ^. maxEvalMemory `shouldBeM` fromGigabytes 16
+      configured <- _configureAPIGet api
+      _configureSettingsDtoRepoOverrides configured
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16)]
+
+    it "sets, lists, and clears memory independently of the timeout" $ asAdmin $ \api -> do
+      _configureAPISetRepo api "some-owner" "some-repo" (SetTimeoutDto $ Just 120)
+        `shouldReturnM` NoContent
+      _configureAPISetRepoEvaluationMemory api "some-owner" "some-repo" (SetEvaluationMemoryDto 32)
+        `shouldReturnM` NoContent
+
+      configured <- _configureAPIGet api
+      _configureSettingsDtoDefaultMaxEvalMemoryGib configured `shouldBeM` 16
+      _configureSettingsDtoRepoOverrides configured
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32)]
+
+      _configureAPIDeleteRepoEvaluationMemory api "some-owner" "some-repo"
+        `shouldReturnM` NoContent
+      memoryCleared <- _configureAPIGet api
+      _configureSettingsDtoRepoOverrides memoryCleared
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing]
+      inherited <- DB.getRepoConfig "some-owner" "some-repo"
+      inherited ^. maxEvalMemory `shouldBeM` fromGigabytes 16
+      inherited ^. buildTimeoutMinutes `shouldBeM` Just 120
+
+      _configureAPIDeleteRepo api "some-owner" "some-repo"
+        `shouldReturnM` NoContent
+      allCleared <- _configureAPIGet api
+      _configureSettingsDtoRepoOverrides allCleared `shouldBeM` []
+
+    it "clamps new evaluation-memory overrides to 16 GiB" $ asAdmin $ \api -> do
+      _configureAPISetRepoEvaluationMemory api "some-owner" "some-repo" (SetEvaluationMemoryDto 4)
+        `shouldReturnM` NoContent
+      repoConfig <- DB.getRepoConfig "some-owner" "some-repo"
+      repoConfig ^. maxEvalMemory `shouldBeM` fromGigabytes 16
+
+    it "rejects non-admin callers on evaluation-memory routes" $ asUser FreeSubscription $ \api -> do
+      _configureAPISetRepoEvaluationMemory api "o" "r" (SetEvaluationMemoryDto 32)
+        `shouldThrowM` Unauthorized
+      _configureAPIDeleteRepoEvaluationMemory api "o" "r"
+        `shouldThrowM` Unauthorized
+
   describe "Garnix.API.Configure (domains)" $ inM $ beforeM_ truncateDBM $ do
     it "lists configured and manual domains once with durable status"
       $ local
@@ -137,10 +190,16 @@ spec = do
       Artifacts.insertArtifactObject "some-hash" ArtifactPublic 100 2
       Artifacts.setBuildArtifactsLocked (build ^. id) True
       Artifacts.setRepoArtifactSettings "some-owner" "some-repo" (Just 90) (Just True)
+      _configureAPISetRepo api "some-owner" "some-repo" (SetTimeoutDto $ Just 120)
+        `shouldReturnM` NoContent
+      _configureAPISetRepoEvaluationMemory api "some-owner" "some-repo" (SetEvaluationMemoryDto 32)
+        `shouldReturnM` NoContent
       dto <- _configureAPIGet api
       let topKeys = jsonKeys (toJSON dto)
       forM_
-        ( [ "artifact_retention_days",
+        ( [ "default_max_eval_memory_gib",
+            "repo_overrides",
+            "artifact_retention_days",
             "artifact_keep_latest",
             "artifact_repo_overrides",
             "artifact_usage",
@@ -149,6 +208,14 @@ spec = do
             [Aeson.Key]
         )
         $ \k -> topKeys `shouldContainM` [k]
+      map toJSON (_configureSettingsDtoRepoOverrides dto)
+        `shouldBeM` [ [aesonQQ| {
+                        repo_user: "some-owner",
+                        repo_name: "some-repo",
+                        build_timeout_minutes: 120,
+                        max_eval_memory_gib: 32
+                      } |]
+                    ]
       map toJSON (_configureSettingsDtoArtifactRepoOverrides dto)
         `shouldBeM` [ [aesonQQ| {
                         repo_user: "some-owner",

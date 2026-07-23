@@ -3,7 +3,7 @@ module Garnix.GithubInterfaceSpec where
 import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
 import Data.IORef.Lifted (modifyIORef, newIORef, readIORef)
-import Garnix.GithubInterface (_retryGithubRequest, _retryWhen, scopedActionTokenRequestBody)
+import Garnix.GithubInterface (scopedActionTokenRequestBody, _retryGithubRequest, _retryWhen)
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.TestHelpers.Monad
@@ -14,22 +14,32 @@ import Test.Hspec
 
 spec :: Spec
 spec = do
+  describe "parseGithubAppInstallationId" $ do
+    it "accepts a positive installation id"
+      $ parseGithubAppInstallationId "63238749"
+      `shouldBe` Right 63238749
+
+    it "rejects missing, non-numeric, and non-positive installation ids" $ do
+      parseGithubAppInstallationId "" `shouldBe` Left githubAppInstallationIdSetupError
+      parseGithubAppInstallationId "not-an-id" `shouldBe` Left githubAppInstallationIdSetupError
+      parseGithubAppInstallationId "0" `shouldBe` Left githubAppInstallationIdSetupError
+
   describe "scopedActionTokenRequestBody" $ do
-    it "descoped mode asks for a token with no permissions" $
-      scopedActionTokenRequestBody "my-repo" GithubTokenScopeDescoped
-        `shouldBe` decodeJson "{ \"permissions\": {} }"
+    it "descoped mode asks for a token with no permissions"
+      $ scopedActionTokenRequestBody "my-repo" GithubTokenScopeDescoped
+      `shouldBe` decodeJson "{ \"permissions\": {} }"
 
-    it "this-repo read scopes the token to this repo with contents:read" $
-      scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents GithubTokenThisRepo GithubTokenRead)
-        `shouldBe` decodeJson "{ \"repositories\": [\"my-repo\"], \"permissions\": { \"contents\": \"read\" } }"
+    it "this-repo read scopes the token to this repo with contents:read"
+      $ scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents GithubTokenThisRepo GithubTokenRead)
+      `shouldBe` decodeJson "{ \"repositories\": [\"my-repo\"], \"permissions\": { \"contents\": \"read\" } }"
 
-    it "this-repo write scopes the token to this repo with contents:write" $
-      scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents GithubTokenThisRepo GithubTokenWrite)
-        `shouldBe` decodeJson "{ \"repositories\": [\"my-repo\"], \"permissions\": { \"contents\": \"write\" } }"
+    it "this-repo write scopes the token to this repo with contents:write"
+      $ scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents GithubTokenThisRepo GithubTokenWrite)
+      `shouldBe` decodeJson "{ \"repositories\": [\"my-repo\"], \"permissions\": { \"contents\": \"write\" } }"
 
-    it "named repos scope the token to exactly those repos" $
-      scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenRead)
-        `shouldBe` decodeJson "{ \"repositories\": [\"a\", \"b\"], \"permissions\": { \"contents\": \"read\" } }"
+    it "named repos scope the token to exactly those repos"
+      $ scopedActionTokenRequestBody "my-repo" (GithubTokenScopeContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenRead)
+      `shouldBe` decodeJson "{ \"repositories\": [\"a\", \"b\"], \"permissions\": { \"contents\": \"read\" } }"
 
   retrySpec
 

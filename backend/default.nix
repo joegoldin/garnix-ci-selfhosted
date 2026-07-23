@@ -226,8 +226,10 @@ rec {
         ++ [
           (pkgs.haskellPackages.ghc.withPackages (p: p.garnix.getBuildInputs.haskellBuildInputs))
           cabalInstall
+          pkgs.jq
         ];
       text = ''
+        set -euo pipefail
         tempDir=$(mktemp -d /tmp/garnix-specs.XXXXXXXX)
         cd "$tempDir"
         export HOME="$tempDir/home"
@@ -245,20 +247,58 @@ rec {
         git config --global user.email "you@example.com"
         git config --global user.name "Your Name"
         git config --global init.defaultBranch main
-        # nixpkgs and other public flake inputs are fetched unauthenticated:
-        # we deliberately do NOT bake a github access token into the test env.
-        # secrets/dev.yaml is encrypted only to the committed dev key in a
-        # public repo, so any token placed there would be effectively public
-        # (and an expired one 401s every github fetch — worse than none). The
-        # Public fixture inputs are lock-pinned so this does not depend on
-        # GitHub's anonymous API quota.
-
         cp -r ${./..} src
         chmod a+rwX -R src
         chmod go-rwx src/backend/ssh-key-for-tests
+
+        haveAnyIntegrationSecret=false
+        if [[ -n "''${GITHUB_APP_ID:-}" || -n "''${GITHUB_APP_INSTALLATION_ID:-}" || -n "''${GITHUB_APP_PK:-}" ]]; then
+          haveAnyIntegrationSecret=true
+        fi
+
+        if [[ "$haveAnyIntegrationSecret" == true ]]; then
+          if [[ -z "''${GITHUB_APP_ID:-}" || -z "''${GITHUB_APP_INSTALLATION_ID:-}" || -z "''${GITHUB_APP_PK:-}" ]]; then
+            echo "backend_specs requires GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PK together" >&2
+            exit 1
+          fi
+        else
+          actionKey="''${GARNIX_ACTION_PRIVATE_KEY_FILE:-}"
+          integrationSecrets="''${GARNIX_BACKEND_SPECS_SECRETS_FILE:-src/secrets/backend-specs-github-app.age}"
+          decryptedSecrets="$tempDir/backend-specs-github-app.json"
+
+          if [[ -z "$actionKey" || ! -s "$actionKey" ]]; then
+            echo "backend_specs requires its Garnix action private key to decrypt the live GitHub integration-test credentials" >&2
+            exit 1
+          fi
+          if [[ ! -s "$integrationSecrets" ]]; then
+            echo "backend_specs integration credential is missing: $integrationSecrets" >&2
+            exit 1
+          fi
+          if ! age --decrypt --identity "$actionKey" --output "$decryptedSecrets" "$integrationSecrets"; then
+            echo "backend_specs could not decrypt its live GitHub integration-test credential" >&2
+            exit 1
+          fi
+          chmod 600 "$decryptedSecrets"
+
+          if ! GITHUB_APP_ID=$(jq -er '.github_app_id | select(type == "number" or type == "string") | tostring | select(test("^[1-9][0-9]*$"))' "$decryptedSecrets"); then
+            echo "backend_specs integration credential has an invalid github_app_id" >&2
+            exit 1
+          fi
+          if ! GITHUB_APP_INSTALLATION_ID=$(jq -er '.github_app_installation_id | select(type == "number" or type == "string") | tostring | select(test("^[1-9][0-9]*$"))' "$decryptedSecrets"); then
+            echo "backend_specs integration credential has an invalid github_app_installation_id" >&2
+            exit 1
+          fi
+          if ! GITHUB_APP_PK=$(jq -er '.github_app_pk | select(type == "string" and (contains("-----BEGIN PRIVATE KEY-----") or contains("-----BEGIN RSA PRIVATE KEY-----")))' "$decryptedSecrets"); then
+            echo "backend_specs integration credential has an invalid github_app_pk" >&2
+            exit 1
+          fi
+          export GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PK
+        fi
+
+        export GITHUB_WEBHOOK_SECRET="''${GITHUB_WEBHOOK_SECRET:-backend-specs-integration-test}"
         cd src/backend
         cabal configure --ghc-options="-O0"
-        cabal run spec -- --fail-on=focused
+        cabal run spec -- --fail-on=focused "$@"
       '';
     };
   };

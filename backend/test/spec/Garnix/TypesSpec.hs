@@ -13,6 +13,10 @@ import Test.Hspec
 
 spec :: Spec
 spec = describe "Types" $ do
+  describe "defaultRepoConfig" $ do
+    it "uses a 16 GiB evaluation-memory floor" $ do
+      defaultRepoConfig ^. maxEvalMemory `shouldBe` fromGigabytes 16
+
   describe "exportKeysSshArgs" $ do
     let opts user sudo =
           ExportKeysOpts

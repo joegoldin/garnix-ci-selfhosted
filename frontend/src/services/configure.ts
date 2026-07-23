@@ -8,11 +8,22 @@ const settingsSchema = z
       .number()
       .nullish()
       .transform((v) => v ?? null),
+    default_max_eval_memory_gib: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? 16),
     repo_overrides: z.array(
       z.object({
         repo_user: z.string(),
         repo_name: z.string(),
-        build_timeout_minutes: z.number(),
+        build_timeout_minutes: z
+          .number()
+          .nullish()
+          .transform((v) => v ?? null),
+        max_eval_memory_gib: z
+          .number()
+          .nullish()
+          .transform((v) => v ?? null),
       }),
     ),
     // Artifact settings; tolerate a backend that predates artifacts (absent
@@ -71,10 +82,12 @@ const settingsSchema = z
   })
   .transform((s) => ({
     defaultBuildTimeoutMinutes: s.default_build_timeout_minutes,
+    defaultMaxEvalMemoryGib: s.default_max_eval_memory_gib,
     repoOverrides: s.repo_overrides.map((o) => ({
       repoUser: o.repo_user,
       repoName: o.repo_name,
       buildTimeoutMinutes: o.build_timeout_minutes,
+      maxEvalMemoryGib: o.max_eval_memory_gib,
     })),
     artifactRetentionDays: s.artifact_retention_days,
     artifactKeepLatest: s.artifact_keep_latest,
@@ -132,6 +145,28 @@ export const deleteRepoBuildTimeout = async (
   repo: string,
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "DELETE", `configure/repo/${owner}/${repo}`);
+
+export const setRepoEvaluationMemory = async (
+  owner: string,
+  repo: string,
+  gibibytes: number,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "PUT",
+    `configure/repo/${owner}/${repo}/evaluation-memory`,
+    { body: JSON.stringify({ gibibytes }) },
+  );
+
+export const deleteRepoEvaluationMemory = async (
+  owner: string,
+  repo: string,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "DELETE",
+    `configure/repo/${owner}/${repo}/evaluation-memory`,
+  );
 
 export const setDefaultArtifactSettings = async (
   retentionDays: number,

@@ -10,8 +10,9 @@ module Garnix.API.Configure
   ( ConfigureAPI (..),
     configureAPI,
     ConfigureSettingsDto (..),
-    RepoTimeoutDto (..),
+    RepoRuntimeOverrideDto (..),
     SetTimeoutDto (..),
+    SetEvaluationMemoryDto (..),
     ArtifactRepoOverrideDto (..),
     ArtifactUsageDto (..),
     LockedArtifactBuildDto (..),
@@ -56,6 +57,21 @@ data ConfigureAPI route = ConfigureAPI
         :- "repo"
         :> Capture "owner" GhRepoOwner
         :> Capture "repo" GhRepoName
+        :> Delete '[JSON] NoContent,
+    _configureAPISetRepoEvaluationMemory ::
+      route
+        :- "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> "evaluation-memory"
+        :> ReqBody '[JSON] SetEvaluationMemoryDto
+        :> Put '[JSON] NoContent,
+    _configureAPIDeleteRepoEvaluationMemory ::
+      route
+        :- "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> "evaluation-memory"
         :> Delete '[JSON] NoContent,
     _configureAPISetArtifactDefaults ::
       route
@@ -102,7 +118,8 @@ data ConfigureAPI route = ConfigureAPI
 -- artifact retention settings/usage/locks.
 data ConfigureSettingsDto = ConfigureSettingsDto
   { _configureSettingsDtoDefaultBuildTimeoutMinutes :: Maybe Int32,
-    _configureSettingsDtoRepoOverrides :: [RepoTimeoutDto],
+    _configureSettingsDtoDefaultMaxEvalMemoryGib :: Int64,
+    _configureSettingsDtoRepoOverrides :: [RepoRuntimeOverrideDto],
     _configureSettingsDtoArtifactRetentionDays :: Int32,
     _configureSettingsDtoArtifactKeepLatest :: Bool,
     _configureSettingsDtoArtifactRepoOverrides :: [ArtifactRepoOverrideDto],
@@ -118,18 +135,19 @@ instance ToJSON ConfigureSettingsDto where
 instance FromJSON ConfigureSettingsDto where
   parseJSON = ourParseJSON
 
-data RepoTimeoutDto = RepoTimeoutDto
-  { _repoTimeoutDtoRepoUser :: GhRepoOwner,
-    _repoTimeoutDtoRepoName :: GhRepoName,
-    _repoTimeoutDtoBuildTimeoutMinutes :: Int32
+data RepoRuntimeOverrideDto = RepoRuntimeOverrideDto
+  { _repoRuntimeOverrideDtoRepoUser :: GhRepoOwner,
+    _repoRuntimeOverrideDtoRepoName :: GhRepoName,
+    _repoRuntimeOverrideDtoBuildTimeoutMinutes :: Maybe Int32,
+    _repoRuntimeOverrideDtoMaxEvalMemoryGib :: Maybe Int64
   }
   deriving stock (Eq, Show, Generic)
 
-instance ToJSON RepoTimeoutDto where
+instance ToJSON RepoRuntimeOverrideDto where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 
-instance FromJSON RepoTimeoutDto where
+instance FromJSON RepoRuntimeOverrideDto where
   parseJSON = ourParseJSON
 
 -- | A timeout in minutes; 'Nothing' clears it (used for the global default).
@@ -143,6 +161,18 @@ instance ToJSON SetTimeoutDto where
   toJSON = ourToJSON
 
 instance FromJSON SetTimeoutDto where
+  parseJSON = ourParseJSON
+
+newtype SetEvaluationMemoryDto = SetEvaluationMemoryDto
+  { _setEvaluationMemoryDtoGibibytes :: Int64
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetEvaluationMemoryDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetEvaluationMemoryDto where
   parseJSON = ourParseJSON
 
 -- | A repo's artifact retention override. 'Nothing' fields inherit the
@@ -263,16 +293,27 @@ configureAPI auth =
     { _configureAPIGet = do
         requireSelfHostConfig auth
         def <- DB.getDefaultBuildTimeout
-        overrides <- DB.getReposWithBuildTimeout
+        overrides <- DB.getRepoRuntimeOverrides
         (artifactRetentionDays, artifactKeepLatest) <- Artifacts.getArtifactSettings
         artifactOverrides <- Artifacts.getArtifactRepoOverrides
         artifactUsage <- Artifacts.getArtifactStorageUsage
         lockedBuilds <- Artifacts.getLockedArtifactBuilds
+        let minimumEvalMemory = defaultRepoConfig ^. maxEvalMemory
         pure
           $ ConfigureSettingsDto
             { _configureSettingsDtoDefaultBuildTimeoutMinutes = def,
+              _configureSettingsDtoDefaultMaxEvalMemoryGib =
+                toGigabytes minimumEvalMemory,
               _configureSettingsDtoRepoOverrides =
-                map (\(o, r, m) -> RepoTimeoutDto o r m) overrides,
+                map
+                  ( \(o, r, timeout, memory) ->
+                      RepoRuntimeOverrideDto
+                        o
+                        r
+                        timeout
+                        (toGigabytes . max minimumEvalMemory <$> memory)
+                  )
+                  overrides,
               _configureSettingsDtoArtifactRetentionDays = artifactRetentionDays,
               _configureSettingsDtoArtifactKeepLatest = artifactKeepLatest,
               _configureSettingsDtoArtifactRepoOverrides =
@@ -305,6 +346,16 @@ configureAPI auth =
         -- Removing the override reverts this repo to the global default (or 1h).
         globalDefault <- DB.getDefaultBuildTimeout
         DB.cancelRunningBuildsExceeding (fromMaybe defaultBuildTimeoutMinutes globalDefault) (Just (owner, repo))
+        pure NoContent,
+      _configureAPISetRepoEvaluationMemory = \owner repo dto -> do
+        requireSelfHostConfig auth
+        let minimumGib = toGigabytes (defaultRepoConfig ^. maxEvalMemory)
+            configuredGib = max minimumGib (_setEvaluationMemoryDtoGibibytes dto)
+        DB.setRepoMaxEvalMemory owner repo (Just $ fromGigabytes configuredGib)
+        pure NoContent,
+      _configureAPIDeleteRepoEvaluationMemory = \owner repo -> do
+        requireSelfHostConfig auth
+        DB.setRepoMaxEvalMemory owner repo Nothing
         pure NoContent,
       _configureAPISetArtifactDefaults = \dto -> do
         requireSelfHostConfig auth

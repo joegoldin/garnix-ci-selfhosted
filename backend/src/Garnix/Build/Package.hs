@@ -29,6 +29,23 @@ import Garnix.Sandbox
 import Garnix.Types as Types
 import System.Random (randomIO)
 
+evaluationMemoryFailureMessage :: Memory -> StrictByteString -> Maybe Text
+evaluationMemoryFailureMessage limit stderr
+  | any (`T.isInfixOf` normalized) allocationSignatures =
+      Just
+        $ "Nix evaluation could not allocate memory under this repository's "
+        <> cs (show $ toGigabytes limit)
+        <> " GiB limit. Increase “Max evaluation memory” under Configure → Per-repo overrides."
+  | otherwise = Nothing
+  where
+    normalized = T.toCaseFold $ cs stderr
+    allocationSignatures =
+      [ "unable to create thread",
+        "cannot allocate memory",
+        "std::bad_alloc",
+        "virtual memory exhausted"
+      ]
+
 doBuild :: Maybe FodChecker -> RunReporter -> BuildKind -> FlakeDir -> RepoConfig -> ProductPlan -> Build -> M Build
 doBuild fodChecker runReporter buildKind flakeDir repoConfig plan initialBuild = do
   tracker <- view #buildWaitTracker
@@ -187,6 +204,9 @@ buildPkg = curry7
             log Warning $ "package evaluation failed: " <> cs errorMessage
             case buildKind of
               Webhook -> do
+                forM_
+                  (evaluationMemoryFailureMessage (repoConfig ^. maxEvalMemory) errorMessage)
+                  (reportLogs runReporter . LogLine (Just $ build ^. package) Nothing)
                 reportLogs runReporter $ LogLine (Just $ build ^. package) Nothing $ "failed running package evaluation. If you have `nix` installed, you can reproduce the error locally by running: " <> cs command
                 reportLogs runReporter $ LogLine (Just $ build ^. package) Nothing $ cs errorMessage
               ModulePreview -> do

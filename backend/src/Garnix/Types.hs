@@ -1949,7 +1949,7 @@ data RepoConfig = RepoConfig
   deriving stock (Show)
 
 defaultRepoConfig :: RepoConfig
-defaultRepoConfig = RepoConfig False (fromGigabytes 8) False Nothing
+defaultRepoConfig = RepoConfig False (fromGigabytes 16) False Nothing
 
 newtype Memory = Memory Int64
   deriving stock (Show, Eq, Generic, Ord)
@@ -1975,6 +1975,9 @@ instance ToJSON ProductPlan where
 
 toBytes :: Memory -> Int64
 toBytes (Memory bytes) = bytes
+
+toGigabytes :: Memory -> Int64
+toGigabytes (Memory bytes) = bytes `div` (1024 * 1024 * 1024)
 
 fromGigabytes :: Int64 -> Memory
 fromGigabytes gbs = Memory $ gbs * 1024 * 1024 * 1024

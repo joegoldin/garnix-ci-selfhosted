@@ -100,7 +100,14 @@ setSubscriptionType userId sub =
 getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
-    map (\(skipInputChecks, evalMemory, privateCache, buildTimeout) -> RepoConfig skipInputChecks (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory) privateCache buildTimeout)
+    map
+      ( \(skipInputChecks, evalMemory, privateCache, buildTimeout) ->
+          RepoConfig
+            skipInputChecks
+            (max (defaultRepoConfig ^. maxEvalMemory) (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory))
+            privateCache
+            buildTimeout
+      )
       <$> pgQuery
         [pgSQL|
           SELECT
@@ -140,17 +147,17 @@ setDefaultBuildTimeout mMinutes =
           DO UPDATE SET default_build_timeout_minutes = ${mMinutes}
       |]
 
--- | Every repo that has a per-repo build/eval timeout override (minutes).
-getReposWithBuildTimeout :: M [(GhRepoOwner, GhRepoName, Int32)]
-getReposWithBuildTimeout =
-  catMaybes
-    . map (\(o, r, m) -> (o,r,) <$> m)
-    <$> pgQuery
-      [pgSQL|
-        SELECT repo_user, repo_name, build_timeout_minutes
-        FROM repo_config
-        WHERE build_timeout_minutes IS NOT NULL
-      |]
+-- | Every repo with a build-timeout or evaluation-memory override.
+getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory)]
+getRepoRuntimeOverrides =
+  pgQuery
+    [pgSQL|
+      SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory
+      FROM repo_config
+      WHERE build_timeout_minutes IS NOT NULL
+         OR max_eval_memory IS NOT NULL
+      ORDER BY repo_user, repo_name
+    |]
 
 -- | Set (or clear, with 'Nothing') a repo's build/eval timeout override.
 setRepoBuildTimeout :: GhRepoOwner -> GhRepoName -> Maybe Int32 -> M ()
@@ -162,6 +169,18 @@ setRepoBuildTimeout repoOwner repoName mMinutes =
           VALUES (${repoOwner}, ${repoName}, ${mMinutes})
           ON CONFLICT (repo_user, repo_name)
           DO UPDATE SET build_timeout_minutes = ${mMinutes}
+      |]
+
+-- | Set (or clear, with 'Nothing') a repo's evaluation-memory override.
+setRepoMaxEvalMemory :: GhRepoOwner -> GhRepoName -> Maybe Memory -> M ()
+setRepoMaxEvalMemory repoOwner repoName mMemory =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config (repo_user, repo_name, max_eval_memory)
+          VALUES (${repoOwner}, ${repoName}, ${mMemory})
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET max_eval_memory = ${mMemory}
       |]
 
 -- | Cancel in-progress builds already running longer than @minutes@ (0 = no

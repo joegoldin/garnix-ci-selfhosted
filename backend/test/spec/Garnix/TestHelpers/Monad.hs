@@ -20,6 +20,9 @@ module Garnix.TestHelpers.Monad
     shouldTerminate,
     withTestEnvironment,
     withDevSecrets,
+    getGithubAppInstallationId,
+    parseGithubAppInstallationId,
+    githubAppInstallationIdSetupError,
     githubAppPk,
     defaultInstallationAuth,
     suppressLogsWhenPassing,
@@ -77,6 +80,7 @@ import Test.HUnit (assertFailure)
 import Test.Hspec
 import Test.Hspec.Core.Spec qualified as Hspec
 import Test.Hspec.Golden (Golden)
+import Text.Read (readMaybe)
 import Prelude qualified (Show (..))
 
 cleanDbConn :: Env -> IO ()
@@ -392,6 +396,22 @@ withDevSecrets action = do
   baseEnv <- ask
   newEnv <- liftIO $ addDevSecrets baseEnv
   local (const newEnv) action
+
+githubAppInstallationIdSetupError :: Text
+githubAppInstallationIdSetupError =
+  "GITHUB_APP_INSTALLATION_ID must be set to the positive numeric installation ID of the dedicated integration-test GitHub App"
+
+parseGithubAppInstallationId :: String -> Either Text Int
+parseGithubAppInstallationId raw =
+  case readMaybe raw of
+    Just installationId | installationId > 0 -> Right installationId
+    _ -> Left githubAppInstallationIdSetupError
+
+getGithubAppInstallationId :: IO Int
+getGithubAppInstallationId =
+  lookupEnv "GITHUB_APP_INSTALLATION_ID" >>= \case
+    Nothing -> error githubAppInstallationIdSetupError
+    Just raw -> either error pure $ parseGithubAppInstallationId raw
 
 addDevSecrets :: Env -> IO Env
 addDevSecrets baseEnv = do

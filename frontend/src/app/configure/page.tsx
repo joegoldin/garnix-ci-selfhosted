@@ -21,6 +21,7 @@ import {
   deleteConnectedDomain,
   deleteRepoArtifactSettings,
   deleteRepoBuildTimeout,
+  deleteRepoEvaluationMemory,
   getBuiltRepos,
   getConfigureSettings,
   getConnectedDomains,
@@ -28,6 +29,7 @@ import {
   setDefaultBuildTimeout,
   setRepoArtifactSettings,
   setRepoBuildTimeout,
+  setRepoEvaluationMemory,
   verifyConnectedDomain,
   verifyConfiguredDomain,
 } from "@/services/configure";
@@ -87,22 +89,20 @@ const Page = () => {
       {selfHostMode && (
         <div className={styles.section}>
           <Text type="h2" className={styles.h2}>
-            Build timeout
+            Build runtime limits
           </Text>
           <Text className={styles.help}>
-            Cap how long a build may run before it is stopped. The cap applies
-            to both the evaluation and build phases, including the pre-build nix
-            commands (garnix config eval, attribute discovery, flake metadata) —
-            so a stuck evaluation fails instead of pending forever. Defaults to
-            1 hour when left empty; enter 0 for no limit. Lowering a limit also
-            cancels any in-progress build already past it.
+            Cap build duration and Nix evaluation memory. The time cap applies
+            to evaluation and build phases, including pre-build nix commands. It
+            defaults to 1 hour when empty; enter 0 for no limit. Evaluation
+            memory defaults to 16 GiB and cannot be set lower.
           </Text>
           {settings.loading ? (
             <Loading />
           ) : !settings.data.ok ? (
             <Text className={styles.error}>{settings.data.error.message}</Text>
           ) : (
-            <BuildTimeoutSettings
+            <BuildRuntimeSettings
               settings={settings.data.data}
               reload={settings.reload}
             />
@@ -192,7 +192,14 @@ const Page = () => {
   );
 };
 
-const BuildTimeoutSettings = ({
+export const parseMemoryGiB = (s: string): number | null => {
+  if (s.trim() === "") return null;
+  const gib = Number(s);
+  if (!Number.isInteger(gib) || gib < 16) return null;
+  return gib;
+};
+
+export const BuildRuntimeSettings = ({
   settings,
   reload,
 }: {
@@ -207,6 +214,7 @@ const BuildTimeoutSettings = ({
     repoName: string;
   } | null>(null);
   const [overrideHours, setOverrideHours] = React.useState("");
+  const [overrideMemoryGiB, setOverrideMemoryGiB] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -223,21 +231,52 @@ const BuildTimeoutSettings = ({
       await setDefaultBuildTimeout(null);
       setDefaultHours("");
     });
-  const addOverride = () => {
+  const saveOverride = () => {
     const minutes = hoursToMinutes(overrideHours);
-    if (!repo || minutes == null) return;
+    const memoryGiB = parseMemoryGiB(overrideMemoryGiB);
+    const invalidHours = overrideHours.trim() !== "" && minutes == null;
+    const invalidMemory = overrideMemoryGiB.trim() !== "" && memoryGiB == null;
+    if (!repo || invalidHours || invalidMemory) return;
+    const existing = settings.repoOverrides.find(
+      (o) => o.repoUser === repo.repoUser && o.repoName === repo.repoName,
+    );
+    if (existing == null && minutes == null && memoryGiB == null) return;
     return run(async () => {
-      await setRepoBuildTimeout(repo.repoUser, repo.repoName, minutes);
+      if (minutes == null) {
+        if (existing?.buildTimeoutMinutes != null) {
+          await deleteRepoBuildTimeout(repo.repoUser, repo.repoName);
+        }
+      } else {
+        await setRepoBuildTimeout(repo.repoUser, repo.repoName, minutes);
+      }
+      if (memoryGiB == null) {
+        if (existing?.maxEvalMemoryGib != null) {
+          await deleteRepoEvaluationMemory(repo.repoUser, repo.repoName);
+        }
+      } else {
+        await setRepoEvaluationMemory(repo.repoUser, repo.repoName, memoryGiB);
+      }
       setRepo(null);
       setOverrideHours("");
+      setOverrideMemoryGiB("");
     });
   };
   const editOverride = (o: RepoOverride) => {
     setRepo({ repoUser: o.repoUser, repoName: o.repoName });
     setOverrideHours(minutesToHours(o.buildTimeoutMinutes));
+    setOverrideMemoryGiB(
+      o.maxEvalMemoryGib == null ? "" : String(o.maxEvalMemoryGib),
+    );
   };
   const removeOverride = (o: RepoOverride) =>
-    run(() => deleteRepoBuildTimeout(o.repoUser, o.repoName));
+    run(async () => {
+      if (o.buildTimeoutMinutes != null) {
+        await deleteRepoBuildTimeout(o.repoUser, o.repoName);
+      }
+      if (o.maxEvalMemoryGib != null) {
+        await deleteRepoEvaluationMemory(o.repoUser, o.repoName);
+      }
+    });
 
   return (
     <div className={styles.timeout}>
@@ -263,21 +302,39 @@ const BuildTimeoutSettings = ({
       <Text type="h3" className={styles.h3}>
         Per-repo overrides
       </Text>
+      <Text className={styles.help}>
+        Default evaluation memory: {settings.defaultMaxEvalMemoryGib} GiB
+      </Text>
       <div className={styles.addRow}>
         <div className={styles.picker}>
           <RepoPicker value={repo} onChange={setRepo} />
         </div>
-        <input
-          className={styles.hoursInput}
-          type="number"
-          min="0"
-          step="0.5"
-          placeholder="hours"
-          value={overrideHours}
-          onChange={(e) => setOverrideHours(e.target.value)}
-        />
-        <Button onClick={addOverride} loading={busy}>
-          Add override
+        <label className={styles.label}>
+          Max build time (hours)
+          <input
+            className={styles.hoursInput}
+            type="number"
+            min="0"
+            step="0.5"
+            placeholder="default"
+            value={overrideHours}
+            onChange={(e) => setOverrideHours(e.target.value)}
+          />
+        </label>
+        <label className={styles.label}>
+          Max evaluation memory (GiB)
+          <input
+            className={styles.hoursInput}
+            type="number"
+            min="16"
+            step="1"
+            placeholder={String(settings.defaultMaxEvalMemoryGib)}
+            value={overrideMemoryGiB}
+            onChange={(e) => setOverrideMemoryGiB(e.target.value)}
+          />
+        </label>
+        <Button onClick={saveOverride} loading={busy}>
+          Save override
         </Button>
       </div>
 
@@ -294,7 +351,14 @@ const BuildTimeoutSettings = ({
                 {o.repoUser}/{o.repoName}
               </span>
               <span className={styles.overrideValue}>
-                {minutesToHours(o.buildTimeoutMinutes)}h
+                {o.buildTimeoutMinutes == null
+                  ? "default time"
+                  : `${minutesToHours(o.buildTimeoutMinutes)}h`}
+              </span>
+              <span className={styles.overrideValue}>
+                {o.maxEvalMemoryGib == null
+                  ? `default (${settings.defaultMaxEvalMemoryGib} GiB)`
+                  : `${o.maxEvalMemoryGib} GiB`}
               </span>
               <span className={styles.overrideActions}>
                 <Button style="secondary" onClick={() => editOverride(o)}>

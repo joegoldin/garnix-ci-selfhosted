@@ -1,7 +1,7 @@
 {
   description = "A very basic flake";
   inputs.privateDep = {
-    url = "github:garnix-testing-org/test-repo-private";
+    url = "github:joegoldin/garnix-integration-private-input";
     flake = false;
   };
   outputs = { self, nixpkgs, privateDep }: { };

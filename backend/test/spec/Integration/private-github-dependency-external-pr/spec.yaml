@@ -1,5 +1,5 @@
 description: Fail to access private dependency from github for an external PR
-repo: "garnix-testing-org/minimal-collaborators-test"
+repo: "joegoldin/garnix-integration-private-input"
 prFromRepo: "nixos/nixpkgs"
 results:
   - name: "Evaluate flake.nix"
