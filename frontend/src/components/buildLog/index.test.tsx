@@ -170,7 +170,7 @@ describe("build log phase status", () => {
     expect(scrollBy).not.toHaveBeenCalled();
   });
 
-  it("preserves the horizontal offset while following the visible line end", () => {
+  it("does not maintain a horizontal offset when wrapped lines grow", () => {
     mockedUseLogStream.mockReturnValue({
       loading: true,
       logs: [["live phase", lines("first")]],
@@ -196,16 +196,6 @@ describe("build log phase status", () => {
     });
     dimensions.scrollWidth = 1_120;
     view.rerender(<RunLog runId="run-id" />);
-    expect(logBody.scrollLeft).toBe(710);
-
-    logBody.scrollLeft = 400;
-    act(() => logBody.dispatchEvent(new Event("scroll")));
-    mockedUseLogStream.mockReturnValue({
-      loading: true,
-      logs: [["live phase", lines("first", "a wider second line", "third")]],
-    });
-    dimensions.scrollWidth = 1_240;
-    view.rerender(<RunLog runId="run-id" />);
-    expect(logBody.scrollLeft).toBe(400);
+    expect(logBody.scrollLeft).toBe(590);
   });
 });

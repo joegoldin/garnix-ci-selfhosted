@@ -145,10 +145,8 @@ const AnsiLogViewer = (props: { logs: Array<LogEntry>; isLive: boolean }) => {
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const endRef = React.useRef<HTMLSpanElement>(null);
   const followsEndRef = React.useRef(false);
-  const followsLineEndRef = React.useRef(false);
   const hasMeasuredRef = React.useRef(false);
   const lastMeasuredBottomRef = React.useRef<number | null>(null);
-  const lastMeasuredScrollWidthRef = React.useRef<number | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = React.useState(false);
 
   const measureEndVisibility = React.useCallback(() => {
@@ -159,30 +157,23 @@ const AnsiLogViewer = (props: { logs: Array<LogEntry>; isLive: boolean }) => {
     const endIsVisible =
       bounds.bottom >= 0 && bounds.bottom <= window.innerHeight + 24;
     followsEndRef.current = endIsVisible;
-    followsLineEndRef.current =
-      body.scrollWidth - body.clientWidth - body.scrollLeft <= 24;
     hasMeasuredRef.current = true;
     lastMeasuredBottomRef.current = bounds.bottom;
-    lastMeasuredScrollWidthRef.current = body.scrollWidth;
     setShowScrollToBottom(bounds.height > window.innerHeight && !endIsVisible);
   }, []);
 
   React.useEffect(() => {
-    const body = bodyRef.current;
     window.addEventListener("scroll", measureEndVisibility, { passive: true });
     window.addEventListener("resize", measureEndVisibility);
-    body?.addEventListener("scroll", measureEndVisibility, { passive: true });
     return () => {
       window.removeEventListener("scroll", measureEndVisibility);
       window.removeEventListener("resize", measureEndVisibility);
-      body?.removeEventListener("scroll", measureEndVisibility);
     };
   }, [measureEndVisibility]);
 
   React.useLayoutEffect(() => {
     const body = bodyRef.current;
     const previousBottom = lastMeasuredBottomRef.current;
-    const previousScrollWidth = lastMeasuredScrollWidthRef.current;
     if (
       body != null &&
       props.isLive &&
@@ -200,16 +191,6 @@ const AnsiLogViewer = (props: { logs: Array<LogEntry>; isLive: boolean }) => {
       lastMeasuredBottomRef.current = previousBottom;
     } else {
       measureEndVisibility();
-    }
-    if (
-      body != null &&
-      props.isLive &&
-      hasMeasuredRef.current &&
-      followsLineEndRef.current &&
-      previousScrollWidth != null
-    ) {
-      body.scrollLeft += body.scrollWidth - previousScrollWidth;
-      lastMeasuredScrollWidthRef.current = body.scrollWidth;
     }
   }, [styledLogs.length, measureEndVisibility, props.isLive]);
 
