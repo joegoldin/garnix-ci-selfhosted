@@ -36,10 +36,12 @@ NixOS machine. Everything below uses example values — substitute your own:
     `X-Auth-Request-Groups` **and** a private `X-Garnix-Proxy-Auth`
     provenance marker matched by the backend; membership of `adminGroup` ⇒
     garnix admin, and missing/mismatched marker configuration fails closed;
-  - trusted self-host builds may use **private flake inputs** automatically and
-    are permanently routed to the **authenticated** cache bucket. An external
-    fork is blocked on its first attempt and appears in the admin approval
-    inbox; approved retries keep the same private-cache routing.
+  - trusted self-host builds may use **private flake inputs** automatically
+    (when the base repo's collaborators can all access the input repo) and are
+    routed to the **authenticated** cache bucket. Each external fork is blocked
+    on its first attempt and appears — **per fork** — in the admin approval
+    inbox; approving one fork does not trust others, and approved retries keep
+    the same private-cache routing.
 - **Restart-safe package builds** — a `garnixServer` deploy resumes package
   builds only after the commit's complete build/action manifest was persisted.
   Those rows reuse their derivation checkpoint and reattach/cache-hit Nix, or
@@ -67,7 +69,8 @@ NixOS machine. Everything below uses example values — substitute your own:
   private [attic](https://github.com/zhaofengli/attic)).
 - **External-fork approval inbox** (`/garnix-admin`) — ordinary repositories
   need no setup and never appear there. If an external fork first attempts to
-  use private inputs, its base repo appears with Allow/Revoke controls.
+  use private inputs, that specific fork appears with Allow/Revoke controls
+  (per fork — approving one fork does not approve others).
 - **Configure page** (`/configure`, sidebar → "Configure") — a self-host web UI
   to set a **default max build time** and **per-repo overrides** (each caps the
   eval and build phases _and_ the pre-build nix commands — garnix-config eval,
@@ -529,9 +532,10 @@ input, the fetch fails normally and the build reports that real error.
 
 An external fork is different: letting arbitrary fork code name any private
 repo visible to a broadly installed GitHub App could expose that input through
-build output. Its first attempt is therefore blocked and recorded. Only then
-does the base repo appear under `/garnix-admin` → "External-fork private
-inputs"; Allow permits a retry, Revoke restores the block, and either state
+build output. Its first attempt is therefore blocked and recorded **per fork**.
+Only then does that specific fork appear under `/garnix-admin` → "External-fork
+private inputs"; Allow permits a retry for that fork alone (approving one fork
+never trusts another), Revoke restores the block, and either state
 keeps every resulting closure in the authenticated cache. Private cache reads
 require a cache-scope Garnix token whose GitHub login is a collaborator on the
 base repo.

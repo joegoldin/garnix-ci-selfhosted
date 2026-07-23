@@ -86,13 +86,20 @@ Every deployed repository configuration must import the current
 
 ```text
 TrustedUserCAKeys /var/lib/garnix/terminal-ca.pub
+AuthorizedPrincipalsFile /var/lib/garnix/terminal-principals
 ```
 
 The public key reaches that durable path in two stages. The provisioner's
 first-boot profile injects the actual CA public key and seeds the file. Before
 every initial activation and persistent redeployment, the backend derives the
 public key from its configured private key and installs it as `root:root` mode
-`0644` over the existing hosting SSH channel. Garnix activates the
+`0644` over the existing hosting SSH channel. Over that same channel it also
+installs `/var/lib/garnix/terminal-principals` containing this server's
+`server-<hash>` principal; with `AuthorizedPrincipalsFile` set, sshd accepts a
+certificate only if it carries that principal, so a certificate minted for one
+server cannot authenticate on another (per-user restriction stays enforced at
+mint time by the backend). Existing guests must be recreated to gain the
+principals file. Garnix activates the
 repository-built configuration only after this write succeeds. Consequently,
 repository activation and guest reboot preserve terminal trust, while the CA
 private key never enters the guest.
