@@ -43,6 +43,11 @@
 .logsModal {
   width: min(1200px, calc(100vw - 48px));
   max-width: 1200px;
+  /* Never taller than the viewport: it's fixed and centred (translate -50%),
+     so without a cap a long or errored server log pushes the modal off both
+     the top and bottom of the screen. Cap to the viewport and scroll inside. */
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
 
 .logsModalSection {
@@ -107,7 +112,10 @@
 }
 
 .logStreamError + .logs {
-  height: calc(58vh - 32px);
+  /* Match the panel height (.logPanel .logs is 30vh), minus the error
+     banner above it — not the standalone 58vh, which made the errored
+     server-log box balloon to ~2x the deploy-log box beside it. */
+  height: calc(30vh - 32px);
 }
 
 @media only screen and (max-width: 850px) {
