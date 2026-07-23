@@ -22,7 +22,9 @@ type Props = LinkProps &
 export const Link = ({
   className,
   children,
-  eventName,
+  // Dead prop since analytics were removed; destructured (and renamed to the
+  // ignore-pattern name) only so it isn't spread onto the DOM via ...rest.
+  eventName: _eventName,
   target,
   href,
   variant = "text",
