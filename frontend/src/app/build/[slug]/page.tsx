@@ -7,7 +7,6 @@ import { P, match } from "ts-pattern";
 import { z } from "zod";
 import { BuildLog } from "@/components/buildLog";
 import { WaitingOn } from "@/components/waitingOn";
-import { Button } from "@/components/button";
 import { StatusIcon } from "@/components/statusIcon";
 import { Text } from "@/components/text";
 import { Loading } from "@/components/loading";
@@ -36,8 +35,8 @@ import { useLoading } from "@/hooks/useLoading";
 import { fromSecs } from "@/utils/duration";
 import { ElapsedTime } from "@/components/elapsedTime";
 import { APIResult, Err, Ok, fetchFromAPI } from "@/services";
-import { useForm } from "@/hooks/useForm";
 import { cancelBuild } from "@/services/build";
+import { ConfirmActionButton } from "@/components/confirmActionButton";
 import {
   Artifact,
   ArtifactManifest,
@@ -147,12 +146,11 @@ const Page = ({ params }: { params: { slug: string } }) => {
           .exhaustive(),
     },
   );
-  const form = useForm({}, async () => {
+  const cancel = async () => {
     trackSubmit("cancel-build");
     await cancelBuild(params.slug);
     build.reload();
-    return Ok(null);
-  });
+  };
 
   if (build.loading) return null;
   return (
@@ -167,11 +165,18 @@ const Page = ({ params }: { params: { slug: string } }) => {
               <div className={styles.titleActions}>
                 <BuildArtifactBadge buildId={params.slug} />
                 {build.status === "Pending" || build.status === "Running" ? (
-                  <form {...form.props}>
-                    <Button submit={true} style="warning">
-                      Cancel build
-                    </Button>
-                  </form>
+                  <ConfirmActionButton
+                    triggerLabel="Cancel build"
+                    title="Cancel this build?"
+                    description={
+                      <p>
+                        The build will be stopped and cannot be resumed. This
+                        cannot be undone.
+                      </p>
+                    }
+                    confirmLabel="Yes, cancel build"
+                    onConfirm={cancel}
+                  />
                 ) : null}
               </div>
             </div>
@@ -287,9 +292,7 @@ const ArtifactsSection = ({ buildId }: { buildId: string }) => {
       artifacts.data.data.length > 0 &&
       window.location.hash === "#artifacts"
     ) {
-      document
-        .getElementById("artifacts")
-        ?.scrollIntoView({ block: "start" });
+      document.getElementById("artifacts")?.scrollIntoView({ block: "start" });
     }
   }, [artifacts]);
   // No artifacts (or a backend without the feature) -> no section at all.

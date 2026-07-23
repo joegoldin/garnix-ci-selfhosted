@@ -5,6 +5,7 @@ module Garnix.Orchestrator
     handleCommit,
     handleRerun,
     restartBuild,
+    restartBuilds,
     restartCommit,
     resumeBuild,
     resumeBuilds,
@@ -26,6 +27,7 @@ import Garnix.GithubInterface (listBranchesGithub)
 import Garnix.Hosting.Deploy (rolloutNewServerVersion)
 import Garnix.Monad
 import Garnix.Monad.Async (emptyPromise, resolve, spawn)
+import Garnix.Monad.Concurrency (forkM)
 import Garnix.Prelude
 import Garnix.Reporters.GiteaReporter (mkGiteaReporter)
 import Garnix.Reporters.GithubReporter (mkGithubReporter)
@@ -152,6 +154,23 @@ restartBuild reqUser' oldBuild = do
     (commitInfo, reporter) <- commitInfoForBuild reqUser' build'
     assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
     withSpan commitInfo $ rerunBuild reporter build' commitInfo
+
+-- | Clone and restart several package builds as one rerun scope. Cloning is
+-- synchronous so the API exposes the fresh pending rows before returning;
+-- execution is detached but shares one checkout and one FOD coordinator.
+restartBuilds :: (HasCallStack) => GhLogin -> [Build] -> M ()
+restartBuilds _ [] = pure ()
+restartBuilds reqUser' oldBuilds = do
+  hostname <- view #hostname
+  builds <- forM oldBuilds $ \oldBuild ->
+    DB.makeNewBuildForBuildId reqUser' (oldBuild ^. id) hostname
+  case builds of
+    [] -> pure ()
+    build : _ -> do
+      (commitInfo, reporter) <- commitInfoForBuild reqUser' build
+      assertIsAllowedToBuild (build ^. repoUser) (build ^. repoName)
+      forkM $ withSpan (build ^. id) $ do
+        withSpan commitInfo $ rerunBuilds reporter builds commitInfo
 
 -- | Resume package builds orphaned by a backend restart mid-flight (left
 -- @status IS NULL@ -- see 'DB.getResumableOrphanedBuilds'). Unlike

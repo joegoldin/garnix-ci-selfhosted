@@ -1,6 +1,5 @@
 import Image from "next/image";
 import React from "react";
-import { Button } from "@/components/button";
 import { StatusIcon } from "@/components/statusIcon";
 import { Text } from "@/components/text";
 import { formatCommitSha, formatRunName } from "@/utils/format";
@@ -11,10 +10,9 @@ import stopwatchIcon from "@/components/icons/stopwatch.svg";
 import statusIcon from "@/components/icons/status.svg";
 import { Link } from "@/components/link";
 import { ElapsedTime } from "@/components/elapsedTime";
-import { useForm } from "@/hooks/useForm";
-import { Ok } from "@/services";
 import { Run, cancelRun } from "@/services/run";
 import { trackSubmit } from "@/utils/analytics";
+import { ConfirmActionButton } from "@/components/confirmActionButton";
 import { RunLog } from "../buildLog";
 import { WaitingOn } from "../waitingOn";
 import styles from "./styles.module.css";
@@ -68,12 +66,11 @@ export const RunPage = ({
   run: Run;
   onChanged?: () => void;
 }) => {
-  const form = useForm({}, async () => {
+  const cancel = async () => {
     trackSubmit("cancel-run");
     await cancelRun(run.id);
     onChanged?.();
-    return Ok(null);
-  });
+  };
   return (
     <main className={styles.container}>
       <>
@@ -82,11 +79,18 @@ export const RunPage = ({
             {formatRunName(run)}
           </Text>
           {run.status === "Pending" || run.status === "Running" ? (
-            <form {...form.props}>
-              <Button submit={true} style="warning">
-                Cancel run
-              </Button>
-            </form>
+            <ConfirmActionButton
+              triggerLabel="Cancel run"
+              title="Cancel this run?"
+              description={
+                <p>
+                  The run will be stopped and cannot be resumed. This cannot be
+                  undone.
+                </p>
+              }
+              confirmLabel="Yes, cancel run"
+              onConfirm={cancel}
+            />
           ) : null}
         </div>
         <div className={`${styles.section} ${styles.summary}`}>

@@ -51,13 +51,18 @@
 
 .logPanels {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   margin-top: 20px;
 }
 
 .logPanel {
   min-width: 0;
+}
+
+.logPanel .logs,
+.logPanel .logMessage {
+  height: 30vh;
 }
 
 .logPanelHeader {
@@ -114,9 +119,9 @@
     grid-template-columns: 1fr;
   }
 
-  .logs,
-  .logMessage {
-    height: 34vh;
+  .logPanel .logs,
+  .logPanel .logMessage {
+    height: 28vh;
   }
 }
 

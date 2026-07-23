@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { ConfigureSettings } from "@/services/configure";
 import {
   BuildRuntimeSettings,
@@ -126,10 +126,17 @@ describe("build runtime settings", () => {
     expect(
       screen.getByText("Default evaluation memory: 16 GiB"),
     ).toBeInTheDocument();
-    const memoryInput = screen.getByLabelText("Max evaluation memory (GiB)");
-    expect(memoryInput).toHaveAttribute("min", "16");
+    expect(
+      screen.queryByLabelText("Max evaluation memory (GiB)"),
+    ).not.toBeInTheDocument();
 
     const row = within(rowFor("joegoldin/dotfiles"));
+    fireEvent.click(row.getByRole("button", { name: "Edit" }));
+
+    const memoryInput = screen.getByLabelText("Max evaluation memory (GiB)");
+    expect(memoryInput).toHaveAttribute("min", "16");
+    expect(memoryInput).toHaveValue(32);
+
     expect(row.getByText("2h")).toBeInTheDocument();
     expect(row.getByText("32 GiB")).toBeInTheDocument();
   });

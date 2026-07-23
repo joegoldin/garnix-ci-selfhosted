@@ -46,7 +46,6 @@
   flex-direction: column;
 }
 
-.defaultRow,
 .addRow {
   display: flex;
   align-items: center;
@@ -54,18 +53,70 @@
   gap: 12px;
 }
 
-.label {
-  font-size: 14px;
-  color: var(--color-stone-600);
+.settingsPanel,
+.overrideComposer {
+  border: 1px solid var(--color-stone-300);
+  background: var(--color-stone-50);
+  padding: 16px;
 }
 
-.picker {
-  flex: 1;
-  min-width: 240px;
+.settingsGrid,
+.overrideEditor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.overrideComposer {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.overrideEditor {
+  border-top: 1px solid var(--color-stone-300);
+  padding-top: 16px;
+}
+
+.settingField,
+.toggleField {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--color-stone-600);
+  font-size: 13px;
+}
+
+.toggleField {
+  justify-content: flex-end;
+}
+
+.fieldLabel {
+  margin-bottom: 7px;
+  color: var(--color-stone-600);
+  font-size: 13px;
+}
+
+.settingsActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inputWithUnit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-stone-500);
+  font-size: 13px;
 }
 
 .hoursInput {
-  width: 110px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 140px;
   padding: 8px 10px;
   border: 1px solid var(--color-stone-300);
   background-color: var(--color-white);
@@ -97,6 +148,12 @@
   font-weight: 500;
 }
 
+.overrideDetails {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .overrideValue {
   color: var(--color-stone-500);
   min-width: 60px;
@@ -109,6 +166,9 @@
 }
 
 .keepLatestSelect {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 180px;
   padding: 8px 10px;
   border: 1px solid var(--color-stone-300);
   background-color: var(--color-white);
@@ -231,6 +291,17 @@
   border-radius: 6px;
 }
 
+.searchInput {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-stone-300);
+  background: var(--color-white);
+  font-family: inherit;
+  font-size: 14px;
+}
+
 .repoRow {
   padding: 8px 12px;
   font-family: monospace;
@@ -246,4 +317,30 @@
 
 .repoRow:hover {
   background: var(--color-stone-100);
+}
+
+@media only screen and (max-width: 850px) {
+  .settingsGrid,
+  .overrideEditor {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsActions {
+    flex-wrap: wrap;
+  }
+
+  .overrideRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .overrideDetails {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .overrideValue {
+    text-align: left;
+  }
 }

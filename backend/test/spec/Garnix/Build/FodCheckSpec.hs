@@ -13,11 +13,13 @@ import Data.String.Interpolate.Util (unindent)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Database.PostgreSQL.Typed (pgSQL)
+import Garnix.API.Commits (restartFailedCommit)
 import Garnix.Build qualified as Build
 import Garnix.Build.Checkout (withCheckout)
 import Garnix.Build.FodCheck
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags.Types
+import Garnix.Duration
 import Garnix.Entitlements qualified as Entitlements
 import Garnix.Monad
 import Garnix.Monad.Async
@@ -106,6 +108,56 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
           runs <- DB.getRuns "owner" "repo" (commitInfo ^. commit)
           map (^. status) (filter ((== "FOD checks") . (^. name)) runs)
             `shouldBeM` [Just Success]
+
+    it "restarts multiple failed builds once with one FOD coordinator" $ do
+      GH.withFakeGithubInterface $ \ghState -> do
+        void $ DB.newUser "owner" "owner@example.com" FreeSubscription True
+        user <- DB.getUser "owner"
+        let flake = "{ outputs = { self }: {}; }"
+            config = "fodChecks: true"
+            publicCommit = defaultCommitInfo & repoPublicity .~ RepoIsPublic True
+        GH.withLocalRepo ghState "owner" "repo" identity publicCommit (GH.setupWithConfig flake (Just config)) $ \commitInfo -> do
+          let failed packageName =
+                testBuild
+                  ( (package .~ packageName)
+                      . (gitCommit .~ (commitInfo ^. commit))
+                      . (branch .~ (commitInfo ^. branch))
+                      . (repoUser .~ "owner")
+                      . (repoName .~ "repo")
+                      . (reqUser .~ "owner")
+                      . (repoIsPublic .~ RepoIsPublic True)
+                      . (prFromFork .~ Nothing)
+                      . (status ?~ Failure)
+                      . (drvPath ?~ "/nix/store/00000000000000000000000000000000-restart.drv")
+                  )
+          void $ failed "first"
+          void $ failed "second"
+          testCommit
+            $ (repoOwner .~ "owner")
+            . (repoName .~ "repo")
+            . (hash .~ (commitInfo ^. commit))
+            . (metaCheck .~ CheckFail)
+
+          withMockReturning #executeDeployPlanMock [] $ do
+            withMock
+              #buildPkgMock
+              ( \(_, _, _, _, _, _, build) -> do
+                  now <- liftIO getCurrentTime
+                  pure $ build & status ?~ Success & endTime ?~ now
+              )
+              $ do
+                void $ restartFailedCommit user (commitInfo ^. commit)
+                void $ restartFailedCommit user (commitInfo ^. commit)
+                waitFor (fromSeconds @Int 10)
+                  $ (length <$> getMockCalls #buildPkgMock)
+                  `shouldReturnM` 2
+                waitFor (fromSeconds @Int 10)
+                  $ (fmap (^. metaCheck) <$> DB.getCommit "owner" "repo" (commitInfo ^. commit))
+                  `shouldReturnM` Just CheckSuccess
+
+          runs <- DB.getRuns "owner" "repo" (commitInfo ^. commit)
+          length (filter ((== "FOD checks") . (^. name)) runs)
+            `shouldBeM` 1
 
   describe "__findAllFodsRecursively" $ do
     it "doesn't crash on a real derivation from nixpkgs" $ do

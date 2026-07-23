@@ -57,6 +57,7 @@ const Page = () => {
   const settings = useLoading(getConfigureSettings);
   const domains = useLoading(getConnectedDomains);
   const repos = useLoading(getBuiltRepos);
+  const [repoFilter, setRepoFilter] = React.useState("");
   return (
     <div className={styles.container}>
       <Text type="h1" className={styles.h1}>
@@ -174,17 +175,33 @@ const Page = () => {
           ) : repos.data.data.length === 0 ? (
             <Text className={styles.help}>No repositories built yet.</Text>
           ) : (
-            <div className={styles.repoList}>
-              {repos.data.data.map((r) => (
-                <Link
-                  key={`${r.owner}/${r.repo}`}
-                  href={`/repo/${r.owner}/${r.repo}`}
-                  className={styles.repoRow}
-                >
-                  {r.owner}/{r.repo}
-                </Link>
-              ))}
-            </div>
+            <>
+              <input
+                type="search"
+                aria-label="Filter built repositories"
+                className={styles.searchInput}
+                placeholder="Filter repositories…"
+                value={repoFilter}
+                onChange={(event) => setRepoFilter(event.target.value)}
+              />
+              <div className={styles.repoList}>
+                {repos.data.data
+                  .filter((repo) =>
+                    `${repo.owner}/${repo.repo}`
+                      .toLocaleLowerCase()
+                      .includes(repoFilter.trim().toLocaleLowerCase()),
+                  )
+                  .map((r) => (
+                    <Link
+                      key={`${r.owner}/${r.repo}`}
+                      href={`/repo/${r.owner}/${r.repo}`}
+                      className={styles.repoRow}
+                    >
+                      {r.owner}/{r.repo}
+                    </Link>
+                  ))}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -280,23 +297,32 @@ export const BuildRuntimeSettings = ({
 
   return (
     <div className={styles.timeout}>
-      <div className={styles.defaultRow}>
-        <label className={styles.label}>Default max build time (hours)</label>
-        <input
-          className={styles.hoursInput}
-          type="number"
-          min="0"
-          step="0.5"
-          placeholder="1 (default)"
-          value={defaultHours}
-          onChange={(e) => setDefaultHours(e.target.value)}
-        />
-        <Button onClick={saveDefault} loading={busy}>
-          Save default
-        </Button>
-        <Button style="secondary" onClick={clearDefault} loading={busy}>
-          Clear
-        </Button>
+      <div className={styles.settingsPanel}>
+        <div className={styles.settingsGrid}>
+          <label className={styles.settingField}>
+            <span>Default max build time</span>
+            <span className={styles.inputWithUnit}>
+              <input
+                className={styles.hoursInput}
+                type="number"
+                min="0"
+                step="0.5"
+                placeholder="1"
+                value={defaultHours}
+                onChange={(e) => setDefaultHours(e.target.value)}
+              />
+              <span>hours</span>
+            </span>
+          </label>
+          <div className={styles.settingsActions}>
+            <Button onClick={saveDefault} loading={busy}>
+              Save default
+            </Button>
+            <Button style="secondary" onClick={clearDefault} loading={busy}>
+              Clear
+            </Button>
+          </div>
+        </div>
       </div>
 
       <Text type="h3" className={styles.h3}>
@@ -305,37 +331,44 @@ export const BuildRuntimeSettings = ({
       <Text className={styles.help}>
         Default evaluation memory: {settings.defaultMaxEvalMemoryGib} GiB
       </Text>
-      <div className={styles.addRow}>
-        <div className={styles.picker}>
+      <div className={styles.overrideComposer}>
+        <div>
+          <div className={styles.fieldLabel}>Repository</div>
           <RepoPicker value={repo} onChange={setRepo} />
         </div>
-        <label className={styles.label}>
-          Max build time (hours)
-          <input
-            className={styles.hoursInput}
-            type="number"
-            min="0"
-            step="0.5"
-            placeholder="default"
-            value={overrideHours}
-            onChange={(e) => setOverrideHours(e.target.value)}
-          />
-        </label>
-        <label className={styles.label}>
-          Max evaluation memory (GiB)
-          <input
-            className={styles.hoursInput}
-            type="number"
-            min="16"
-            step="1"
-            placeholder={String(settings.defaultMaxEvalMemoryGib)}
-            value={overrideMemoryGiB}
-            onChange={(e) => setOverrideMemoryGiB(e.target.value)}
-          />
-        </label>
-        <Button onClick={saveOverride} loading={busy}>
-          Save override
-        </Button>
+        {repo != null ? (
+          <div className={styles.overrideEditor}>
+            <label className={styles.settingField}>
+              <span>Max build time (hours)</span>
+              <input
+                className={styles.hoursInput}
+                type="number"
+                min="0"
+                step="0.5"
+                placeholder="inherit default"
+                value={overrideHours}
+                onChange={(e) => setOverrideHours(e.target.value)}
+              />
+            </label>
+            <label className={styles.settingField}>
+              <span>Max evaluation memory (GiB)</span>
+              <input
+                className={styles.hoursInput}
+                type="number"
+                min="16"
+                step="1"
+                placeholder={String(settings.defaultMaxEvalMemoryGib)}
+                value={overrideMemoryGiB}
+                onChange={(e) => setOverrideMemoryGiB(e.target.value)}
+              />
+            </label>
+            <div className={styles.settingsActions}>
+              <Button onClick={saveOverride} loading={busy}>
+                Save override
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {settings.repoOverrides.length === 0 ? (
@@ -350,15 +383,17 @@ export const BuildRuntimeSettings = ({
               <span className={styles.overrideRepo}>
                 {o.repoUser}/{o.repoName}
               </span>
-              <span className={styles.overrideValue}>
-                {o.buildTimeoutMinutes == null
-                  ? "default time"
-                  : `${minutesToHours(o.buildTimeoutMinutes)}h`}
-              </span>
-              <span className={styles.overrideValue}>
-                {o.maxEvalMemoryGib == null
-                  ? `default (${settings.defaultMaxEvalMemoryGib} GiB)`
-                  : `${o.maxEvalMemoryGib} GiB`}
+              <span className={styles.overrideDetails}>
+                <span className={styles.overrideValue}>
+                  {o.buildTimeoutMinutes == null
+                    ? "default time"
+                    : `${minutesToHours(o.buildTimeoutMinutes)}h`}
+                </span>
+                <span className={styles.overrideValue}>
+                  {o.maxEvalMemoryGib == null
+                    ? `default (${settings.defaultMaxEvalMemoryGib} GiB)`
+                    : `${o.maxEvalMemoryGib} GiB`}
+                </span>
               </span>
               <span className={styles.overrideActions}>
                 <Button style="secondary" onClick={() => editOverride(o)}>
@@ -584,54 +619,75 @@ const ArtifactSettings = ({
 
   return (
     <div className={styles.timeout}>
-      <div className={styles.defaultRow}>
-        <label className={styles.label}>Retention (days)</label>
-        <input
-          className={styles.hoursInput}
-          type="number"
-          min="1"
-          step="1"
-          placeholder="30 (default)"
-          value={retentionDays}
-          onChange={(e) => setRetentionDays(e.target.value)}
-        />
-        <label className={styles.label}>Keep latest per branch</label>
-        <ToggleSwitch value={keepLatest} onChange={setKeepLatest} />
-        <Button onClick={saveDefault} loading={busy}>
-          Save default
-        </Button>
+      <div className={styles.settingsPanel}>
+        <div className={styles.settingsGrid}>
+          <label className={styles.settingField}>
+            <span>Retention (days)</span>
+            <input
+              className={styles.hoursInput}
+              type="number"
+              min="1"
+              step="1"
+              placeholder="30"
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(e.target.value)}
+            />
+          </label>
+          <label className={styles.toggleField}>
+            <span>Keep latest per branch</span>
+            <ToggleSwitch value={keepLatest} onChange={setKeepLatest} />
+          </label>
+          <div className={styles.settingsActions}>
+            <Button onClick={saveDefault} loading={busy}>
+              Save default
+            </Button>
+          </div>
+        </div>
       </div>
 
       <Text type="h3" className={styles.h3}>
         Per-repo overrides
       </Text>
-      <div className={styles.addRow}>
-        <div className={styles.picker}>
+      <div className={styles.overrideComposer}>
+        <div>
+          <div className={styles.fieldLabel}>Repository</div>
           <RepoPicker value={repo} onChange={setRepo} />
         </div>
-        <input
-          className={styles.hoursInput}
-          type="number"
-          min="1"
-          step="1"
-          placeholder="days (inherit)"
-          value={overrideDays}
-          onChange={(e) => setOverrideDays(e.target.value)}
-        />
-        <select
-          className={styles.keepLatestSelect}
-          value={overrideKeepLatest}
-          onChange={(e) =>
-            setOverrideKeepLatest(e.target.value as KeepLatestChoice)
-          }
-        >
-          <option value="inherit">keep latest: inherit</option>
-          <option value="on">keep latest: on</option>
-          <option value="off">keep latest: off</option>
-        </select>
-        <Button onClick={addOverride} loading={busy}>
-          Add override
-        </Button>
+        {repo != null ? (
+          <div className={styles.overrideEditor}>
+            <label className={styles.settingField}>
+              <span>Retention (days)</span>
+              <input
+                className={styles.hoursInput}
+                type="number"
+                min="1"
+                step="1"
+                placeholder="inherit default"
+                value={overrideDays}
+                onChange={(e) => setOverrideDays(e.target.value)}
+              />
+            </label>
+            <label className={styles.settingField}>
+              <span>Keep latest per branch</span>
+              <select
+                className={styles.keepLatestSelect}
+                value={overrideKeepLatest}
+                onChange={(e) =>
+                  setOverrideKeepLatest(e.target.value as KeepLatestChoice)
+                }
+              >
+                <option value="inherit">Inherit default</option>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+            <div className={styles.settingsActions}>
+              <Button onClick={addOverride} loading={busy}>
+                Save override
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {settings.artifactRepoOverrides.length === 0 ? (

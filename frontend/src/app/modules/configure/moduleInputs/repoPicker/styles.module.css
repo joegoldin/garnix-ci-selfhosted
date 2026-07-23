@@ -5,15 +5,16 @@
 .chosen {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--color-stone-300);
 }
 
 .repo {
   display: flex;
   align-items: center;
-  padding: 10px 20px;
   gap: 10px;
-  background: var(--color-stone-100);
 }
 
 .loading {
@@ -23,9 +24,25 @@
   }
 }
 
+.picker {
+  border: 1px solid var(--color-stone-300);
+  background: var(--color-white);
+}
+
+.filter {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-stone-300);
+  background: var(--color-white);
+  font-family: inherit;
+  font-size: 14px;
+}
+
 .repoList {
-  height: 200px;
-  overflow: scroll;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .repoRow {
@@ -39,4 +56,14 @@
   & span {
     flex-grow: 1;
   }
+}
+
+.repoRow:last-child {
+  border-bottom: 0;
+}
+
+.empty {
+  padding: 20px;
+  color: var(--color-stone-500);
+  text-align: center;
 }

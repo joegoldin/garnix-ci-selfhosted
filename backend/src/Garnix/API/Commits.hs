@@ -4,7 +4,6 @@ import Garnix.API.Runs (RunSummary, buildWaitNode, toRunSummary)
 import Garnix.Access (canCancelBuild, getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
 import Garnix.DB qualified as DB
 import Garnix.Monad
-import Garnix.Monad.Concurrency (forkM)
 import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
 import Garnix.Types
@@ -226,8 +225,9 @@ cancelCommit user commit = do
   pure NoContent
 
 -- | Restart every failed (failed/timed-out) build of a commit. Package builds
--- are restarted individually; if the failure is the eval/overall build itself
--- (so there are no package builds to restart), the whole commit is re-run.
+-- are restarted as one shared rerun scope; if the failure is the eval/overall
+-- build itself (so there are no package builds to restart), the whole commit
+-- is re-run.
 -- Gated like cancellation: requester, collaborator, or admin.
 restartFailedCommit :: User -> CommitHash -> M NoContent
 restartFailedCommit user commit = do
@@ -247,16 +247,40 @@ restartFailedCommit user commit = do
       failedOverall = filter (\b -> isFailed b && b ^. packageType == TypeOverall) builds
       failedRuns = filter (\r -> _runStatus r == Just Failure || _runStatus r == Just Timeout) runs
       restarter = user ^. githubLogin
-  if not (null failedRuns)
-    -- A failed run (action/deploy/FOD/module publish) can only be re-executed
-    -- by re-running the whole commit: runs are driven by the full pipeline,
-    -- not by a per-package build.
-    then case builds of
-      anyBuild : _ -> forkM $ Orchestrator.restartCommit restarter anyBuild
-      [] -> pure ()
-    else case (failedPackageBuilds, failedOverall) of
-      ([], overallBuild : _) -> forkM $ Orchestrator.restartCommit restarter overallBuild
-      _ -> forM_ failedPackageBuilds $ \b -> forkM $ Orchestrator.restartBuild restarter b
+      restart =
+        if not (null failedRuns)
+          -- A failed run (action/deploy/FOD/module publish) can only be
+          -- re-executed by re-running the whole commit: runs are driven by the
+          -- full pipeline, not by a per-package build.
+          then case builds of
+            build : _ -> Just $ Orchestrator.restartCommit restarter build
+            [] -> Nothing
+          else case (failedPackageBuilds, failedOverall) of
+            ([], overallBuild : _) -> Just $ Orchestrator.restartCommit restarter overallBuild
+            (_ : _, _) -> Just $ Orchestrator.restartBuilds restarter failedPackageBuilds
+            _ -> Nothing
+  forM_ restart $ \schedule -> do
+    commitState <- DB.getCommit (summary ^. repoOwner) (summary ^. repoName) commit
+    forM_ commitState $ \commit' -> do
+      -- The meta-check transition is an atomic restart claim. A repeated or
+      -- concurrent request observes Pending and schedules no duplicate work.
+      let previousMetaCheck = commit' ^. metaCheck
+      claimed <-
+        DB.setMetaCheck
+          (summary ^. repoOwner)
+          (summary ^. repoName)
+          commit
+          (DB.CheckStatusUpdate previousMetaCheck CheckPending)
+      when claimed
+        $ schedule
+        `catchEither` \err -> do
+          void
+            $ DB.setMetaCheck
+              (summary ^. repoOwner)
+              (summary ^. repoName)
+              commit
+              (DB.CheckStatusUpdate CheckPending previousMetaCheck)
+          rethrowEither err
   pure NoContent
 
 -- | Branches available to manually trigger a build on, for the repo page's

@@ -1,3 +1,4 @@
+import React from "react";
 import { GithubIcon } from "@/components/icons/github";
 import { InputProps } from "@/components/input";
 import { useLoading } from "@/hooks/useLoading";
@@ -35,6 +36,7 @@ const RepoUnchosen = (props: {
   onChange: (v: { repoUser: string; repoName: string }) => void;
 }) => {
   const repos = useLoading(getRepos);
+  const [filter, setFilter] = React.useState("");
   if (repos.loading)
     return (
       <div className={styles.loading}>
@@ -50,20 +52,40 @@ const RepoUnchosen = (props: {
       </div>
     );
 
+  const normalizedFilter = filter.trim().toLocaleLowerCase();
+  const filteredRepos = repos.data.data.filter((repo) =>
+    `${repo.repoUser}/${repo.repoName}`
+      .toLocaleLowerCase()
+      .includes(normalizedFilter),
+  );
+
   return (
-    <div className={styles.repoList}>
-      {repos.data.data.map((repo) => (
-        <div
-          className={styles.repoRow}
-          key={`${repo.repoUser}/${repo.repoName}`}
-        >
-          <GithubIcon className={styles.ghIcon} />
-          <span>
-            {repo.repoUser} / {repo.repoName}
-          </span>
-          <Button onClick={() => props.onChange(repo)}>Select</Button>
-        </div>
-      ))}
+    <div className={styles.picker}>
+      <input
+        type="search"
+        aria-label="Filter repositories"
+        className={styles.filter}
+        placeholder="Filter repositories…"
+        value={filter}
+        onChange={(event) => setFilter(event.target.value)}
+      />
+      <div className={styles.repoList}>
+        {filteredRepos.map((repo) => (
+          <div
+            className={styles.repoRow}
+            key={`${repo.repoUser}/${repo.repoName}`}
+          >
+            <GithubIcon className={styles.ghIcon} />
+            <span>
+              {repo.repoUser} / {repo.repoName}
+            </span>
+            <Button onClick={() => props.onChange(repo)}>Select</Button>
+          </div>
+        ))}
+        {filteredRepos.length === 0 ? (
+          <div className={styles.empty}>No matching repositories.</div>
+        ) : null}
+      </div>
     </div>
   );
 };
