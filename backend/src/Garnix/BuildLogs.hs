@@ -120,7 +120,7 @@ fallbackWaitNode build runStartedAt =
     buildIdText = getHashId . getBuildId $ build ^. id
     stageLabel
       | isNothing runStartedAt = "Waiting for build slot"
-      | isJust (build ^. drvPath) = "Waiting for Nix activity"
+      | isJust (build ^. drvPath) = "Nix activity"
       | otherwise = "Evaluating package"
     drvNode = case build ^. drvPath of
       Nothing -> []

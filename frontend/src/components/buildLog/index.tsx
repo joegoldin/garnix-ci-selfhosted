@@ -40,13 +40,18 @@ export const BuildLog = ({ build }: { build: BuildWithRelatedBuilds }) => {
   // "Uploaded … to the garnix binary cache" lines) fall into the default
   // group. Name it after the package being built instead of "Unknown".
   return (
-    <LogViewer logStream={logStream} defaultLogGroupName={build.package} />
+    <LogViewer
+      logStream={logStream}
+      defaultLogGroupName={build.package}
+      failed={build.status === "Failure"}
+    />
   );
 };
 
 const LogViewer = (props: {
   logStream: LogStream;
   defaultLogGroupName: string;
+  failed?: boolean;
 }) => {
   const { logs } = props.logStream;
   const [openLog, setOpenLog] = React.useState<string | undefined>();
@@ -72,6 +77,15 @@ const LogViewer = (props: {
         // e.g. "<drv> (skipped: source unavailable)". Label those "skipped"
         // rather than "finished" (same gray finished styling).
         const isSkipped = !isLive && logGroupName.includes("(skipped");
+        const failedSuffix = " (failed)";
+        const hasFailedSuffix = logGroupName.endsWith(failedSuffix);
+        const isFailed =
+          !isLive &&
+          (hasFailedSuffix ||
+            (props.failed && logGroupName === lastLogGroupName));
+        const displayLogGroupName = hasFailedSuffix
+          ? logGroupName.slice(0, -failedSuffix.length)
+          : logGroupName;
         return (
           <div
             key={logGroupName}
@@ -82,10 +96,16 @@ const LogViewer = (props: {
               onClick={() => toggleLog(logGroupName)}
             >
               <div className={styles.logHeadTitle}>
-                <Text>{logGroupName || props.defaultLogGroupName}</Text>
+                <Text>
+                  {displayLogGroupName || props.defaultLogGroupName}
+                </Text>
                 {isLive ? (
                   <span className={styles.phaseLive} title="Still streaming">
                     <span className={styles.phaseLiveDot} /> live
+                  </span>
+                ) : isFailed ? (
+                  <span className={styles.phaseFailed} title="Failed">
+                    × failed
                   </span>
                 ) : isSkipped ? (
                   <span className={styles.phaseFinished} title="Skipped">
@@ -103,7 +123,9 @@ const LogViewer = (props: {
                 <Image src={crossIcon} alt="open" className={styles.icon} />
               )}
             </div>
-            {openLog === logGroupName && <AnsiLogViewer logs={logs} />}
+            {openLog === logGroupName && (
+              <AnsiLogViewer logs={logs} isLive={isLive} />
+            )}
           </div>
         );
       })}
@@ -116,10 +138,64 @@ const LogViewer = (props: {
   );
 };
 
-const AnsiLogViewer = (props: { logs: Array<string> }) => {
+const AnsiLogViewer = (props: {
+  logs: Array<string>;
+  isLive: boolean;
+}) => {
   const logs = React.useMemo(() => styleLines(props.logs), [props.logs]);
+  const bodyRef = React.useRef<HTMLDivElement>(null);
+  const endRef = React.useRef<HTMLSpanElement>(null);
+  const followsEndRef = React.useRef(false);
+  const hasMeasuredRef = React.useRef(false);
+  const [showScrollToBottom, setShowScrollToBottom] = React.useState(false);
+
+  const measureEndVisibility = React.useCallback(() => {
+    const body = bodyRef.current;
+    if (body == null) return;
+
+    const bounds = body.getBoundingClientRect();
+    const endIsVisible = bounds.bottom >= 0 && bounds.bottom <= window.innerHeight + 24;
+    followsEndRef.current = endIsVisible;
+    hasMeasuredRef.current = true;
+    setShowScrollToBottom(
+      bounds.height > window.innerHeight && !endIsVisible,
+    );
+  }, []);
+
+  React.useEffect(() => {
+    window.addEventListener("scroll", measureEndVisibility, { passive: true });
+    window.addEventListener("resize", measureEndVisibility);
+    return () => {
+      window.removeEventListener("scroll", measureEndVisibility);
+      window.removeEventListener("resize", measureEndVisibility);
+    };
+  }, [measureEndVisibility]);
+
+  React.useLayoutEffect(() => {
+    if (props.isLive && hasMeasuredRef.current && followsEndRef.current) {
+      endRef.current?.scrollIntoView({ block: "end" });
+    }
+    measureEndVisibility();
+  }, [logs.length, measureEndVisibility, props.isLive]);
+
+  const scrollToBottom = () => {
+    followsEndRef.current = true;
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  };
+
   return (
-    <div className={styles.logBody}>
+    <div className={styles.logBody} ref={bodyRef} data-testid="log-body">
+      {showScrollToBottom ? (
+        <button
+          type="button"
+          className={styles.scrollToBottom}
+          aria-label="Scroll to latest log output"
+          title="Scroll to latest log output"
+          onClick={scrollToBottom}
+        >
+          ↓
+        </button>
+      ) : null}
       <pre className={styles.logBodyInner}>
         {logs.map((logLine, index) => (
           <div key={index}>
@@ -130,6 +206,7 @@ const AnsiLogViewer = (props: { logs: Array<string> }) => {
             ))}
           </div>
         ))}
+        <span ref={endRef} data-testid="log-end" aria-hidden="true" />
       </pre>
     </div>
   );

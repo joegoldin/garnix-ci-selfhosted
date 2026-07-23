@@ -291,22 +291,27 @@ type NixBuildOutput = [Rec ("drvPath" .== Text .+ "outputs" .== Map.Map Text Tex
 
 -- | Build arguments for both phases of a FOD check. Deliberately omit
 -- @--store@: the local daemon owns the canonical store, its substituters, and
--- its configured distributed builders. Passing a remote store here would
--- create a second store boundary and hide paths already hydrated on the host.
+-- paths already hydrated on the host. Passing a remote store here would create
+-- a second store boundary. Disable distributed builders for this command so
+-- the strict rebuild uses the canonical host daemon's FOD transport policy;
+-- ordinary package builds remain distributed.
 __fodBuildArgs :: Nix.DrvPath -> Bool -> [Text]
 __fodBuildArgs drvPath shouldRebuild =
   [ "build",
     cs drvPath <> "^*",
     "--no-link",
-    "--json"
+    "--json",
+    "--builders",
+    ""
   ]
     <> ["--rebuild" | shouldRebuild]
 
 -- | Prepare and then rebuild the original FOD through the canonical Nix
 -- daemon store. The prepare phase may hydrate the expected output from the
 -- host store or its substituters. The strict phase always executes the
--- original derivation unchanged; Nix may dispatch that execution to a
--- configured builder, but copies the result back into the canonical store.
+-- original derivation unchanged on the canonical host daemon. Keeping FOD
+-- verification local also guarantees that daemon-scoped compatibility
+-- transport (when enabled) applies to legacy fetchers.
 rebuildFod :: System -> Nix.DrvPath -> M (Either Text Text)
 rebuildFod =
   curry $ mockable #rebuildFodMock $ \(_system, drvPath) -> withBubbling $ \bubble -> do

@@ -71,6 +71,21 @@
   margin: 0;
 }
 
+.running,
+.runningPlaceholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+}
+
+.running img {
+  width: 14px;
+  height: 14px;
+}
+
 .kind {
   color: var(--color-stone-500);
   font-size: 11px;

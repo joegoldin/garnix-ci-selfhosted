@@ -142,7 +142,7 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
         (exitCode, StdoutRaw stdout, StderrRaw stderr) <-
           run
             $ cmd "nix"
-            & addArgs ["build", cs drvPath <> "^*", "--no-link", "--json", "--rebuild" :: Text]
+            & addArgs ["build", cs drvPath <> "^*", "--no-link", "--json", "--builders", "", "--rebuild" :: Text]
             & addNixConfigEnvironment nixConfig
             & silenceStderr
         pure $ case exitCode of
@@ -186,12 +186,12 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
           "This fixed-output derivation cannot be independently rebuilt: its builder field is not an executable path or Nix builtin. It may be a pre-seeded bootstrap source supplied only by a substituter. Garnix has not verified it and is failing closed."
 
   describe "__fodBuildArgs" $ do
-    it "always rebuilds the original derivation through the canonical daemon store" $ do
+    it "always rebuilds the original derivation locally through the canonical daemon store" $ do
       let drvPath = fromRight $ Nix.parseDrvPath ("/nix/store/00000000000000000000000000000000-source.drv" :: Text)
       __fodBuildArgs drvPath False
-        `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json"]
+        `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json", "--builders", ""]
       __fodBuildArgs drvPath True
-        `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json", "--rebuild"]
+        `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json", "--builders", "", "--rebuild"]
 
   describe "fodCheck" $ aroundM_ (withMock #rebuildFodMock rebuildFodTestImpl) $ do
     let test :: Nix.DrvPath -> M TestReport

@@ -436,9 +436,10 @@ builds:
 realizes or substitutes each FOD's baseline output, then rebuilds the original
 derivation unchanged while ignoring that output so a lying hash surfaces in
 CI. The prepare phase sees everything already hydrated in the host store plus
-configured substituters such as Attic. The daemon may dispatch the strict build
-to a matching `buildMachines` entry, but it retains the host store as the source
-of truth and copies the result back. This two-step sequence is required because
+configured substituters such as Attic. The strict verification stays on that
+canonical host daemon (normal package builds remain distributed), so
+host-scoped FOD transport policy is applied consistently. This two-step
+sequence is required because
 Nix refuses `--rebuild` when the output is not already valid in that store. A
 source-fetch-looking failure (dead mirror, HTTP error, CDN block) still appears
 in the build log, but it is a failure:
@@ -448,6 +449,15 @@ would bypass the security check. The conclusion is therefore unambiguous:
 **every requested FOD is verified (or already known-good) → success; any failed
 prepare or strict rebuild → failure**. Garnix does not patch builder scripts,
 rewrite derivations, or substitute a different generator for the strict phase.
+
+Self-hosts checking graphs produced by older Nixpkgs revisions can enable
+`services.garnixServer.fodCratesProxy.enable`. Those revisions' cargo-vendor
+fetcher calls crates.io's rate-limited API and is now rejected with HTTP 403.
+The loopback-only proxy maps only that official crate-download route to
+`static.crates.io`, the endpoint current Nixpkgs uses; all other hosts are
+passed through without TLS interception. The original derivation and builder
+still execute unchanged, and Cargo.lock plus the FOD output hash remain the
+authority for the fetched bytes and final output.
 
 Hydrating a manual/EULA-gated `requireFile` output (for example DisplayLink)
 lets the prepare phase find the expected output, but it does not make the

@@ -56,7 +56,7 @@ spec = describe "ProcessLogs" $ do
       it "tracks active nested Nix work with its builder and phase" $ runTestM $ do
         tracker <- newBuildWaitTracker
         let buildId = BuildId $ 1 ^. re hashIdInt
-        setBuildWaitStage tracker buildId "Waiting for Nix activity"
+        setBuildWaitStage tracker buildId "Nix activity"
         processorState <- mkTrackedInternalLogProcessorState tracker buildId
         let processor = buildInternalLogProcessor (const $ pure ()) processorState
         processor

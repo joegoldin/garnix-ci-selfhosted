@@ -28,16 +28,47 @@ let
     )
   );
   monitoringBuildersEnv = builtins.toJSON (
-    map
-      (builder: {
-        # MonitoringBuilderTarget uses the backend's snake_case JSON codec.
-        name = builder.name;
-        url = builder.url;
-        systems = builder.systems;
-        max_jobs = builder.maxJobs;
-      })
-      config.services.garnixServer.monitoringBuilders
+    map (builder: {
+      # MonitoringBuilderTarget uses the backend's snake_case JSON codec.
+      name = builder.name;
+      url = builder.url;
+      systems = builder.systems;
+      max_jobs = builder.maxJobs;
+    }) config.services.garnixServer.monitoringBuilders
   );
+  fodCratesProxyPort = config.services.garnixServer.fodCratesProxy.port;
+  fodCratesProxyStateDir = "/var/lib/garnix-fod-crates-proxy";
+  fodCratesProxyRuntimeDir = "/run/garnix-fod-crates-proxy";
+  fodCratesProxyCaBundle = "${fodCratesProxyRuntimeDir}/ca-bundle.crt";
+  initializeFodCratesProxy = pkgs.writeShellScript "initialize-garnix-fod-crates-proxy" ''
+    set -euo pipefail
+
+    ca_cert="${fodCratesProxyStateDir}/mitmproxy-ca-cert.pem"
+    if [ ! -s "$ca_cert" ]; then
+      # mitmproxy creates its private CA on first startup. The short-lived
+      # bootstrap listener exists only long enough to create those files.
+      ${pkgs.coreutils}/bin/timeout 3s \
+        ${lib.getBin pkgs.mitmproxy}/bin/mitmdump \
+        --set confdir=${fodCratesProxyStateDir} \
+        --listen-host 127.0.0.1 \
+        --listen-port 0 \
+        --set termlog_verbosity=error \
+        >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$ca_cert" ]; then
+      echo "mitmproxy did not create its CA certificate" >&2
+      exit 1
+    fi
+
+    ${pkgs.coreutils}/bin/cat \
+      ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
+      "$ca_cert" \
+      > "${fodCratesProxyRuntimeDir}/ca-bundle.crt.tmp"
+    ${pkgs.coreutils}/bin/chmod 0644 "${fodCratesProxyRuntimeDir}/ca-bundle.crt.tmp"
+    ${pkgs.coreutils}/bin/mv \
+      "${fodCratesProxyRuntimeDir}/ca-bundle.crt.tmp" \
+      ${fodCratesProxyCaBundle}
+  '';
 
   logsDir = pkgs.writeShellScriptBin "logsDir" ''
     if [ -d /var/lib/garnix/logs ]; then
@@ -134,6 +165,14 @@ in
           type = lib.types.nullOr lib.types.path;
           default = null;
           description = "Optional netrc file for authenticating to extra substituters (e.g. a private attic cache) during sandboxed evals/builds. Bound read-only into the build sandbox; must be readable by the garnix server user.";
+        };
+        fodCratesProxy = {
+          enable = lib.mkEnableOption "the compatibility proxy for legacy crates.io FOD fetchers";
+          port = lib.mkOption {
+            type = lib.types.port;
+            default = 18765;
+            description = "Loopback port for the FOD crates.io compatibility proxy.";
+          };
         };
         giteaUrl = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
@@ -532,6 +571,9 @@ in
     nix = {
       settings = {
         cores = 4;
+        extra-sandbox-paths = lib.optionals config.services.garnixServer.fodCratesProxy.enable [
+          fodCratesProxyCaBundle
+        ];
       };
       extraOptions = ''
         max-jobs = ${
@@ -754,6 +796,59 @@ in
       };
       unitConfig = {
         StartLimitIntervalSec = 10;
+      };
+    };
+
+    systemd.services.garnix-fod-crates-proxy =
+      lib.mkIf config.services.garnixServer.fodCratesProxy.enable
+        {
+          description = "Garnix FOD crates.io compatibility proxy";
+          wantedBy = [ "multi-user.target" ];
+          wants = [ "network-online.target" ];
+          after = [ "network-online.target" ];
+          serviceConfig = {
+            Type = "simple";
+            DynamicUser = true;
+            StateDirectory = "garnix-fod-crates-proxy";
+            StateDirectoryMode = "0700";
+            RuntimeDirectory = "garnix-fod-crates-proxy";
+            RuntimeDirectoryMode = "0755";
+            UMask = "0077";
+            ExecStartPre = initializeFodCratesProxy;
+            ExecStart = ''
+              ${lib.getBin pkgs.mitmproxy}/bin/mitmdump \
+                --set confdir=${fodCratesProxyStateDir} \
+                --listen-host 127.0.0.1 \
+                --listen-port ${toString fodCratesProxyPort} \
+                --ignore-hosts '^(?!crates\.io:443$).*' \
+                --set connection_strategy=lazy \
+                --set termlog_verbosity=info \
+                --scripts ${./fod-crates-proxy.py}
+            '';
+            Restart = "on-failure";
+            RestartSec = 1;
+            NoNewPrivileges = true;
+            PrivateTmp = true;
+            ProtectSystem = "strict";
+            ProtectHome = true;
+            CapabilityBoundingSet = "";
+            RestrictAddressFamilies = [
+              "AF_UNIX"
+              "AF_INET"
+              "AF_INET6"
+            ];
+          };
+        };
+
+    systemd.services.nix-daemon = lib.mkIf config.services.garnixServer.fodCratesProxy.enable {
+      requires = [ "garnix-fod-crates-proxy.service" ];
+      after = [ "garnix-fod-crates-proxy.service" ];
+      environment = {
+        http_proxy = "http://127.0.0.1:${toString fodCratesProxyPort}";
+        https_proxy = "http://127.0.0.1:${toString fodCratesProxyPort}";
+        HTTP_PROXY = "http://127.0.0.1:${toString fodCratesProxyPort}";
+        HTTPS_PROXY = "http://127.0.0.1:${toString fodCratesProxyPort}";
+        NIX_SSL_CERT_FILE = fodCratesProxyCaBundle;
       };
     };
 

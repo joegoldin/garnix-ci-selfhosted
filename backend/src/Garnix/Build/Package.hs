@@ -147,7 +147,7 @@ buildPkg = curry7
                 & status ?~ Success
                 & alreadyBuilt ?~ True
             else do
-              setBuildWaitStage tracker (build ^. id) "Waiting for Nix activity"
+              setBuildWaitStage tracker (build ^. id) "Nix activity"
               let builder = runNixBuild runReporter productPlan cacheDir workingDir evaluatedBuild drvPath'
               status' <- withAsync builder $ \q -> do
                 abortOnCancellation evaluatedBuild q

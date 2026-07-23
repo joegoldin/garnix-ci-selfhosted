@@ -48,7 +48,7 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ do
           res <- assert200 $ testServer.get $ "/api/build/" <> cs (getHashId $ getBuildId $ build ^. id)
           let [waitingOn] = res ^.. responseBody . key "waiting_on" . _Array . traverse
           liftIO $ waitingOn ^. key "kind" . _String `shouldBe` "stage"
-          liftIO $ waitingOn ^. key "label" . _String `shouldBe` "Waiting for Nix activity"
+          liftIO $ waitingOn ^. key "label" . _String `shouldBe` "Nix activity"
           liftIO
             $ waitingOn
             ^.. key "children" . _Array . traverse . key "label" . _String
