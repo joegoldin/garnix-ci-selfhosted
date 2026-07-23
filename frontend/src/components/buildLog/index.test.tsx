@@ -81,8 +81,13 @@ describe("build log phase status", () => {
     );
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
-      block: "end",
+      block: "center",
     });
+    expect(
+      screen
+        .getByRole("button", { name: "Scroll to latest log output" })
+        .querySelector("img"),
+    ).toHaveClass("scrollToBottomIcon");
   });
 
   it("follows live output only while the log end is visible", () => {

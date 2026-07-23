@@ -53,7 +53,7 @@
 
   .phaseFailed {
     font-size: 12px;
-    color: var(--color-failure);
+    color: var(--color-error);
   }
 
   .logBody {
@@ -68,23 +68,32 @@
   .scrollToBottom {
     position: sticky;
     top: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     float: right;
     z-index: 1;
     width: 38px;
     height: 38px;
+    padding: 0;
     margin: 8px 8px -46px 8px;
     border: 1px solid var(--color-stone-900);
     background-color: var(--color-stone-50);
-    color: var(--color-stone-900);
-    font: inherit;
-    font-size: 22px;
-    line-height: 1;
     cursor: pointer;
   }
 
   .scrollToBottom:hover {
     background-color: var(--color-stone-900);
-    color: var(--color-white);
+  }
+
+  .scrollToBottomIcon {
+    width: 26px;
+    height: 26px;
+    transform: rotate(90deg);
+  }
+
+  .scrollToBottom:hover .scrollToBottomIcon {
+    filter: invert(1);
   }
 
   .logBodyInner {

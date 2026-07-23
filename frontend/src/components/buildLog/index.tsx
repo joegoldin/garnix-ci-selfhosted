@@ -4,6 +4,7 @@ import Image from "next/image";
 import React from "react";
 import { Text } from "@/components/text";
 import dashIcon from "@/components/icons/dash.svg";
+import arrowRightIcon from "@/components/icons/arrow-right.svg";
 import { Link } from "@/components/link";
 import crossIcon from "@/components/icons/cross.svg";
 import { BuildWithRelatedBuilds } from "@/services/build";
@@ -180,7 +181,7 @@ const AnsiLogViewer = (props: {
 
   const scrollToBottom = () => {
     followsEndRef.current = true;
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   return (
@@ -193,7 +194,12 @@ const AnsiLogViewer = (props: {
           title="Scroll to latest log output"
           onClick={scrollToBottom}
         >
-          ↓
+          <Image
+            src={arrowRightIcon}
+            alt=""
+            aria-hidden="true"
+            className={styles.scrollToBottomIcon}
+          />
         </button>
       ) : null}
       <pre className={styles.logBodyInner}>

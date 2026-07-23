@@ -18,13 +18,16 @@ describe("live build-log phase colors", () => {
 
   it("uses the failure red for failed phases", () => {
     expect(styles).toMatch(
-      /\.phaseFailed\s*{[^}]*color:\s*var\(--color-failure\)/,
+      /\.phaseFailed\s*{[^}]*color:\s*var\(--color-error\)/,
     );
   });
 
-  it("keeps the scroll-to-bottom control visible within a long log", () => {
+  it("keeps a centered down-arrow control visible within a long log", () => {
     expect(styles).toMatch(
-      /\.scrollToBottom\s*{[^}]*position:\s*sticky[^}]*float:\s*right/,
+      /\.scrollToBottom\s*{[^}]*position:\s*sticky[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*float:\s*right/,
+    );
+    expect(styles).toMatch(
+      /\.scrollToBottomIcon\s*{[^}]*transform:\s*rotate\(90deg\)/,
     );
   });
 });
