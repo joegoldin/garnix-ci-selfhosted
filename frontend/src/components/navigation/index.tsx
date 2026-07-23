@@ -16,7 +16,6 @@ import { AccountIcon } from "@/components/icons/account";
 import { SettingsIcon } from "@/components/icons/settings";
 import { LogoutIcon } from "@/components/icons/logout";
 import hamburgerMenuIcon from "@/components/icons/hamburgerMenu.svg";
-import { trackClick } from "@/utils/analytics";
 import { filterNull } from "@/utils";
 import { useConfig } from "@/store/configContext";
 import styles from "./styles.module.css";
@@ -96,7 +95,6 @@ const ACCOUNT_LINK_GROUP = (router: AppRouterInstance): LinkProps[] => [
     icon: <LogoutIcon className={styles.icon} />,
     label: "Logout",
     onClick: () => {
-      trackClick("log-out");
       router.push("/logout");
     },
   },
@@ -123,10 +121,7 @@ export const Navigation = ({ className }: Props) => {
           src={hamburgerMenuIcon}
           alt="menu"
           className={styles.menu}
-          onClick={() => {
-            trackClick("logged-in-menu");
-            setMenuOpen(!menuOpen);
-          }}
+          onClick={() => setMenuOpen(!menuOpen)}
         />
       </div>
       {/* <div className={`${styles.inputContainer} ${Berlin.className}`}>
@@ -182,7 +177,6 @@ const NavLink = ({
     return (
       <button
         onClick={() => {
-          link.eventName && trackClick(link.eventName);
           link.onClick && link.onClick();
         }}
         className={`${styles.linkContainer} ${styles.button} ${

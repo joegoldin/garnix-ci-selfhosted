@@ -2,6 +2,7 @@ module Garnix.API.Commits where
 
 import Garnix.API.Runs (RunSummary, buildWaitNode, toRunSummary)
 import Garnix.Access (canCancelBuild, getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
+import Garnix.Build.Reporting (reportBuildCancelledToForge, reportRunCancelledToForge)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Orchestrator qualified as Orchestrator
@@ -208,16 +209,32 @@ cancelCommit user commit = do
       (summary ^. repoName)
   when (not hasAccess) $ throw (NoSuchCommit commit)
   builds <- DB.getBuildsByCommit (summary ^. repoOwner) (summary ^. repoName) commit
-  buildEnd <- liftIO getCurrentTime
-  forM_ builds $ \b ->
-    when (isNothing (b ^. status))
-      $ DB.reportBuildResultDB (b & status ?~ Cancelled & endTime ?~ buildEnd)
   -- Also cancel in-flight runs (actions etc.); the action executor polls its
   -- run row and aborts when it sees Cancelled.
   runs <- DB.getRuns (summary ^. repoOwner) (summary ^. repoName) commit
-  forM_ runs $ \r ->
-    when (isNothing (_runStatus r))
-      $ DB.setRunStatus (_runId r) (Just Cancelled)
+  buildEnd <- liftIO getCurrentTime
+  -- Only still-pending builds/runs are cancellable; anything already terminal
+  -- keeps its real status (and must not be re-reported).
+  let cancelledBuilds =
+        [ b & status ?~ Cancelled & endTime ?~ buildEnd
+          | b <- builds,
+            isNothing (b ^. status)
+        ]
+      pendingRuns = filter (isNothing . _runStatus) runs
+  forM_ cancelledBuilds DB.reportBuildResultDB
+  forM_ pendingRuns $ \r -> DB.setRunStatus (_runId r) (Just Cancelled)
+  -- Push the cancellations to the forge so GitHub check-runs / Gitea commit
+  -- statuses show CANCELLED instead of hanging in_progress/pending forever. The
+  -- DB above is authoritative; this is best-effort (a forge outage must not
+  -- 500 the cancel), and the per-repo reporter (with its installation token) is
+  -- built once and reused for every build/run of this commit. This also covers
+  -- the "overall"/eval build the web UI never lists.
+  when (not (null cancelledBuilds) || not (null pendingRuns))
+    $ ignoringAllErrors
+    $ do
+      reporter <- Orchestrator.statusReporterForCommit (summary ^. forge) (summary ^. repoOwner) (summary ^. repoName) commit
+      forM_ cancelledBuilds $ reportBuildCancelledToForge reporter
+      forM_ pendingRuns $ reportRunCancelledToForge reporter
   -- An explicit cancellation is terminal. In particular, do not leave setup
   -- marked Evaluating, since startup recovery interprets that as a backend
   -- interruption and restarts the whole commit.

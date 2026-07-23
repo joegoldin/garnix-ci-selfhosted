@@ -11,9 +11,12 @@
 --     the requested 'ServerId' must be among
 --     'getRunningAndRecentServersForOwners' for the user's login + installed
 --     orgs, otherwise 'NotFound'. Shell access additionally requires
---     'Garnix.Access.hasAccessToRepo' for the server's configuration build.
---     The guest IP is resolved from the DB row — never from anything
---     client-supplied.
+--     'Garnix.Access.hasAccessToRepo' for the server's repo, gated on that
+--     repo's LIVE publicity ('Garnix.Access.getRepoPublicityForForge') rather
+--     than the configuration build's DB snapshot, so a repo that flipped
+--     public -> private after deploy can't hand out a shell until the next
+--     redeploy refreshes it. The guest IP is resolved from the DB row — never
+--     from anything client-supplied.
 --   * The spawned process is a fixed argv (no shell): @ssh@ with the hosting
 --     key args from 'ServerPool.sshArgsFor' (the exact mechanism deploys use)
 --     plus hardening flags (no agent/X11 forwarding, all forwardings
@@ -54,8 +57,7 @@ import Data.Map qualified as Map
 import Data.Text qualified as T
 import Data.UUID qualified
 import Data.UUID.V4 qualified
-import Garnix.Access (hasAccessToRepo)
-import Garnix.DB qualified as DB
+import Garnix.Access (getRepoPublicityForForge, hasAccessToRepo)
 import Garnix.Duration
 import Garnix.GithubInterface.Types (organizationName)
 import Garnix.Hosting.Helpers
@@ -128,14 +130,25 @@ connectTerminal (Authenticated (WebSession user ghToken)) serverId requestedUser
   -- [H1] Repo-access gate: org membership alone is too coarse for a shell.
   -- The caller must also have access to the repo this server was deployed
   -- from (public repo, admin, or collaborator — the same 'hasAccessToRepo'
-  -- the build/commit/artifact endpoints use). Publicity comes from the
-  -- server's configuration build row, the same DB snapshot
-  -- 'getBuildWithAccess' trusts, so connecting stays forge-round-trip-free.
-  build <- DB.getBuild (_runningServerConfigurationBuildId server)
+  -- the build/commit/artifact endpoints use). Unlike those endpoints,
+  -- publicity here is fetched LIVE from the forge ('getRepoPublicityForForge',
+  -- the same live lookup @API/Commits.hs@ uses) rather than trusted from the
+  -- server's configuration build row: that DB snapshot is only ever as fresh
+  -- as the last deploy, and a repo that flips public -> private afterwards
+  -- would otherwise still read as public here, handing an org member an
+  -- interactive shell (and, via sudo, root) on the guest until the next
+  -- redeploy. A failed live lookup (repo not found on any configured forge,
+  -- or any other error) fails closed rather than falling back to the stale
+  -- bit.
+  livePublicity <-
+    getRepoPublicityForForge (_runningServerRepoOwner server) (_runningServerRepoName server)
+      `catchError` \_ -> do
+        log Notice "terminal: websocket rejected (live repo publicity lookup failed)"
+        throw NotFound
   hasAccess <-
     hasAccessToRepo
       (Just user)
-      (build ^. repoIsPublic)
+      livePublicity
       (_runningServerRepoOwner server)
       (_runningServerRepoName server)
   unless hasAccess $ do

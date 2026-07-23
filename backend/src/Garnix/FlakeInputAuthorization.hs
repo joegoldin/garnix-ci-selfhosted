@@ -165,7 +165,7 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
       forM_ privateInputs $ \privateInput -> do
         when ((repoInfo' ^. ghRepoOwner) /= owner privateInput) $ do
           throw $ OtherError $ showPretty privateInput <> " is private or doesn't exist.\nIf it is private and you would like to use it, see https://garnix.io/docs/private_inputs."
-        let skipPrivateInputChecks = selfHost || repoConfig ^. skipPrivateInputsCheckForCollaborators
+        let skipPrivateInputChecks = repoConfig ^. skipPrivateInputsCheckForCollaborators
         unless skipPrivateInputChecks $ do
           thisInputCollaborators' <-
             getRepoCollaborators iAuth (repoInfo' ^. ghRepoOwner) (repo privateInput)

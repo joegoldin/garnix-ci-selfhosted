@@ -6,6 +6,7 @@ import Data.Text qualified as T
 import Garnix.API.Builds.Types
 import Garnix.API.Commits (GetCommit, ListCommits, getCommitsForUser, getSingleCommit)
 import Garnix.Access (Access (..), getBuildWithAccess)
+import Garnix.Build.Reporting (reportBuildCancelledToForge)
 import Garnix.BuildLogs qualified as BuildLogs
 import Garnix.DB qualified as DB
 import Garnix.Monad
@@ -163,6 +164,13 @@ updateBuild user' buildId buildUpdate = do
                   & endTime
                   ?~ buildEnd
           DB.reportBuildResultDB build
+          -- Push the cancellation to the forge (best-effort) so the GitHub
+          -- check-run / Gitea commit status shows CANCELLED instead of hanging
+          -- in_progress. A running build's own 30s poller would eventually do
+          -- this, but a still-queued build has no loop to do it at all.
+          ignoringAllErrors $ do
+            reporter <- Orchestrator.statusReporterForCommit (b ^. forge) (b ^. repoUser) (b ^. repoName) (b ^. gitCommit)
+            reportBuildCancelledToForge reporter build
     Just _ -> throw (InvalidBuildUpdate buildUpdate)
     Nothing -> pure ()
 

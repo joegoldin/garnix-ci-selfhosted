@@ -2327,6 +2327,28 @@ upsertServerStats report = do
   -- unmatched (ended/orphaned) push instead of silently accepting it.
   pure $ not (null serverIds)
 
+-- | The guest bridge IPv4 the backend assigned to the live (not-ended) server
+-- for a given provisioner_id, or Nothing if no live server matches. Used by
+-- postHostsStatsGuarded to require a stats push's effective source IP to be the
+-- SPECIFIC guest that owns the reported provisioner_id, not merely anywhere in
+-- the guest bridge subnet. The `!` forces the (schema-nullable) ipv4 column
+-- non-null; the `ipv4 IS NOT NULL` predicate keeps that override sound.
+getServerGuestIpByProvisionerId :: ProvisionedServerId -> M (Maybe Text)
+getServerGuestIpByProvisionerId provisionerId = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT ipv4 FROM servers
+        WHERE provisioner_id = ${provisionerId}
+        AND ended_at IS NULL
+        AND ipv4 IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      |]
+  pure $ case (rows :: [Text]) of
+    (ip : _) -> Just ip
+    [] -> Nothing
+
 -- | The rolling window of samples for one server, oldest-first (so the Monitor
 -- page can plot them left-to-right). Capped at 'serverStatsWindow'.
 getServerStatsHistory :: ServerId -> M [ServerStatsSample]

@@ -546,6 +546,15 @@ in
           If you want to enable test features, set garnix.devMode.enable to true.
         '';
       }
+      {
+        assertion =
+          !config.services.garnixServer.selfHostMode
+          || config.services.garnixServer.proxySharedSecretFile != null;
+        message = ''
+          services.garnixServer: selfHostMode requires proxySharedSecretFile to be set
+          (the backend rejects all logins without the proxy-provenance marker).
+        '';
+      }
     ];
 
     networking.firewall.allowedTCPPorts = [

@@ -215,7 +215,7 @@ def _dnat_specs(host_port: int, guest_ip: str, guest_port: int):
 
 
 def _list_rules(table, chain: str) -> list:
-    cmd = ["iptables"]
+    cmd = ["iptables", "-w", "5"]
     if table:
         cmd += ["-t", table]
     cmd += ["-S", chain]
@@ -273,7 +273,7 @@ def _affected_firewall_rules(host_ports: set, guest_ip: str) -> list:
 
 
 def _iptables_command(table, operation: str, chain: str, rest: list) -> list:
-    cmd = ["iptables"]
+    cmd = ["iptables", "-w", "5"]
     if table:
         cmd += ["-t", table]
     return cmd + [operation, chain] + rest

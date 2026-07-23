@@ -2,10 +2,12 @@ module Garnix.API.Runs where
 
 import Garnix.API.Builds.Types
 import Garnix.Access (Access (..), getRunWithAccess)
+import Garnix.Build.Reporting (reportRunCancelledToForge)
 import Garnix.BuildLogs qualified as BuildLogs
 import Garnix.BuildLogs.Types (BuildWaitTracker)
 import Garnix.DB qualified as DB
 import Garnix.Monad
+import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
 import Garnix.Types
 import Garnix.UserLogs (getRunLogLines)
@@ -77,7 +79,17 @@ updateRun mUser runId runUpdate =
       run <- getRunWithAccess Cancel mUser runId
       if isJust (run ^. status)
         then throw (RunAlreadyStopped runId)
-        else DB.setRunStatus runId (Just Cancelled)
+        else do
+          DB.setRunStatus runId (Just Cancelled)
+          -- Push the cancellation to the forge (best-effort) so the run's
+          -- GitHub check-run / Gitea commit status shows CANCELLED instead of
+          -- hanging in_progress. 'abortOnRunCancellation' only drops the action
+          -- process without reporting, so without this the forge is never told.
+          -- The run row carries no forge, so take it from the commit summary.
+          ignoringAllErrors $ do
+            summary <- DB.getCommitSummary (run ^. gitCommit)
+            reporter <- Orchestrator.statusReporterForCommit (summary ^. forge) (run ^. repoUser) (run ^. repoName) (run ^. gitCommit)
+            reportRunCancelledToForge reporter run
     Just _ -> throw (InvalidBuildUpdate runUpdate)
     Nothing -> pure ()
 

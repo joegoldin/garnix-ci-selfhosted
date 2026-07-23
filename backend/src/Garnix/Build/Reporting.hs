@@ -1,6 +1,8 @@
 module Garnix.Build.Reporting
   ( reportOnError,
     reportBuildResult,
+    reportBuildCancelledToForge,
+    reportRunCancelledToForge,
     reportNameForBuild,
     markRunningOnFirstLog,
   )
@@ -64,6 +66,28 @@ reportBuildResult runReporter build = do
         Just Cancelled -> RunReportStatusCancelled
         Just Skipped -> RunReportStatusSkipped
   ignoringAllErrors $ reportComplete runReporter status'
+
+-- | Best-effort: push a terminal @Cancelled@ status to the forge for a build
+-- whose DB row a cancel endpoint has already updated. Unlike
+-- 'reportBuildResult' this does NOT touch the DB (the cancel site is the
+-- authoritative writer); it only opens a fresh check-run / commit-status and
+-- immediately completes it as cancelled, forge-dispatched via the given
+-- reporter. Swallows all forge errors so a forge outage never 500s the cancel
+-- endpoint.
+reportBuildCancelledToForge :: Reporter -> Build -> M ()
+reportBuildCancelledToForge reporter build =
+  ignoringAllErrors $ do
+    runReporter <- createNewRun reporter (ReportBuild (reportNameForBuild build) build)
+    reportComplete runReporter RunReportStatusCancelled
+
+-- | Best-effort: push a terminal @Cancelled@ status to the forge for a run
+-- (action / FOD check / deployment) whose DB row a cancel endpoint has already
+-- updated. See 'reportBuildCancelledToForge'.
+reportRunCancelledToForge :: Reporter -> Run -> M ()
+reportRunCancelledToForge reporter run =
+  ignoringAllErrors $ do
+    runReporter <- createNewRun reporter (ReportRun run)
+    reportComplete runReporter RunReportStatusCancelled
 
 reportOnError :: RunReporter -> Build -> CommitInfo -> M a -> M a
 reportOnError runReporter build commitInfo io = do

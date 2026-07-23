@@ -76,9 +76,24 @@ in
       default = lib.removeSuffix "\n" (builtins.readFile ./hosting-public-key.pub);
       defaultText = lib.literalExpression "builtins.readFile ./hosting-public-key.pub";
       description = ''
-        Hosting SSH public key allowed for root and the garnix user. The fork's
-        bundled public key is the default; operators of another instance must
-        override it with their provisioner's hosting public key.
+        Hosting SSH public key allowed for root and the garnix user.
+
+        WARNING: the default is not a placeholder. It's the actual hosting
+        public key for this fork's own running instance, checked into
+        ./hosting-public-key.pub in this repo — which is PUBLIC. It stays the
+        default deliberately, for that instance's own dotfiles/deployment
+        convenience; this module intentionally does not assert it away.
+
+        Any OTHER operator consuming `nixosModules.garnix-guest` MUST override
+        BOTH this option and `garnix.guest.terminalCaPublicKey` with their own
+        provisioner's hosting public key (read it from
+        `/var/lib/garnix-provisioner/hosting.pub` on your host). If you don't:
+          - every guest you deploy will authorize a stranger's key (this
+            fork's own) to log in as root and as the garnix user, instead of
+            yours;
+          - your own backend has no matching private key, so it can never
+            reach the guests it deploys — deploys, redeploys, and the web
+            terminal will all fail to authenticate.
       '';
     };
     terminalCaPublicKey = lib.mkOption {
@@ -234,8 +249,31 @@ in
         # window. The /etc file keeps its historical name and seeds the durable
         # copy on first boot. terminalCaPublicKey defaults to the hosting key, so
         # guests deployed before H3 stay evaluable until recreated.
+        #
+        # AuthorizedPrincipalsFile pins a terminal cert to THIS server, not just
+        # to its login user. Every terminal cert is signed (see
+        # Garnix.API.Terminal's signingArgs) with TWO principals:
+        # `<loginUser>,server-<serverHash>`. Absent this directive, sshd falls
+        # back to its default certificate check — the cert must carry a
+        # principal equal to the local username — which is per-USER but not
+        # per-SERVER: a cert minted for server A would also authenticate a
+        # same-named user on server B. Setting AuthorizedPrincipalsFile REPLACES
+        # that default check with "the cert must carry a principal listed in
+        # this file". The backend (Garnix.Hosting.Deploy's
+        # copyTerminalPrincipals, called wherever copyTerminalCa is) delivers a
+        # file here containing exactly one line, `server-<serverHash>`, computed
+        # the same way as the cert's own principal — so a cert minted for a
+        # different server lacks this server's principal and is rejected here,
+        # giving per-SERVER pinning. Per-USER enforcement still holds, just
+        # upstream: the backend's requireDeclaredLoginUser only ever mints a
+        # cert for a login user the guest actually declares (never root), so
+        # deliberately do NOT also list usernames in this file — it wouldn't add
+        # per-user enforcement and only complicates delivery. Guests running an
+        # older profile (neither this directive nor the file) keep the sshd
+        # default of per-user-only pinning until redeployed onto this profile.
         extraConfig = ''
           TrustedUserCAKeys /var/lib/garnix/terminal-ca.pub
+          AuthorizedPrincipalsFile /var/lib/garnix/terminal-principals
           Match User garnix
             AuthorizedKeysFile %h/.ssh/authorized_keys /etc/ssh/authorized_keys.d/%u /var/garnix/keys/authorized_keys
           Match all

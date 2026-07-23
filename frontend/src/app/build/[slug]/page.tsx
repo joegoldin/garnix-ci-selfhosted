@@ -48,7 +48,6 @@ import {
   lockBuildArtifacts,
   unlockBuildArtifacts,
 } from "@/services/artifacts";
-import { trackSubmit } from "@/utils/analytics";
 import styles from "./styles.module.css";
 
 const createHeaderProps = (module: Build, giteaUrl: string) => {
@@ -147,7 +146,6 @@ const Page = ({ params }: { params: { slug: string } }) => {
     },
   );
   const cancel = async () => {
-    trackSubmit("cancel-build");
     await cancelBuild(params.slug);
     build.reload();
   };

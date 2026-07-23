@@ -168,13 +168,58 @@ collectorLoop streams key generation ip sshArgs path = forever $ do
       appendLine streams key (Just generation) line
     consumeStderr handle = readHandleLines handle (setError streams key generation)
 
+-- | Like 'BS.hGetLine', but bounded: never buffers more than
+-- 'maxLineBytes' of a single logical (newline-delimited) line, no matter
+-- how long the line actually is. A tenant-controlled guest log (followed
+-- via @tail -F@) can otherwise append one enormous newline-free blob that
+-- 'BS.hGetLine' would buffer in full before the existing 'T.take
+-- maxLineChars' truncation ever runs, OOMing the shared backend process.
+--
+-- Bytes are read in small chunks. Once the accumulated bytes for the
+-- current line would exceed the cap, the (truncated) line is emitted
+-- immediately and the remainder of that physical line is discarded —
+-- scanned for the terminating newline but never accumulated — so a single
+-- giant line is streamed past in bounded memory rather than buffered.
+-- Decoding to 'Text' (and the existing 'T.take maxLineChars' truncation)
+-- happens only after a line's bytes have been assembled up to the cap, so
+-- multi-byte UTF-8 sequences split across chunk boundaries still decode
+-- correctly.
 readHandleLines :: Handle -> (Text -> IO ()) -> IO ()
-readHandleLines handle consume = do
-  eof <- hIsEOF handle
-  unless eof $ do
-    line <- TE.decodeUtf8With lenientDecode <$> BS.hGetLine handle
-    consume line
-    readHandleLines handle consume
+readHandleLines handle consume = pump BS.empty
+  where
+    -- Look for a complete line within bytes already read for the line in
+    -- progress (`acc`). Emit and recurse on the remainder if found;
+    -- truncate-and-discard if `acc` has hit the cap; otherwise read more.
+    pump acc = case BS.elemIndex newlineByte acc of
+      Just idx -> do
+        emit (BS.take idx acc)
+        pump (BS.drop (idx + 1) acc)
+      Nothing
+        | BS.length acc >= maxLineBytes -> do
+            emit (BS.take maxLineBytes acc)
+            discard (BS.drop maxLineBytes acc)
+        | otherwise -> do
+            eof <- hIsEOF handle
+            if eof
+              then unless (BS.null acc) (emit acc)
+              else do
+                chunk <- BS.hGetSome handle readChunkBytes
+                pump (acc <> chunk)
+
+    -- Skip the remainder of an over-cap physical line without
+    -- accumulating it, stopping at the next newline (already emitted the
+    -- truncated line, so nothing further is emitted here) or at EOF.
+    discard leftover = case BS.elemIndex newlineByte leftover of
+      Just idx -> pump (BS.drop (idx + 1) leftover)
+      Nothing -> do
+        eof <- hIsEOF handle
+        unless eof $ do
+          chunk <- BS.hGetSome handle readChunkBytes
+          discard chunk
+
+    emit bytes = consume (T.take maxLineChars (TE.decodeUtf8With lenientDecode bytes))
+
+    newlineByte = 10 -- '\n'
 
 appendLine :: ServerLogStreams -> Text -> Maybe Int -> Text -> IO ()
 appendLine streams key expectedGeneration rawLine =
@@ -256,9 +301,19 @@ shellQuote value = "'" <> T.replace "'" "'\\''" value <> "'"
 showExit :: ExitCode -> Text
 showExit = show
 
-initialTailLines, maxBufferedLines, maxBufferedBytes, maxLineChars, maxErrorChars :: Int
+initialTailLines, maxBufferedLines, maxBufferedBytes, maxLineChars, maxErrorChars, maxLineBytes, readChunkBytes :: Int
 initialTailLines = 10_000
 maxBufferedLines = 10_000
 maxBufferedBytes = 10 * 1024 * 1024
 maxLineChars = 16 * 1024
 maxErrorChars = 2048
+
+-- | Byte-level cap on a single logical line while it's being read from
+-- the handle (see 'readHandleLines'). UTF-8 encodes each character as at
+-- least one byte, so bounding to this many bytes before decoding is at
+-- least as tight as the existing 'maxLineChars' character truncation.
+maxLineBytes = maxLineChars
+
+-- | Chunk size for each bounded read of a log handle. Small and constant,
+-- so a single call never buffers more than this much unseen data.
+readChunkBytes = 4096

@@ -67,6 +67,9 @@ class FakeIptables:
         self.calls.append((list(cmd), check, timeout))
         table = None
         index = 1
+        # Skip the xtables lock-wait flag (`iptables -w 5 ...`) if present.
+        if cmd[index : index + 1] == ["-w"]:
+            index += 2
         if cmd[index : index + 2] == ["-t", "nat"]:
             table = "nat"
             index += 2

@@ -378,6 +378,7 @@ redeployServer reporter commitInfo deploymentType serverInfo wanted = do
         -- root migration path once; the new configuration restores garnix.
         copyKeys sshUser (commitInfo ^. repoInfo) serverInfo <?> "Copying repo key"
         copyTerminalCa sshUser serverInfo <?> "Copying terminal CA public key"
+        copyTerminalPrincipals sshUser serverInfo <?> "Copying terminal principals file"
         copyStatsEnv sshUser serverInfo <?> "Copying guest stats configuration"
         if wanted ^. #useDefaultAuthentik
           then copyDefaultAuthentikEnv sshUser serverInfo publicHost <?> "Copying default Authentik credentials"
@@ -464,6 +465,7 @@ setupServer = curry3
       Just storePath -> do
         copyKeys (SshUser "root") repoInfo serverInfo
         copyTerminalCa (SshUser "root") serverInfo <?> "Copying terminal CA public key"
+        copyTerminalPrincipals (SshUser "root") serverInfo <?> "Copying terminal principals file"
         copyStatsEnv (SshUser "root") serverInfo <?> "Copying guest stats configuration"
         copyClosure (SshUser "root") serverInfo storePath <?> "Copying closure"
         stderr <- switchToConfiguration (SshUser "root") serverInfo storePath <?> "Switching to configuration"
@@ -550,6 +552,37 @@ copyTerminalCa (SshUser user) server = do
         { installPublicFileContents = publicKey,
           installPublicFileIpAddr = ip,
           installPublicFileTargetPath = "/var/lib/garnix/terminal-ca.pub",
+          installPublicFileSshOptions = sshArgs,
+          installPublicFileSshUser = user,
+          installPublicFileSshSudo = user /= "root"
+        }
+  either (throw . ProvisioningError) pure installResult
+
+-- | Install the file that lets THIS guest pin terminal certs to itself, not
+-- just to the login user. 'Garnix.API.Terminal.signingArgs' signs every
+-- session cert with two principals, @\<loginUser\>,server-\<hash\>@; sshd's
+-- default check (used absent an @AuthorizedPrincipalsFile@) only matches the
+-- login-user principal against the local username, so a cert minted for
+-- server A also authenticates as the same-named user on server B. Setting
+-- @AuthorizedPrincipalsFile@ in guest-profile.nix closes that: it replaces
+-- sshd's default check with "the cert must carry a principal listed in this
+-- file", and this file lists exactly one line, @server-\<hash\>@, computed the
+-- SAME way as 'Garnix.API.Terminal.ttServerIdText'
+-- (@getHashId . getServerId@) for THIS server — so a cert minted for another
+-- server is rejected here even if it names a valid login user. Delivered
+-- before every activation that can (re)apply the directive, exactly like
+-- 'copyTerminalCa', so the file is always in place first.
+copyTerminalPrincipals :: SshUser -> ServerInfo -> M ()
+copyTerminalPrincipals (SshUser user) server = do
+  (ip, sshArgs) <- ServerPool.sshArgsFor server
+  let serverHash = getHashId (getServerId (server ^. id))
+  installResult <-
+    liftIO
+      $ installPublicFile
+      $ InstallPublicFileOpts
+        { installPublicFileContents = "server-" <> serverHash,
+          installPublicFileIpAddr = ip,
+          installPublicFileTargetPath = "/var/lib/garnix/terminal-principals",
           installPublicFileSshOptions = sshArgs,
           installPublicFileSshUser = user,
           installPublicFileSshSudo = user /= "root"

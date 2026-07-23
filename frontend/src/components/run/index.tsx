@@ -11,7 +11,6 @@ import statusIcon from "@/components/icons/status.svg";
 import { Link } from "@/components/link";
 import { ElapsedTime } from "@/components/elapsedTime";
 import { Run, cancelRun } from "@/services/run";
-import { trackSubmit } from "@/utils/analytics";
 import { ConfirmActionButton } from "@/components/confirmActionButton";
 import { RunLog } from "../buildLog";
 import { WaitingOn } from "../waitingOn";
@@ -67,7 +66,6 @@ export const RunPage = ({
   onChanged?: () => void;
 }) => {
   const cancel = async () => {
-    trackSubmit("cancel-run");
     await cancelRun(run.id);
     onChanged?.();
   };

@@ -215,9 +215,21 @@ postHostsStats report = do
 -- request is always loopback; the guest's real address is what Caddy saw,
 -- delivered in X-Forwarded-For (Caddy replaces any client-supplied value with
 -- the actual peer address, and only Caddy can reach the loopback listener).
--- Accept a sample iff the effective client is in the guest bridge subnet:
--- either the peer itself (a direct bridge listener), or a loopback peer whose
--- X-Forwarded-For client is.
+-- Two checks, both required:
+--
+--   1. The effective client is in the guest bridge subnet at all: either the
+--      peer itself (a direct bridge listener), or a loopback peer whose
+--      X-Forwarded-For client is ('statsSourceAllowed').
+--   2. The effective client is the SPECIFIC guest IP the backend assigned to
+--      the server the report claims to be (by 'provisioner_id'). Merely being
+--      somewhere in the shared subnet is not enough: any guest on the bridge
+--      can address any other guest's IP in its own POST body, so without this
+--      check a guest could guess another guest's sequential provisioner_id
+--      and push fabricated CPU/memory samples for it.
+--
+-- A provisioner_id with no matching live server is let through step 2 as a
+-- no-op (no 403) so 'postHostsStats' still 404s it as an unmatched push, same
+-- as before this check existed.
 postHostsStatsGuarded :: SockAddr -> Maybe Text -> HostStatsReport -> M NoContent
 postHostsStatsGuarded peer mForwardedFor report = do
   selfHost <- view #selfHostMode
@@ -226,6 +238,13 @@ postHostsStatsGuarded peer mForwardedFor report = do
     unless (statsSourceAllowed prefix peer mForwardedFor)
       $ throw
       $ ForbiddenWithMessage "stats: source address not in the guest subnet"
+    mGuestIp <- DB.getServerGuestIpByProvisionerId (_hostStatsReportProvisionerId report)
+    case mGuestIp of
+      Nothing -> pure ()
+      Just guestIp ->
+        unless (statsClientIp peer mForwardedFor == Just guestIp)
+          $ throw
+          $ ForbiddenWithMessage "stats: source address does not match the registered guest for this server"
   postHostsStats report
 
 -- | Pure decision for 'postHostsStatsGuarded'; exported for tests. The
@@ -241,6 +260,23 @@ statsSourceAllowed guestPrefix peer mForwardedFor =
       xff <- mForwardedFor
       listToMaybe (reverse (map T.strip (T.splitOn "," xff)))
     inGuestSubnet = maybe False (guestPrefix `T.isPrefixOf`)
+    isLoopback = maybe False ("127." `T.isPrefixOf`)
+
+-- | The effective client IP for a stats push, derived exactly as
+-- 'statsSourceAllowed' derives it for its accept decision: the peer itself
+-- for a direct bridge listener, or the trusted (last) X-Forwarded-For entry
+-- when the peer is the loopback address Caddy proxies through. Used to pin a
+-- stats report to the SPECIFIC guest IP registered for its provisioner_id,
+-- not merely to confirm the source is somewhere in the guest subnet.
+statsClientIp :: SockAddr -> Maybe Text -> Maybe Text
+statsClientIp peer mForwardedFor
+  | isLoopback peerIp = forwardedClientIp
+  | otherwise = peerIp
+  where
+    peerIp = sockAddrIPv4 peer
+    forwardedClientIp = do
+      xff <- mForwardedFor
+      listToMaybe (reverse (map T.strip (T.splitOn "," xff)))
     isLoopback = maybe False ("127." `T.isPrefixOf`)
 
 -- | Render an IPv4 (or IPv4-mapped IPv6) socket address as dotted decimal.

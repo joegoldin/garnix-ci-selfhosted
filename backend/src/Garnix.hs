@@ -287,7 +287,19 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
     if selfHostMode'
       then
         lookupEnv "GARNIX_PROXY_SHARED_SECRET_FILE" >>= \case
-          Just path -> Just . T.strip . cs <$> BSC.readFile path
+          Just path ->
+            (Just . T.strip . cs <$> BSC.readFile path)
+              `Control.Exception.catch` \(e :: Control.Exception.IOException) -> do
+                hPutStrLn stderr
+                  $ "GARNIX_PROXY_SHARED_SECRET_FILE "
+                  <> cs path
+                  <> " could not be read ("
+                  <> show e
+                  <> "); self-host logins will be rejected until it is fixed"
+                -- Fail closed: a missing/unreadable secret file must not be
+                -- silently treated as "no proxy secret configured", or
+                -- selfHostProxyMarkerOk would let every request through.
+                pure Nothing
           Nothing -> fmap (T.strip . cs) <$> lookupEnv "GARNIX_PROXY_SHARED_SECRET"
       else pure Nothing
   guestSubnetPrefix' <- maybe "10.111.0." cs <$> lookupEnv "GARNIX_GUEST_SUBNET_PREFIX"

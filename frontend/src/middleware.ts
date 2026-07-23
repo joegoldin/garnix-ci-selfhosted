@@ -4,10 +4,25 @@ export function middleware(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
   const websocketScheme =
     request.nextUrl.protocol === "https:" ? "wss:" : "ws:";
-  const sameOriginWebsocket = `${websocketScheme}//${request.nextUrl.host}`;
+  // request.nextUrl.host derives from the client-controlled Host header, so it
+  // must not be interpolated into the CSP verbatim: a malformed value could
+  // inject extra directives or widen connect-src. Only reflect a well-formed
+  // host[:port] (a spoofed-but-valid host is harmless — it just names the
+  // client's own same-origin websocket); anything else falls back to 'self'.
+  const rawHost = request.nextUrl.host;
+  const sameOriginWebsocket = /^[a-zA-Z0-9.-]+(:\d+)?$/.test(rawHost)
+    ? `${websocketScheme}//${rawHost}`
+    : "";
   const contentSecurityPolicy = [
     `default-src 'none'`,
-    `connect-src 'self' ${sameOriginWebsocket} https://maps.googleapis.com https://plausible.io https://api.github.com`,
+    `connect-src ${[
+      "'self'",
+      sameOriginWebsocket,
+      "https://maps.googleapis.com",
+      "https://api.github.com",
+    ]
+      .filter(Boolean)
+      .join(" ")}`,
     `script-src ${[
       "'self'",
       `'nonce-${nonce}'`,

@@ -1,6 +1,7 @@
 module Garnix.API.Auth where
 
 import Control.Lens
+import Crypto.Hash (SHA256 (..), hashWith)
 import Data.Text qualified as T
 import Data.Time.Clock (secondsToDiffTime)
 import Garnix.AccessToken
@@ -83,7 +84,15 @@ selfHostProxyMarkerOk :: Bool -> Maybe Text -> Maybe Text -> Bool
 selfHostProxyMarkerOk selfHost mConfiguredSecret mMarkerHeader
   | not selfHost = True
   | otherwise = case (mConfiguredSecret, mMarkerHeader) of
-      (Just secret, Just marker) -> not (T.null secret) && secret == marker
+      -- Compare SHA256 digests rather than the raw 'Text' values: 'Digest's
+      -- fixed size avoids a length/content timing side-channel against a
+      -- same-host/loopback adversary probing this endpoint (this check's
+      -- threat model), which a direct 'Text' '==' (short-circuiting on the
+      -- first mismatched character) would leak.
+      (Just secret, Just marker) ->
+        not (T.null secret)
+          && hashWith SHA256 (cs secret :: StrictByteString)
+          == hashWith SHA256 (cs marker :: StrictByteString)
       _ -> False
 
 -- | Reject a login that did not come through the authenticating gateway when

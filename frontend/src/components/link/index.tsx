@@ -2,7 +2,6 @@
 
 import _Link, { LinkProps } from "next/link";
 import { ButtonHTMLAttributes, DetailedHTMLProps } from "react";
-import { trackClick } from "@/utils/analytics";
 import { MatterSQMono } from "@/utils/fonts";
 import styles from "./styles.module.css";
 
@@ -34,7 +33,6 @@ export const Link = ({
       className={`${className} ${styles.container} ${styles[variant]} ${
         variant === "arrow" && MatterSQMono.className
       }`}
-      onClick={() => eventName && trackClick(eventName)}
       target={
         target === undefined
           ? href.toString().includes("http")

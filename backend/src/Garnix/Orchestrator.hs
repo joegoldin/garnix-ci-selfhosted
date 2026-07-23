@@ -11,6 +11,7 @@ module Garnix.Orchestrator
     resumeBuilds,
     listRepoBranches,
     triggerBranchBuild,
+    statusReporterForCommit,
     RerunEvent (..),
     groupResumableBuilds,
   )
@@ -21,6 +22,7 @@ import Garnix.Async (Promise)
 import Garnix.Build (buildFlake, rerunBuild, rerunBuilds, sameRerunScope)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withInternalCacheToken)
+import Garnix.Build.Reporting (reportBuildCancelledToForge)
 import Garnix.DB qualified as DB
 import Garnix.GiteaInterface (requireGiteaConfig)
 import Garnix.GithubInterface (listBranchesGithub)
@@ -110,27 +112,45 @@ handleRerun ev = do
     assertIsAllowedToBuild (build' ^. repoUser) (build' ^. repoName)
     withSpan commitInfo $ rerunBuild reporter build' commitInfo
 
+-- | Forge-dispatched RepoInfo + status reporter (carrying the installation
+-- access token) for a repo/commit, independent of any specific build row.
+-- Extracted from 'commitInfoForBuild' so the cancel endpoints can build the
+-- same forge-aware reporter from a 'CommitSummary'/'Run' that has no build to
+-- hand.
+repoInfoAndReporter :: (HasCallStack) => Forge -> GhRepoOwner -> GhRepoName -> CommitHash -> M (RepoInfo, Reporter)
+repoInfoAndReporter forge' owner repo commit = do
+  repoInfo' <- case forge' of
+    ForgeGitea -> do
+      cfg <- requireGiteaConfig
+      pure $ RepoInfo ForgeGitea Nothing (GhToken (_giteaConfigApiToken cfg)) owner repo
+    ForgeGithub -> do
+      installationId <- getGarnixInstallationId owner repo
+      iAuth <- case installationId of
+        Nothing -> throw $ OtherError "Failed to look up installation auth"
+        Just installationId' -> getInstallation (Id $ fromInteger installationId')
+      token <- getAccessToken iAuth
+      pure $ RepoInfo ForgeGithub (Just iAuth) token owner repo
+  reporter <- case forge' of
+    ForgeGitea -> do
+      cfg <- requireGiteaConfig
+      pure $ openSearchReporter <> mkGiteaReporter cfg repoInfo' commit
+    ForgeGithub -> pure $ openSearchReporter <> mkGithubReporter repoInfo' commit
+  pure (repoInfo', reporter)
+
+-- | The forge-dispatched status reporter for a repo/commit, used by the cancel
+-- endpoints to push a terminal (Cancelled) check-run / commit-status to the
+-- forge after they have updated the DB.
+statusReporterForCommit :: (HasCallStack) => Forge -> GhRepoOwner -> GhRepoName -> CommitHash -> M Reporter
+statusReporterForCommit forge' owner repo commit =
+  snd <$> repoInfoAndReporter forge' owner repo commit
+
 -- | Reconstruct the CommitInfo + status reporter for an existing build row,
 -- forge-aware. Used by the restart endpoints, which unlike the webhook
 -- handlers have no event payload to draw auth from.
 commitInfoForBuild :: GhLogin -> Build -> M (CommitInfo, Reporter)
 commitInfoForBuild reqUser' build = do
-  repoInfo' <- case build ^. forge of
-    ForgeGitea -> do
-      cfg <- requireGiteaConfig
-      pure $ RepoInfo ForgeGitea Nothing (GhToken (_giteaConfigApiToken cfg)) (build ^. repoUser) (build ^. repoName)
-    ForgeGithub -> do
-      installationId <- getGarnixInstallationId (build ^. repoUser) (build ^. repoName)
-      iAuth <- case installationId of
-        Nothing -> throw $ OtherError "Failed to look up installation auth for restart"
-        Just installationId' -> getInstallation (Id $ fromInteger installationId')
-      token <- getAccessToken iAuth
-      pure $ RepoInfo ForgeGithub (Just iAuth) token (build ^. repoUser) (build ^. repoName)
-  reporter <- case build ^. forge of
-    ForgeGitea -> do
-      cfg <- requireGiteaConfig
-      pure $ openSearchReporter <> mkGiteaReporter cfg repoInfo' (build ^. gitCommit)
-    ForgeGithub -> pure $ openSearchReporter <> mkGithubReporter repoInfo' (build ^. gitCommit)
+  (repoInfo', reporter) <-
+    repoInfoAndReporter (build ^. forge) (build ^. repoUser) (build ^. repoName) (build ^. gitCommit)
   let commitInfo =
         CommitInfo
           { _commitInfoReqUser = reqUser',
@@ -235,7 +255,14 @@ resumeBuildGroup reqUser' builds@(build : _) =
       | isJust (fresh ^. status) = pure ()
       | otherwise = do
           now <- liftIO getCurrentTime
-          DB.reportBuildResultDB (fresh & status ?~ Cancelled & endTime ?~ now)
+          let cancelled = fresh & status ?~ Cancelled & endTime ?~ now
+          DB.reportBuildResultDB cancelled
+          -- An orphaned build has no running loop, so nothing else will ever
+          -- report it: push the cancellation to the forge too (best-effort, so
+          -- a forge/auth failure here can't re-orphan the row we just closed).
+          ignoringAllErrors $ do
+            reporter <- statusReporterForCommit (fresh ^. forge) (fresh ^. repoUser) (fresh ^. repoName) (fresh ^. gitCommit)
+            reportBuildCancelledToForge reporter cancelled
 
 -- | Stable, order-preserving grouping for startup recovery. A shared checkout,
 -- authorization token, and FOD checker are safe only when all CommitInfo and

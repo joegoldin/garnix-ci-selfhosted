@@ -3,7 +3,6 @@
 import { PropsWithChildren } from "react";
 import { Berlin } from "@/utils/fonts";
 import { Link } from "@/components/link";
-import { trackClick } from "@/utils/analytics";
 import styles from "./styles.module.css";
 
 const styleClassNames = {
@@ -73,7 +72,6 @@ export const Button = ({
     <button
       type={submit ? "submit" : "button"}
       onClick={() => {
-        eventName && trackClick(eventName);
         onClick && void onClick();
       }}
       disabled={loading}
