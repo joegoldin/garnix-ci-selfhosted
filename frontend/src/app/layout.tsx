@@ -6,6 +6,14 @@ import "@/utils/colors.css";
 import "@/utils/sizes.css";
 import "./globals.css";
 
+// This is a standalone Next.js server (not a static export). The root layout
+// used to call headers() (for the Plausible script nonce), which implicitly
+// forced dynamic rendering app-wide; removing Plausible removed that call, so
+// `next build` began statically prerendering pages that use useSearchParams()
+// and failed the CSR-bailout check. Force dynamic rendering to restore the
+// prior behavior.
+export const dynamic = "force-dynamic";
+
 const baseMetadata = {
   title: "garnix | the nix CI",
   description: "Simple, fast, and green CI and caching for nix projects",
