@@ -11,9 +11,11 @@ import Data.Char (isDigit)
 import Data.Text qualified as T
 import Garnix.API.Terminal (TerminalTarget (..), signingArgs)
 import Garnix.DB qualified as DB
+import Garnix.GithubInterface.Types
 import Garnix.Monad
 import Garnix.Prelude
 import Garnix.TestHelpers
+import Garnix.TestHelpers.GithubInterface qualified as GH
 import Garnix.TestHelpers.Monad
 import Garnix.TestHelpers.WithServer
 import Garnix.Types
@@ -77,11 +79,28 @@ spec = do
         result <- testServer.get (terminalPath server)
         result `shouldHaveStatusCode` 404
 
-      it "responds with 404 for an owned server on a private repo without collaborator access" $ withServer $ \testServer -> do
-        user <- testServer.login
-        server <- createPrivateServer user (ipv4Addr .~ "10.0.0.1")
-        result <- testServer.get (terminalPath server)
-        result `shouldHaveStatusCode` 404
+      -- [H1] Passing the ownership gate (org member) is not enough: the live
+      -- repo-access gate must still refuse a shell on a *private* repo the
+      -- caller is not a collaborator on. The org membership makes ownership
+      -- succeed, so the 404 here can only come from the repo-access gate.
+      it "responds with 404 for an owned server on a private repo without collaborator access"
+        $ GH.withFakeGithubInterface
+        $ \st -> withServer
+        $ \testServer -> do
+          user <- testServer.login
+          let someGhOrg = "some-org"
+          GH.addOrgMembers st [GhUserOrgMembership someGhOrg (Other "user")]
+          GH.mkRepo st someGhOrg "repo" $ (#publicity .~ RepoIsPublic False) . (#collaborators .~ [])
+          server <-
+            createServer
+              someGhOrg
+              (GhRepoName "repo")
+              (Branch "branch")
+              (PackageName "package")
+              user
+              (ipv4Addr .~ "10.0.0.1")
+          result <- testServer.get (terminalPath server)
+          result `shouldHaveStatusCode` 404
 
       it "refuses a root terminal login" $ withServer $ \testServer -> do
         user <- testServer.login
@@ -224,16 +243,6 @@ createServerWithPublicity publicity repoOwner repoName branch packageName user u
       .~ (build ^. id)
       & readyAt
       ?~ now
-
-createPrivateServer :: User -> (ServerInfo -> ServerInfo) -> M ServerInfo
-createPrivateServer user =
-  createServerWithPublicity
-    (RepoIsPublic False)
-    (GhRepoOwner $ user ^. githubLogin)
-    (GhRepoName "repo")
-    (Branch "branch")
-    (PackageName "package")
-    user
 
 markServerDead :: ServerInfo -> M ()
 markServerDead serverInfo = do
