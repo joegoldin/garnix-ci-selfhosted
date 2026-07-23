@@ -286,6 +286,8 @@ withTestEnvironment tempDir action = do
                   githubInterface = ghInterface,
                   provisioner = testProvisioner,
                   serverPoolConfig = [],
+                  hostingVcpuBudget = Nothing,
+                  hostingMemBudgetMiB = Nothing,
                   cookieSettings = defaultCookieSettings {cookieXsrfSetting = Nothing},
                   jwtSettings = defaultJWTSettings $ fromSecret $ cs jwtKey,
                   repoSecretsEncryptionKeyPath = repoSecretsEncryptionKeyPath,

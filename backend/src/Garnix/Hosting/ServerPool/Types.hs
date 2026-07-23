@@ -19,8 +19,12 @@ data ServerTier
   | I16x32
   deriving (Eq, Show, Enum, Bounded, Ord)
 
+-- | The tier a server gets when garnix.yaml omits @deployment.machine@. i1x2
+-- (2 GiB) rather than i1x1 (1 GiB): the shared guest profile plus a repo
+-- activation can exhaust a 1-GiB guest during switch-to-configuration
+-- (virtio-fs then returns ENOMEM).
 instance Default ServerTier where
-  def = I1x1
+  def = I1x2
 
 instance PGParameter "text" ServerTier where
   pgEncode proxy tier = pgEncode proxy (serverTierToText tier)
@@ -66,3 +70,42 @@ tierResources = \case
   I8x16 -> (8, 16384)
   I16x16 -> (16, 16384)
   I16x32 -> (16, 32768)
+
+tierVcpus :: ServerTier -> Int
+tierVcpus = fst . tierResources
+
+tierMiB :: ServerTier -> Int
+tierMiB = snd . tierResources
+
+-- | Total resources committed across some set of guests. Used to weigh a
+-- prospective new guest against the hosting budget.
+data Committed = Committed {committedVcpus :: Int, committedMiB :: Int}
+  deriving (Eq, Show)
+
+instance Semigroup Committed where
+  Committed a b <> Committed c d = Committed (a + c) (b + d)
+
+instance Monoid Committed where
+  mempty = Committed 0 0
+
+-- | Count-weighted sum of tier resources: @[(tier, howMany)]@.
+sumTierResources :: [(ServerTier, Int)] -> Committed
+sumTierResources =
+  foldMap (\(tier, n) -> Committed (tierVcpus tier * n) (tierMiB tier * n))
+
+-- | Resolved (absolute) hosting budget caps. 'Nothing' in a dimension means
+-- unbounded there (the legacy behaviour when no budget is configured).
+data ResourceBudget = ResourceBudget
+  { budgetVcpus :: Maybe Int,
+    budgetMiB :: Maybe Int
+  }
+  deriving (Eq, Show)
+
+-- | Would adding one guest of this tier keep BOTH dimensions within their
+-- caps? An unset (Nothing) cap always fits that dimension.
+fitsBudget :: ResourceBudget -> Committed -> ServerTier -> Bool
+fitsBudget (ResourceBudget capV capM) (Committed v m) tier =
+  within capV (v + tierVcpus tier) && within capM (m + tierMiB tier)
+  where
+    within Nothing _ = True
+    within (Just cap) x = x <= cap

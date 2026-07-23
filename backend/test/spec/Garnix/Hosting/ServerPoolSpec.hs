@@ -67,6 +67,27 @@ spec = inM $ beforeM_ truncateDBM $ aroundM_ (suppressLogsWhenPassing . local (#
           ip `shouldBeM` "1.2.3.4"
           sshArgs `shouldContainM` ["-i", "/key1", "-i", "/key2"]
 
+    describe "budget accounting" $ do
+      it "committedResources sums pooled guest resources by tier" $ do
+        _ <- DB.newServerInPool I2x4
+        p <- DB.newServerInPool I1x1
+        now <- liftIO getCurrentTime
+        DB.updatePreprovisionedServer (PreprovisionedServer p (ProvisionedServerId 7) "1.2.3.4" "::" now (Just now))
+        committed <- DB.committedResources
+        committed `shouldBeM` Committed {committedVcpus = 2 + 1, committedMiB = 4096 + 1024}
+
+      it "claimIdleReadyPoolVMForEviction removes only a ready VM, returning its tier" $ do
+        _ <- DB.newServerInPool I2x4
+        p <- DB.newServerInPool I1x1
+        now <- liftIO getCurrentTime
+        DB.updatePreprovisionedServer (PreprovisionedServer p (ProvisionedServerId 8) "1.2.3.4" "::" now (Just now))
+        evicted <- DB.claimIdleReadyPoolVMForEviction
+        (snd <$> evicted) `shouldBeM` Just I1x1
+        i1x1Count <- DB.getPreprovisionedServerCount I1x1
+        i1x1Count `shouldBeM` 0
+        i2x4Count <- DB.getPreprovisionedServerCount I2x4
+        i2x4Count `shouldBeM` 1
+
 testPoolConfig :: [(ServerTier, Int)]
 testPoolConfig =
   [ (I2x4, 2),

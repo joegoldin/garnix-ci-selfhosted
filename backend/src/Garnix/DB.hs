@@ -2119,6 +2119,51 @@ getPreprovisionedServerCount tier = do
     [Just c] -> pure c
     _ -> throw $ OtherError "getPreprovisionedServerCount: Unexpected return type"
 
+-- | Total vCPUs + RAM (MiB) committed across every guest the host is
+-- responsible for: active servers (not yet ended) plus every pool row (ready
+-- warm VMs and in-flight provisions). Weighed against the hosting budget
+-- before another guest is provisioned.
+committedResources :: M Committed
+committedResources = do
+  activeRows <-
+    pgQuery
+      [pgSQL|
+        SELECT server_tier, COUNT(*) FROM servers WHERE ended_at IS NULL
+          GROUP BY server_tier
+      |]
+  poolRows <-
+    pgQuery
+      [pgSQL|
+        SELECT server_tier, COUNT(*) FROM server_pool
+          GROUP BY server_tier
+      |]
+  let tally :: [(ServerTier, Maybe Int64)] -> Committed
+      tally rows = sumTierResources [(tier, maybe 0 fromIntegral n) | (tier, n) <- rows]
+  pure $ tally activeRows <> tally poolRows
+
+-- | Atomically remove one idle READY pool VM (oldest @ready_at@ first — least
+-- likely to be about to be claimed), returning what's needed to destroy its
+-- guest and account for the freed resources. 'Nothing' if no ready idle VM
+-- exists. The caller MUST destroy the returned guest.
+claimIdleReadyPoolVMForEviction :: M (Maybe (ProvisionedServerId, ServerTier))
+claimIdleReadyPoolVMForEviction =
+  pgTransaction $ do
+    evicted <-
+      pgQuery
+        [pgSQL|
+          DELETE FROM server_pool
+          WHERE id IN (
+            SELECT id FROM server_pool
+            WHERE ready_at IS NOT NULL
+            ORDER BY ready_at ASC
+            LIMIT 1
+          )
+          RETURNING provisioner_id, server_tier
+        |]
+    pure $ case evicted of
+      ((Just pid, tier) : _) -> Just (pid, tier)
+      _ -> Nothing
+
 -- | Remove pool rows that never became ready. A provisioning attempt that
 -- died between inserting its row and readiness (daemon error, backend
 -- restart) otherwise counts toward the pool forever: the loop thinks the

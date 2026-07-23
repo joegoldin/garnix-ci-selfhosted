@@ -27,6 +27,30 @@ let
       lib.filterAttrs (_: count: count > 0) config.services.garnixServer.serverPool
     )
   );
+  memBudgetEnv =
+    let
+      b = config.services.garnixServer.hosting.memoryBudget;
+    in
+    if b == null then
+      [ ]
+    else if b.totalGiB != null then
+      [ "GARNIX_HOSTING_MEM_BUDGET=total:${toString (b.totalGiB * 1024)}" ]
+    else if b.reserveGiB != null then
+      [ "GARNIX_HOSTING_MEM_BUDGET=reserve:${toString (b.reserveGiB * 1024)}" ]
+    else
+      [ ];
+  cpuBudgetEnv =
+    let
+      b = config.services.garnixServer.hosting.cpuBudget;
+    in
+    if b == null then
+      [ ]
+    else if b.totalVcpus != null then
+      [ "GARNIX_HOSTING_CPU_BUDGET=total:${toString b.totalVcpus}" ]
+    else if b.reserveCores != null then
+      [ "GARNIX_HOSTING_CPU_BUDGET=reserve:${toString b.reserveCores}" ]
+    else
+      [ ];
   monitoringBuildersEnv = builtins.toJSON (
     map (builder: {
       # MonitoringBuilderTarget uses the backend's snake_case JSON codec.
@@ -440,6 +464,50 @@ in
             rendered as GARNIX_SERVER_POOL for the backend.
           '';
         };
+        hosting.memoryBudget = lib.mkOption {
+          default = null;
+          description = ''
+            Ceiling on TOTAL RAM across all hosted guests (active + warm pool +
+            in-flight). Set exactly one of totalGiB (absolute cap) or reserveGiB
+            (leave this many GiB free for the rest of the host). Unset = unbounded.
+          '';
+          type = lib.types.nullOr (
+            lib.types.submodule {
+              options = {
+                totalGiB = lib.mkOption {
+                  type = lib.types.nullOr lib.types.ints.unsigned;
+                  default = null;
+                };
+                reserveGiB = lib.mkOption {
+                  type = lib.types.nullOr lib.types.ints.unsigned;
+                  default = null;
+                };
+              };
+            }
+          );
+        };
+        hosting.cpuBudget = lib.mkOption {
+          default = null;
+          description = ''
+            Ceiling on TOTAL vCPUs across all hosted guests. Set exactly one of
+            totalVcpus (absolute) or reserveCores (leave this many host cores free).
+            Unset = unbounded.
+          '';
+          type = lib.types.nullOr (
+            lib.types.submodule {
+              options = {
+                totalVcpus = lib.mkOption {
+                  type = lib.types.nullOr lib.types.ints.unsigned;
+                  default = null;
+                };
+                reserveCores = lib.mkOption {
+                  type = lib.types.nullOr lib.types.ints.unsigned;
+                  default = null;
+                };
+              };
+            }
+          );
+        };
         maxLocalJobs = lib.mkOption {
           type = lib.types.int;
           default = 0;
@@ -554,6 +622,22 @@ in
           services.garnixServer: selfHostMode requires proxySharedSecretFile to be set
           (the backend rejects all logins without the proxy-provenance marker).
         '';
+      }
+      {
+        assertion =
+          let
+            b = config.services.garnixServer.hosting.memoryBudget;
+          in
+          b == null || !(b.totalGiB != null && b.reserveGiB != null);
+        message = "services.garnixServer.hosting.memoryBudget: set at most one of totalGiB / reserveGiB";
+      }
+      {
+        assertion =
+          let
+            b = config.services.garnixServer.hosting.cpuBudget;
+          in
+          b == null || !(b.totalVcpus != null && b.reserveCores != null);
+        message = "services.garnixServer.hosting.cpuBudget: set at most one of totalVcpus / reserveCores";
       }
     ];
 
@@ -751,6 +835,8 @@ in
         ++ lib.optionals config.services.garnixServer.provisionServerPool [
           "GARNIX_SERVER_POOL=${serverPoolEnv}"
         ]
+        ++ memBudgetEnv
+        ++ cpuBudgetEnv
         ++ lib.optionals (config.services.garnixServer.actionHost != null) [
           "GARNIX_ACTION_HOST=${config.services.garnixServer.actionHost}"
         ]

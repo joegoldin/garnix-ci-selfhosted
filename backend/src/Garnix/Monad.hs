@@ -77,6 +77,10 @@ data Env = Env
     -- Cloud path. Used to reach the daemon's post-provision @expose@ action.
     provisionerSocket :: Maybe FilePath,
     serverPoolConfig :: [(ServerTier, Int)],
+    -- | Resolved absolute caps on TOTAL guest vCPUs / RAM (MiB) across every
+    -- active + pooled + in-flight guest. 'Nothing' = unbounded (legacy).
+    hostingVcpuBudget :: Maybe Int,
+    hostingMemBudgetMiB :: Maybe Int,
     -- | A thread-safe version of `CWD`
     workingDir :: FilePath,
     nixXdgCacheDir :: Maybe FilePath,

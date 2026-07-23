@@ -197,7 +197,7 @@ spec = do
                           branch: master
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing]
         roundtripTest actual
 
       it "parses and serializes 'on-pull-request' deployment type of the 'servers'" $ do
@@ -212,7 +212,7 @@ spec = do
                           type: on-pull-request
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x1) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x2) Nothing False False [] [] [] Nothing]
         roundtripTest actual
 
       it "parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -262,7 +262,7 @@ spec = do
                           isPrimary: true
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x1 True) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 True) Nothing False False [] [] [] Nothing]
         roundtripTest actual
 
       it "accepts a custom absolute application log path" $ do
@@ -283,7 +283,7 @@ spec = do
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
         actual
           `shouldBe` Right
-            [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log"))]
+            [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log"))]
         roundtripTest actual
 
       it "enables the default application log path explicitly" $ do
@@ -505,7 +505,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] [] Nothing]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing]
 
       it "ignores the garnix.yaml file if there is a flake.nix garnix.config" $ GH.withFakeGithubInterface $ \ghState -> do
         let flake =
@@ -537,7 +537,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake $ Just yaml) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x1 False) Nothing False False [] [] [] Nothing]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing]
 
     context "modules section" $ do
       it "sets the publish field for the default section to false" $ do

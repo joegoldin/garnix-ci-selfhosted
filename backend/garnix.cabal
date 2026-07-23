@@ -87,6 +87,7 @@ library
       Garnix.GiteaInterface
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
+      Garnix.Hosting.Budget
       Garnix.Hosting.Deploy
       Garnix.Hosting.Domains
       Garnix.Hosting.Helpers
@@ -788,6 +789,7 @@ test-suite spec
       Garnix.FlakeInputAuthorizationSpec
       Garnix.GetAttributesSpec
       Garnix.GithubInterfaceSpec
+      Garnix.Hosting.BudgetSpec
       Garnix.Hosting.DeploySpec
       Garnix.Hosting.ServerPoolSpec
       Garnix.IncrementalSpec
@@ -890,6 +892,7 @@ test-suite spec
       Garnix.GiteaInterface
       Garnix.GithubInterface
       Garnix.GithubInterface.Types
+      Garnix.Hosting.Budget
       Garnix.Hosting.Deploy
       Garnix.Hosting.Domains
       Garnix.Hosting.Helpers

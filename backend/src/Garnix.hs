@@ -31,6 +31,7 @@ import Garnix.DB.FeatureFlags (withRecachedFeatureFlags)
 import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
 import Garnix.Duration
 import Garnix.GithubInterface
+import Garnix.Hosting.Budget (hostTotalMiB, hostVcpus, parseBudget, resolveBudget)
 import Garnix.Hosting.Deploy (cleanupUnreadyServers, stopUnusedServers)
 import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Hosting.ServerPool qualified as ServerPool
@@ -349,6 +350,15 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
           ]
       -- Preserve one i1x1 as the fallback for non-module/manual launches.
       serverPool = maybe [(I1x1, 1)] parsePool poolEnv
+  -- Optional ceilings on TOTAL guest RAM / vCPUs. Rendered by the NixOS module
+  -- as total:<n> (absolute) or reserve:<n> (leave <n> free); a reserve is
+  -- resolved against the host total here. Absent => unbounded (legacy).
+  memBudgetSpec <- (>>= parseBudget . cs) <$> lookupEnv "GARNIX_HOSTING_MEM_BUDGET"
+  cpuBudgetSpec <- (>>= parseBudget . cs) <$> lookupEnv "GARNIX_HOSTING_CPU_BUDGET"
+  hostMiB <- hostTotalMiB
+  hostCpus <- hostVcpus
+  let hostingMemBudgetMiB' = resolveBudget hostMiB memBudgetSpec
+      hostingVcpuBudget' = resolveBudget hostCpus cpuBudgetSpec
   -- This fork provisions local microVMs only; the provisioner daemon socket is
   -- required (there is no Hetzner Cloud fallback).
   provisionerSocket <-
@@ -444,6 +454,8 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               provisioner = localProvisionerInterface provisionerSocket,
               provisionerSocket = Just provisionerSocket,
               serverPoolConfig = serverPool,
+              hostingVcpuBudget = hostingVcpuBudget',
+              hostingMemBudgetMiB = hostingMemBudgetMiB',
               cookieSettings =
                 defaultCookieSettings
                   { cookieXsrfSetting = Nothing,

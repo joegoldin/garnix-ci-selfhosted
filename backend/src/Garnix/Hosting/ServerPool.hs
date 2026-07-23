@@ -11,7 +11,7 @@ import Cradle
 import Data.Text qualified as T
 import Garnix.DB qualified as DB
 import Garnix.Duration
-import Garnix.Hosting.ServerPool.Types ()
+import Garnix.Hosting.ServerPool.Types
 import Garnix.Monad
 import Garnix.Monad.Async (timeoutThrowing)
 import Garnix.Monad.NoThrow qualified as NoThrow
@@ -22,19 +22,42 @@ import Garnix.Types
 
 createServer :: RepoInfo -> DeploymentType -> ServerToSpinUp -> M ServerInfo
 createServer repoInfo deployType serverToSpinUp = do
-  startedCreating <- liftIO getCurrentTime
-  let pollForServer = do
+  budget <- hostingBudget
+  let tier = serverToSpinUp ^. #serverTier
+      pollForServer = do
         res <- DB.claimServerDB serverToSpinUp (ghPrDeployment deployType)
         case res of
           Just r -> pure r
-          Nothing -> do
-            now <- liftIO getCurrentTime
-            when (now > addTime serverWaitTimeout startedCreating)
-              $ throw
-              $ ProvisioningError "Waited too long for server provisioning. Cancelled"
-            log Informational "createServer: no server ready, waiting..."
-            threadDelay pollForServerDuration
-            pollForServer
+          Nothing ->
+            -- No warm VM of the requested tier. Decide elastically rather than
+            -- just waiting for the static refill (which only tops up
+            -- configured tiers — an unlisted tier would otherwise never come).
+            DB.committedResources >>= \committed ->
+              if fitsBudget budget committed tier
+                then do
+                  -- Budget has room: provision one of this tier now, then
+                  -- re-claim it. (A stuck provision throws via provisionOne's
+                  -- own readiness timeouts, failing the deploy — it does not
+                  -- hang here.)
+                  log Informational $ "createServer: no ready " <> show tier <> ", provisioning one on demand"
+                  provisionOne tier
+                  pollForServer
+                else
+                  DB.claimIdleReadyPoolVMForEviction >>= \case
+                    Just (victimId, victimTier) -> do
+                      -- At the budget but an idle warm VM of some tier exists:
+                      -- reclaim it for the tier this deploy actually needs.
+                      log Informational $ "createServer: evicting idle pooled " <> show victimTier <> " to free budget for " <> show tier
+                      bestEffortDeleteGuest victimId
+                      pollForServer
+                    Nothing -> do
+                      -- Budget full and nothing idle to evict: queue. The
+                      -- deploy stays Pending (no hard timeout — this is the
+                      -- intended back-pressure) until a running server frees
+                      -- resources.
+                      log Informational $ "createServer: at hosting budget for " <> show tier <> " (committed=" <> show committed <> " cap=" <> show budget <> "); queuing until resources free"
+                      threadDelay pollForServerDuration
+                      pollForServer
   server <- pollForServer
   log Informational $ "createServer: got server" <> show (server ^. id)
   (ip, sshArgs) <- sshArgsFor server
@@ -51,6 +74,42 @@ createServer repoInfo deployType serverToSpinUp = do
   updateMetadata repoInfo deployType (serverToSpinUp ^. #build) (server ^. id) (server ^. provisionedServerId)
   pure server
 
+-- | The resolved hosting budget (Nothing dims = unbounded) from the reader env.
+hostingBudget :: M ResourceBudget
+hostingBudget =
+  ResourceBudget <$> view #hostingVcpuBudget <*> view #hostingMemBudgetMiB
+
+-- | Provision one warm guest of a tier into the pool: insert the row, boot +
+-- initialise the guest, mark it ready. Cleans up the guest and/or its row on
+-- any failure and re-raises (callers under 'NoThrow' swallow it; 'createServer'
+-- lets it fail the deploy).
+provisionOne :: ServerTier -> M ()
+provisionOne serverTier = do
+  id' <- DB.newServerInPool serverTier
+  ( do
+      server <- provisionServer id' serverTier <?> ("Preprovisioning server " <> show id')
+      DB.updatePreprovisionedServer server
+      ( do
+          setupServer server
+          DB.setPreprovisionedReady (server ^. id)
+        )
+        -- If the server never becomes ready, destroy the guest as well:
+        -- deleting only the pool row leaks the provisioned VM (it keeps
+        -- running with no record of it), and the refill loop then boots a
+        -- replacement every interval — a VM storm under any persistent
+        -- provisioning failure.
+        `onError` bestEffortDeleteGuest (server ^. provisionedServerId)
+    )
+    `onError` DB.deleteServerFromPool id'
+
+-- | Best-effort teardown of a guest whose pool lifecycle failed, or that we are
+-- evicting to reclaim budget for another tier. Never throws.
+bestEffortDeleteGuest :: ProvisionedServerId -> M ()
+bestEffortDeleteGuest provisionedId =
+  deleteServer provisionedId
+    `catchAny` (\e -> log Warning $ "Failed to delete pooled guest: " <> show e)
+    `catchError` (\e -> log Warning $ "Failed to delete pooled guest: " <> show e)
+
 initializeProvisioningPool :: M ThreadId
 initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ do
   NoThrow.forkForever _checkServerPoolInterval $ do
@@ -64,6 +123,7 @@ initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ 
       <> show stale
       <> " stale unready server-pool rows (provisioning died before readiness)."
     serverPoolConfig <- view #serverPoolConfig
+    budget <- hostingBudget
     NoThrow.forConcurrently_ serverPoolConfig $ \(serverTier, idealPoolSize) -> do
       withSpan serverTier $ do
         count <- DB.getPreprovisionedServerCount serverTier
@@ -71,29 +131,22 @@ initializeProvisioningPool = withTextSpan ("tag", "provisioning pool thread") $ 
         let missingFromPool = idealPoolSize - fromIntegral count
         when (missingFromPool > 0) $ do
           let toProvision = min missingFromPool maxNumberOfProvisioningThreads
-          log Informational $ "Will preprovision " <> show toProvision <> " more " <> show serverTier <> " servers. " <> show missingFromPool <> " total servers needed."
+          log Informational $ "Will preprovision up to " <> show toProvision <> " more " <> show serverTier <> " servers. " <> show missingFromPool <> " total servers wanted."
           NoThrow.replicateConcurrently_ toProvision $ do
-            id' <- DB.newServerInPool serverTier
-            ( do
-                server <- provisionServer id' serverTier <?> ("Preprovisioning server " <> show id')
-                DB.updatePreprovisionedServer server
-                ( do
-                    setupServer server
-                    DB.setPreprovisionedReady (server ^. id)
-                  )
-                  -- If the server never becomes ready, destroy the guest as
-                  -- well: deleting only the pool row leaks the provisioned
-                  -- VM (it keeps running with no record of it), and the
-                  -- refill loop then boots a replacement every interval — a
-                  -- VM storm under any persistent provisioning failure.
-                  `onError` bestEffortDeleteGuest (server ^. provisionedServerId)
-              )
-              `onError` DB.deleteServerFromPool id'
-  where
-    bestEffortDeleteGuest provisionedId =
-      deleteServer provisionedId
-        `catchAny` (\e -> log Warning $ "Failed to delete unready pooled guest: " <> show e)
-        `catchError` (\e -> log Warning $ "Failed to delete unready pooled guest: " <> show e)
+            -- Keep-warm only within budget. Concurrent checks can transiently
+            -- overshoot by a VM; the configured reserve absorbs that.
+            committed <- DB.committedResources
+            if fitsBudget budget committed serverTier
+              then provisionOne serverTier
+              else
+                log Informational
+                  $ "Not warming "
+                  <> show serverTier
+                  <> ": at hosting budget (committed="
+                  <> show committed
+                  <> " cap="
+                  <> show budget
+                  <> ")"
 
 setupServer :: PreprovisionedServer -> M ()
 setupServer preprovisionedServer = do
@@ -153,9 +206,6 @@ waitTillServerIsNixos server = isNixos 40
 
 maxNumberOfProvisioningThreads :: Int
 maxNumberOfProvisioningThreads = 10
-
-serverWaitTimeout :: Duration
-serverWaitTimeout = fromMinutes @Int 10
 
 _checkServerPoolInterval :: Duration
 _checkServerPoolInterval = fromSeconds @Int 15
