@@ -1,8 +1,9 @@
-{ pkgs
-, lib
-, system
-, flakeInputs
-, ...
+{
+  pkgs,
+  lib,
+  system,
+  flakeInputs,
+  ...
 }:
 let
   secretSetup = ''
@@ -47,6 +48,11 @@ let
   db = pkgs.callPackage ../nix/packages/db.nix {
     inherit migrate postgres;
   };
+  cabalInstall = pkgs.haskellPackages.cabal-install.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [
+      ../nix/patches/cabal-install-hackage-root-key.patch
+    ];
+  });
   garnixTestDependencies = [
     db
     pkgs.ps
@@ -62,7 +68,7 @@ let
     (pkgs.haskell-language-server.override { supportedGhcVersions = [ "967" ]; })
     (pkgs.haskellPackages.ghc.withPackages (p: p.garnix.getBuildInputs.haskellBuildInputs))
     pkgs.ghcid
-    pkgs.haskellPackages.cabal-install
+    cabalInstall
     pkgs.haskellPackages.cabal2nix
     pkgs.haskellPackages.hlint
     pkgs.haskellPackages.hpack
@@ -86,7 +92,8 @@ rec {
         '';
     garnixHaskellPackage =
       let
-        src = with lib.fileset;
+        src =
+          with lib.fileset;
           toSource {
             root = ./..;
             fileset =
@@ -101,37 +108,49 @@ rec {
                 ]);
           };
       in
-      pkgs.haskell.lib.overrideCabal
-        pkgs.haskellPackages.garnix
-        (old: {
-          buildDepends = (old.buildDepends or [ ]) ++ [ db ];
-          inherit src;
-          prePatch = ''
-            cd backend/
-          '';
-          preBuild = ''
-            ${old.preBuild or ""}
-            export HOME=$(pwd)
-            DB_DIR=$(pwd)/pg-tmp
-            ${dbSetup}
-            export EMPTY_DIR=${../nix/data/emptyDir}
-            db new
-            trap 'db clear' EXIT
-          '';
-          doCheck = false;
-        });
-    moduleGraph = pkgs.runCommand "moduleGraph.pdf"
-      {
-        buildInputs = [ pkgs.haskellPackages.graphmod pkgs.graphviz ];
-      }
-      ''
-        cp -r ${./.} backend
-        graphmod ./backend/exe/Server.hs -i./backend/src \
-          | tred \
-          | dot -Tpdf > $out
-      '';
+      pkgs.haskell.lib.overrideCabal pkgs.haskellPackages.garnix (old: {
+        buildDepends = (old.buildDepends or [ ]) ++ [ db ];
+        inherit src;
+        prePatch = ''
+          cd backend/
+        '';
+        preBuild = ''
+          ${old.preBuild or ""}
+          export HOME=$(pwd)
+          DB_DIR=$(pwd)/pg-tmp
+          ${dbSetup}
+          export EMPTY_DIR=${../nix/data/emptyDir}
+          db new
+          trap 'db clear' EXIT
+        '';
+        doCheck = false;
+      });
+    moduleGraph =
+      pkgs.runCommand "moduleGraph.pdf"
+        {
+          buildInputs = [
+            pkgs.haskellPackages.graphmod
+            pkgs.graphviz
+          ];
+        }
+        ''
+          cp -r ${./.} backend
+          graphmod ./backend/exe/Server.hs -i./backend/src \
+            | tred \
+            | dot -Tpdf > $out
+        '';
   };
   checks = {
+    cabal-install =
+      pkgs.runCommand "cabal-install-test"
+        {
+          nativeBuildInputs = [ pkgs.python3 ];
+        }
+        ''
+          cd ${./..}
+          python3 -m unittest backend/test_cabal_install.py -v
+          touch "$out"
+        '';
     hlint = pkgs.runCommand "hlint" { buildInputs = [ pkgs.haskell.packages.ghc967.hlint ]; } ''
       cd ${./.}
       hlint src test
@@ -158,11 +177,12 @@ rec {
       pkgs.runCommand "check-qualified-imports"
         {
           buildInputs = [ pkgs.ack ];
-        } ''
-        cd ${./.}
-        ${lib.concatLines (lib.map checkNoUnqualifiedImports modulesMustBeQualified)}
-        touch $out
-      '';
+        }
+        ''
+          cd ${./.}
+          ${lib.concatLines (lib.map checkNoUnqualifiedImports modulesMustBeQualified)}
+          touch $out
+        '';
   };
   shellHook = ''
     DB_DIR=$(git rev-parse --show-toplevel)/pg-tmp
@@ -198,49 +218,45 @@ rec {
       '';
     };
 
-    specs =
-      pkgs.writeShellApplication {
-        meta.description = "runs the backend test suite";
-        name = "backend-specs";
-        runtimeInputs =
-          (
-            garnixRuntimeDependencies ++
-            garnixTestDependencies ++
-            [
-              (pkgs.haskellPackages.ghc.withPackages (p: p.garnix.getBuildInputs.haskellBuildInputs))
-              pkgs.haskellPackages.cabal-install
-            ]
-          );
-        text = ''
-          tempDir=$(mktemp -d /tmp/garnix-specs.XXXXXXXX)
-          cd "$tempDir"
-          export HOME="$tempDir/home"
-          mkdir "$HOME"
-          DB_DIR="$tempDir/pg-tmp"
-          ${dbSetup}
-          db new
-          trap 'db clear; rm $tempDir -rf' EXIT
+    specs = pkgs.writeShellApplication {
+      meta.description = "runs the backend test suite";
+      name = "backend-specs";
+      runtimeInputs =
+        garnixRuntimeDependencies
+        ++ garnixTestDependencies
+        ++ [
+          (pkgs.haskellPackages.ghc.withPackages (p: p.garnix.getBuildInputs.haskellBuildInputs))
+          cabalInstall
+        ];
+      text = ''
+        tempDir=$(mktemp -d /tmp/garnix-specs.XXXXXXXX)
+        cd "$tempDir"
+        export HOME="$tempDir/home"
+        mkdir "$HOME"
+        DB_DIR="$tempDir/pg-tmp"
+        ${dbSetup}
+        db new
+        trap 'db clear; rm $tempDir -rf' EXIT
 
-          export EMPTY_DIR=${../nix/data/emptyDir}
-          ${secretSetup}
+        export EMPTY_DIR=${../nix/data/emptyDir}
+        ${secretSetup}
+        git config --global user.email "you@example.com"
+        git config --global user.name "Your Name"
+        git config --global init.defaultBranch main
+        # nixpkgs and other public flake inputs are fetched unauthenticated:
+        # we deliberately do NOT bake a github access token into the test env.
+        # secrets/dev.yaml is encrypted only to the committed dev key in a
+        # public repo, so any token placed there would be effectively public
+        # (and an expired one 401s every github fetch — worse than none). The
+        # tradeoff is GitHub's unauthenticated rate limit; acceptable for CI.
 
-          git config --global user.email "you@example.com"
-          git config --global user.name "Your Name"
-          git config --global init.defaultBranch main
-          # nixpkgs and other public flake inputs are fetched unauthenticated:
-          # we deliberately do NOT bake a github access token into the test env.
-          # secrets/dev.yaml is encrypted only to the committed dev key in a
-          # public repo, so any token placed there would be effectively public
-          # (and an expired one 401s every github fetch — worse than none). The
-          # tradeoff is GitHub's unauthenticated rate limit; acceptable for CI.
-
-          cp -r ${./..} src
-          chmod a+rwX -R src
-          chmod go-rwx src/backend/ssh-key-for-tests
-          cd src/backend
-          cabal configure --ghc-options="-O0"
-          cabal run spec -- --skip @skip-ci --fail-on=focused
-        '';
-      };
+        cp -r ${./..} src
+        chmod a+rwX -R src
+        chmod go-rwx src/backend/ssh-key-for-tests
+        cd src/backend
+        cabal configure --ghc-options="-O0"
+        cabal run spec -- --skip @skip-ci --fail-on=focused
+      '';
+    };
   };
 }

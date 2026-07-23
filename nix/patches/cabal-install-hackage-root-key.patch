@@ -1,0 +1,49 @@
+diff --git a/src/Distribution/Client/Security/DNS.hs b/src/Distribution/Client/Security/DNS.hs
+--- a/src/Distribution/Client/Security/DNS.hs
++++ b/src/Distribution/Client/Security/DNS.hs
+@@ -74,6 +74,7 @@ queryBootstrapMirrors verbosity repoUri
+ -- | Extract list of mirrors from 'queryTXT' result
+ extractMirrors :: [[CharStr]] -> [URI]
+-extractMirrors txtChunks = mapMaybe (parseURI . snd) . sort $ vals
++extractMirrors txtChunks =
++  excludeRetiredMirrors . mapMaybe (parseURI . snd) . sort $ vals
+   where
+     vals = [ (kn,v) | CharStr e <- concat txtChunks
+                     , Just (k,v) <- [splitRfc1464 (BS.Char8.unpack e)]
+@@ -123,6 +124,7 @@ queryBootstrapMirrors verbosity repoUri
+ -- | Extract list of mirrors from @nslookup -query=TXT@ output.
+ extractMirrors :: String -> String -> [URI]
+-extractMirrors hostname s0 = mapMaybe (parseURI . snd) . sort $ vals
++extractMirrors hostname s0 =
++  excludeRetiredMirrors . mapMaybe (parseURI . snd) . sort $ vals
+   where
+     vals = [ (kn,v) | (h,ents) <- fromMaybe [] $ parseNsLookupTxt s0
+                     , h == hostname
+@@ -165,6 +167,12 @@ parseNsLookupTxt = go0 [] []
+ #endif
+ ----------------------------------------------------------------------------
+-
++-- DreamHost retired this Hackage mirror, but it remains in Hackage's DNS
++-- bootstrap record. Do not waste a fallback attempt on the dead endpoint.
++excludeRetiredMirrors :: [URI] -> [URI]
++excludeRetiredMirrors = filter $ \uri -> case uriAuthority uri of
++  Just auth -> uriRegName auth /= "objects-us-east-1.dream.io"
++  Nothing -> True
++
+ -- | Helper used by 'extractMirrors' for extracting @urlbase@ keys from Rfc1464-encoded data
+ isUrlBase :: String -> Maybe Int
+ isUrlBase s
+diff --git a/src/Distribution/Client/Config.hs b/src/Distribution/Client/Config.hs
+--- a/src/Distribution/Client/Config.hs
++++ b/src/Distribution/Client/Config.hs
+@@ -931,8 +931,8 @@ defaultHackageRemoteRepoKeys =
+     "0a5c7ea47cd1b15f01f5f51a33adda7e655bc0f0b0615baa8e271f4c3351e21d"
+   , -- Norman Ramsey (ZI8di3a9Un0s2RBrt5GwVRvfOXVuywADfXGPZfkiDb0=)
+     "51f0161b906011b52c6613376b1ae937670da69322113a246a09f807c62f6921"
+-  , -- Mathieu Boespflug (ydN1nGGQ79K1Q0nN+ul+Ln8MxikTB95w0YdGd3v3kmg=)
+-    "be75553f3c7ba1dbe298da81f1d1b05c9d39dd8ed2616c9bddf1525ca8c03e48"
++  , -- Current Hackage root role key (rotated July 2026)
++    "c7de58fc6a224b92b5b513f26fbb8b370f2d97c7cfe0075a951314a55734be93"
+   , -- Joachim Breitner (5iUgwqZCWrCJktqMx0bBMIuoIyT4A1RYGozzchRN9rA=)
+     "d26e46f3b631aae1433b89379a6c68bd417eb5d1c408f0643dcc07757fece522"
+   ]
