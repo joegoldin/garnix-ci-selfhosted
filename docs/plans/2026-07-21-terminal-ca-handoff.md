@@ -158,7 +158,7 @@ nix develop --command bash -c '
   trap cleanup EXIT
   db new
   cd backend
-  cabal run spec -- --match "Types installPublicKeySshArgs" --skip @skip-ci'
+  cabal run spec -- --match "Types installPublicKeySshArgs"'
 ```
 
 Expected: compilation fails because `InstallPublicKeyOpts` and `installPublicKeySshArgs` do not exist.
@@ -237,7 +237,7 @@ nix develop --command bash -c '
   trap cleanup EXIT
   db new
   cd backend
-  cabal run spec -- --match "deploys the terminal CA public key to the durable guest path" --skip @skip-ci'
+  cabal run spec -- --match "deploys the terminal CA public key to the durable guest path"'
 ```
 
 Expected: FAIL because the durable file is absent.

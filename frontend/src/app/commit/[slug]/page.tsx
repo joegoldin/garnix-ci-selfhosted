@@ -3,6 +3,7 @@
 import React from "react";
 import { P, match } from "ts-pattern";
 import { CommitBuildsSummary } from "@/components/build";
+import { WaitingOn } from "@/components/waitingOn";
 import { StatusIcon } from "@/components/statusIcon";
 import { ArtifactIcon } from "@/components/icons/artifact";
 import { Text } from "@/components/text";
@@ -77,9 +78,13 @@ const Page = ({ params }: { params: { slug: string } }) => {
   // actions, deployments, etc. - aren't linked to the `artifacts` table).
   // Tolerates a 404 (no artifact store configured) by showing no icons.
   const repoOwner =
-    !commit.loading && commit.data.ok ? commit.data.data.summary.repoUser : null;
+    !commit.loading && commit.data.ok
+      ? commit.data.data.summary.repoUser
+      : null;
   const repoName =
-    !commit.loading && commit.data.ok ? commit.data.data.summary.repoName : null;
+    !commit.loading && commit.data.ok
+      ? commit.data.data.summary.repoName
+      : null;
   const loadArtifactCounts = React.useCallback(
     () =>
       repoOwner && repoName
@@ -95,7 +100,9 @@ const Page = ({ params }: { params: { slug: string } }) => {
     [repoOwner, repoName, params.slug],
   );
   const artifactCounts = useLoading(loadArtifactCounts);
-  const artifactCountByBuildId = artifactCounts.loading ? {} : artifactCounts.data;
+  const artifactCountByBuildId = artifactCounts.loading
+    ? {}
+    : artifactCounts.data;
 
   if (commit.loading) return null;
   const reloadCommit = commit.reload;
@@ -114,14 +121,12 @@ const Page = ({ params }: { params: { slug: string } }) => {
           // Disable a bucket when no row matches it (All is always enabled).
           const filterOptions = (
             ["All", "Active", "Complete", "Failed"] as const
-          ).map(
-            (f): readonly [StatusFilter, string, boolean] => [
-              f,
-              f,
-              f !== "All" &&
-                !rows.some(({ status }) => matchesStatusFilter(f, status)),
-            ],
-          );
+          ).map((f): readonly [StatusFilter, string, boolean] => [
+            f,
+            f,
+            f !== "All" &&
+              !rows.some(({ status }) => matchesStatusFilter(f, status)),
+          ]);
           const visibleRows = rows.filter(({ status }) =>
             matchesStatusFilter(statusFilter, status),
           );
@@ -171,6 +176,11 @@ const Page = ({ params }: { params: { slug: string } }) => {
                 </div>
               </div>
               <CommitBuildsSummary commit={commit.summary} />
+              {commit.waitingOn.length > 0 && (
+                <div className={styles.waitingOn}>
+                  <WaitingOn nodes={commit.waitingOn} />
+                </div>
+              )}
               <div className={styles.modules}>
                 {visibleRows.map(({ build, status }) => {
                   // Only `Build` rows (packages) can have artifacts.

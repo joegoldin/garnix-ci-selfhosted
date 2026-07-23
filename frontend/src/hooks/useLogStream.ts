@@ -5,7 +5,12 @@ import { fromSecs, double } from "@/utils/duration";
 
 export type LogStream = {
   loading: boolean;
-  logs: Array<[string, Array<string>]>;
+  logs: Array<[string, Array<LogEntry>]>;
+};
+
+export type LogEntry = {
+  timestamp?: string;
+  message: string;
 };
 
 export const useLogStream = (
@@ -14,9 +19,9 @@ export const useLogStream = (
 ): LogStream => {
   const isMounted = React.useRef(true);
   const [loading, setLoading] = React.useState(true);
-  const [logLines, setLogLines] = React.useState<Record<string, Array<string>>>(
-    {},
-  );
+  const [logLines, setLogLines] = React.useState<
+    Record<string, Array<LogEntry>>
+  >({});
   React.useEffect(() => {
     void (async () => {
       let backoffInterval = fromSecs(1);
@@ -30,7 +35,7 @@ export const useLogStream = (
           after = logs[logs.length - 1]?.timestamp ?? after;
           setLogLines((l) => {
             return logs.reduce(
-              (acc: Record<string, Array<string>>, logLine) => {
+              (acc: Record<string, Array<LogEntry>>, logLine) => {
                 const phaseAndPackageName = [
                   logLine.package,
                   logLine.phase ? `(${logLine.phase})` : null,
@@ -41,7 +46,10 @@ export const useLogStream = (
                   ...acc,
                   [phaseAndPackageName]: [
                     ...(acc[phaseAndPackageName] || []),
-                    logLine.log_message,
+                    {
+                      timestamp: logLine.timestamp,
+                      message: logLine.log_message,
+                    },
                   ],
                 };
               },

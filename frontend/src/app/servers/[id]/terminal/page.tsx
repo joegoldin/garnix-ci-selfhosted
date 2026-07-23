@@ -45,9 +45,12 @@ const USER_PATTERN = /^[a-z_][a-z0-9_-]{0,31}$/;
 
 const DEFAULT_USER = "garnix";
 
+const RETRY_DELAYS_MS = [500, 1_000, 2_000] as const;
+
 const Page = ({ params }: { params: Record<string, string> }) => {
   const id = params.id!;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const automaticRetryCount = useRef(0);
   const [connection, setConnection] = useState<ConnectionState>({
     state: "connecting",
   });
@@ -60,7 +63,7 @@ const Page = ({ params }: { params: Record<string, string> }) => {
   const serversResult = useLoading(getRunningServers);
   const server =
     !serversResult.loading && serversResult.data.ok
-      ? serversResult.data.data.find((s) => s.id === id) ?? null
+      ? (serversResult.data.data.find((s) => s.id === id) ?? null)
       : null;
 
   // Curated login-user suggestions from what garnix knows about this guest:
@@ -85,6 +88,9 @@ const Page = ({ params }: { params: Record<string, string> }) => {
     let term: XTerm | null = null;
     let socket: WebSocket | null = null;
     let onWindowResize: (() => void) | null = null;
+    let retryTimer: number | null = null;
+    let opened = false;
+    let preOpenFailureHandled = false;
 
     const run = async () => {
       // xterm.js touches browser globals at import time, so load it only on
@@ -110,22 +116,44 @@ const Page = ({ params }: { params: Record<string, string> }) => {
       // this server belongs to the logged-in user, re-validates the login
       // user, and only then attaches a PTY running `ssh <user>@<guest>`.
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const query = user === DEFAULT_USER ? "" : `?user=${encodeURIComponent(user)}`;
+      const query =
+        user === DEFAULT_USER ? "" : `?user=${encodeURIComponent(user)}`;
       socket = new WebSocket(
         `${protocol}//${window.location.host}/api/terminal/${id}${query}`,
       );
       socket.binaryType = "arraybuffer";
 
+      const handlePreOpenFailure = () => {
+        if (disposed || opened || preOpenFailureHandled) return;
+        preOpenFailureHandled = true;
+        const delay = RETRY_DELAYS_MS[automaticRetryCount.current];
+        if (delay == null) {
+          setConnection({ state: "error" });
+          return;
+        }
+        automaticRetryCount.current += 1;
+        setConnection({ state: "connecting" });
+        retryTimer = window.setTimeout(() => {
+          if (!disposed) setAttempt((n) => n + 1);
+        }, delay);
+      };
+
       const sendResize = () => {
         if (term && socket && socket.readyState === WebSocket.OPEN) {
           socket.send(
-            JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
+            JSON.stringify({
+              type: "resize",
+              cols: term.cols,
+              rows: term.rows,
+            }),
           );
         }
       };
 
       socket.onopen = () => {
         if (disposed) return;
+        opened = true;
+        automaticRetryCount.current = 0;
         setConnection({ state: "connected" });
         fitAddon.fit();
         sendResize();
@@ -138,12 +166,20 @@ const Page = ({ params }: { params: Record<string, string> }) => {
       };
       socket.onclose = (event: CloseEvent) => {
         if (disposed) return;
+        if (!opened) {
+          handlePreOpenFailure();
+          return;
+        }
         setConnection({ state: "closed", reason: event.reason || null });
         term?.write("\r\n\x1b[2m[connection closed]\x1b[0m\r\n");
       };
       socket.onerror = () => {
         if (disposed) return;
-        setConnection({ state: "error" });
+        if (opened) {
+          setConnection({ state: "error" });
+        } else {
+          handlePreOpenFailure();
+        }
       };
 
       // Keystrokes go to the PTY as binary frames; JSON control messages
@@ -163,6 +199,7 @@ const Page = ({ params }: { params: Record<string, string> }) => {
 
     return () => {
       disposed = true;
+      if (retryTimer != null) window.clearTimeout(retryTimer);
       if (onWindowResize) window.removeEventListener("resize", onWindowResize);
       socket?.close();
       term?.dispose();
@@ -170,22 +207,21 @@ const Page = ({ params }: { params: Record<string, string> }) => {
   }, [id, attempt, user]);
 
   const reconnect = useCallback(() => {
+    automaticRetryCount.current = 0;
     setConnection({ state: "connecting" });
     setAttempt((n) => n + 1);
   }, []);
 
-  const connectAs = useCallback(
-    (nextUser: string) => {
-      if (!USER_PATTERN.test(nextUser)) return;
-      setUserDraft(nextUser);
-      setConnection({ state: "connecting" });
-      // Changing the user re-runs the effect on its own; bump attempt too so
-      // reconnecting with the same user still forces a fresh socket.
-      setUser(nextUser);
-      setAttempt((n) => n + 1);
-    },
-    [],
-  );
+  const connectAs = useCallback((nextUser: string) => {
+    if (!USER_PATTERN.test(nextUser)) return;
+    automaticRetryCount.current = 0;
+    setUserDraft(nextUser);
+    setConnection({ state: "connecting" });
+    // Changing the user re-runs the effect on its own; bump attempt too so
+    // reconnecting with the same user still forces a fresh socket.
+    setUser(nextUser);
+    setAttempt((n) => n + 1);
+  }, []);
 
   return (
     <div className={styles.container}>
@@ -255,10 +291,10 @@ const Page = ({ params }: { params: Record<string, string> }) => {
         <div ref={containerRef} className={styles.terminal} />
       </div>
       <Text type="p" className={styles.help}>
-        A shell on your deployed server as the{" "}
-        <code>{user}</code> user (default <code>{DEFAULT_USER}</code>). Login is
-        still enforced by the server&apos;s own SSH keys. Sessions close after 10
-        minutes of inactivity (60 minutes maximum).
+        A shell on your deployed server as the <code>{user}</code> user (default{" "}
+        <code>{DEFAULT_USER}</code>). Login is still enforced by the
+        server&apos;s own SSH keys. Sessions close after 10 minutes of
+        inactivity (60 minutes maximum).
       </Text>
     </div>
   );

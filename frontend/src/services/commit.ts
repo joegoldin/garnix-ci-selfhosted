@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Build, buildSchema } from "./build";
 import { Run, runSchema } from "./run";
+import { WaitNode, waitNodeSchema } from "./waiting";
 import { APIResult, Ok, fetchFromAPI } from ".";
 
 const commitSummarySchema = z
@@ -62,15 +63,22 @@ export const getCommit = async (
     builds: Array<Build>;
     runs: Array<Run>;
     running_build_ids: Array<string>;
+    waitingOn: Array<WaitNode>;
   }>
 > => {
   return await fetchFromAPI(
-    z.object({
-      summary: commitSummarySchema,
-      builds: z.array(buildSchema),
-      runs: z.array(runSchema),
-      running_build_ids: z.array(z.string()),
-    }),
+    z
+      .object({
+        summary: commitSummarySchema,
+        builds: z.array(buildSchema),
+        runs: z.array(runSchema),
+        running_build_ids: z.array(z.string()),
+        waiting_on: z.array(waitNodeSchema).optional().default([]),
+      })
+      .transform((response) => ({
+        ...response,
+        waitingOn: response.waiting_on,
+      })),
     "GET",
     `commits/${commit}`,
   );

@@ -1,9 +1,8 @@
-{
-  pkgs,
-  lib,
-  system,
-  flakeInputs,
-  ...
+{ pkgs
+, lib
+, system
+, flakeInputs
+, ...
 }:
 let
   secretSetup = ''
@@ -232,7 +231,10 @@ rec {
         tempDir=$(mktemp -d /tmp/garnix-specs.XXXXXXXX)
         cd "$tempDir"
         export HOME="$tempDir/home"
-        mkdir "$HOME"
+        export XDG_CONFIG_HOME="$HOME/.config"
+        export XDG_CACHE_HOME="$HOME/.cache"
+        export XDG_STATE_HOME="$HOME/.local/state"
+        mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
         DB_DIR="$tempDir/pg-tmp"
         ${dbSetup}
         db new
@@ -248,14 +250,15 @@ rec {
         # secrets/dev.yaml is encrypted only to the committed dev key in a
         # public repo, so any token placed there would be effectively public
         # (and an expired one 401s every github fetch — worse than none). The
-        # tradeoff is GitHub's unauthenticated rate limit; acceptable for CI.
+        # Public fixture inputs are lock-pinned so this does not depend on
+        # GitHub's anonymous API quota.
 
         cp -r ${./..} src
         chmod a+rwX -R src
         chmod go-rwx src/backend/ssh-key-for-tests
         cd src/backend
         cabal configure --ghc-options="-O0"
-        cabal run spec -- --skip @skip-ci --fail-on=focused
+        cabal run spec -- --fail-on=focused
       '';
     };
   };

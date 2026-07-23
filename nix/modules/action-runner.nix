@@ -108,8 +108,11 @@ let
            --dev-bind-try /dev/core /dev/core \
            --dev-bind-try /dev/full /dev/full \
            --dev-bind-try /dev/null /dev/null \
-           --dev-bind-try /dev/ptmx /dev/ptmx \
+           `# ptmx must resolve through the bound devpts instance. Binding the` \
+           `# host's /dev/ptmx device directly makes allocation fail with` \
+           `# ENOENT inside the user namespace.` \
            --dev-bind-try /dev/pts /dev/pts \
+           --symlink pts/ptmx /dev/ptmx \
            --dev-bind-try /dev/random /dev/random \
            --dev-bind-try /dev/shm /dev/shm \
            --dev-bind-try /dev/tty /dev/tty \

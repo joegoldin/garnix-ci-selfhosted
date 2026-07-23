@@ -132,7 +132,7 @@ spec = do
                         let
                           pkgs = import nixpkgs { system = "x86_64-linux"; };
                         in
-                          pkgs.stdenv.bootstrapTools;
+                          pkgs.hello;
                     };
                   }
                 |]
@@ -145,7 +145,6 @@ spec = do
                     "--no-link",
                     "--print-out-paths" :: Text
                   ]
-                & silenceStderr
                 & nixConfDefaults
             pure $ fromRight $ Nix.parseStorePath storePath
           drvPath <- do

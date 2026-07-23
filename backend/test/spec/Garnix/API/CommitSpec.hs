@@ -61,6 +61,7 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
             },
             "runs": [],
             "running_build_ids": [],
+            "waiting_on": [],
             "builds": [{
               "id": #{bar ^. id},
               "package_type": "package",
@@ -101,6 +102,27 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
           }
         |]
 
+    it "returns the active commit wait tree" $ do
+      user <- testUser "test-user" "foo@example.com"
+      waitingBuild <-
+        testBuild
+          $ (gitCommit .~ "aaaaaa")
+          . (packageType .~ TypeNixosConfiguration)
+          . (package .~ "elphael")
+          . (status .~ Nothing)
+      DB.markBuildRunning (waitingBuild ^. id)
+      void $ testCommit $ hash .~ "aaaaaa"
+
+      result <- toJSON <$> getSingleCommit (Just user) "aaaaaa"
+      let [waitingOn] = result ^.. key "waiting_on" . _Array . traverse
+      waitingOn ^. key "kind" . _String `shouldBeM` "build"
+      waitingOn ^. key "label" . _String `shouldBeM` "nixosConfiguration elphael"
+      waitingOn ^. key "detail" . _String `shouldBeM` "Running"
+      waitingOn
+        ^. key "href"
+          . _String
+          `shouldBeM` ("/build/" <> getHashId (getBuildId $ waitingBuild ^. id))
+
     context "access rights" $ around_ (addNixExperimentalFeatures ["nix-command", "flakes"]) $ do
       it "allows users to see the commit if the repo is public" $ do
         user <- testUser "some-user" "foo@example.com"
@@ -139,6 +161,7 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
               },
               "runs": [],
               "running_build_ids": [],
+              "waiting_on": [],
               "builds": [{
                 "id": #{build ^. id},
                 "package_type": "package",
@@ -196,6 +219,7 @@ spec = inM $ aroundM_ suppressLogsWhenPassing $ beforeM_ truncateDBM $ describe 
                 },
                 "runs": [],
                 "running_build_ids": [],
+                "waiting_on": [],
                 "builds": [{
                   "id": #{foo ^. id},
                   "package_type": "package",

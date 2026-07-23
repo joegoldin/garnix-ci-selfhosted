@@ -1,6 +1,6 @@
 module Garnix.API.Commits where
 
-import Garnix.API.Runs (RunSummary, toRunSummary)
+import Garnix.API.Runs (RunSummary, buildWaitNode, toRunSummary)
 import Garnix.Access (canCancelBuild, getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
 import Garnix.DB qualified as DB
 import Garnix.Monad
@@ -56,7 +56,8 @@ data GetCommit = GetCommit
   { _getCommitSummary :: CommitSummary,
     _getCommitBuilds :: [Build],
     _getCommitRuns :: [RunSummary],
-    _getCommitRunningBuildIds :: [BuildId]
+    _getCommitRunningBuildIds :: [BuildId],
+    _getCommitWaitingOn :: [WaitNode]
   }
   deriving (Eq, Show, Generic)
 
@@ -134,18 +135,25 @@ getSingleCommit user' commit = do
   when (not hasAccess) $ throw (NoSuchCommit commit)
   result <- DB.getBuildsAndRunsByCommit (summary ^. repoOwner) (summary ^. repoName) commit
   runningIds <- DB.getRunningBuildIdsForCommit (summary ^. repoOwner) (summary ^. repoName) commit
-  pure $ case result of
-    CommitEvaluating -> GetCommit summary [] [] runningIds
-    CommitEvaluated _ builds runs ->
-      GetCommit
-        -- The summary aggregates the builds table only; fold the runs
-        -- (actions, FOD checks, module publish, deployments) into the counts
-        -- so an in-flight action shows up in the header and enables
-        -- Cancel-all / Restart-failed.
-        (addRunCounts runs summary)
-        (filter (\b -> b ^. packageType /= TypeOverall) builds)
-        (map toRunSummary runs)
-        runningIds
+  case result of
+    CommitEvaluating -> do
+      builds <- DB.getBuildsByCommit (summary ^. repoOwner) (summary ^. repoName) commit
+      runs <- DB.getRuns (summary ^. repoOwner) (summary ^. repoName) commit
+      waitingOn <- commitWaitNodes builds runs
+      pure $ GetCommit summary [] [] runningIds waitingOn
+    CommitEvaluated _ builds runs -> do
+      waitingOn <- commitWaitNodes builds runs
+      pure
+        $ GetCommit
+          -- The summary aggregates the builds table only; fold the runs
+          -- (actions, FOD checks, module publish, deployments) into the counts
+          -- so an in-flight action shows up in the header and enables
+          -- Cancel-all / Restart-failed.
+          (addRunCounts runs summary)
+          (filter (\b -> b ^. packageType /= TypeOverall) builds)
+          (map toRunSummary runs)
+          runningIds
+          waitingOn
   where
     addRunCounts :: [Run] -> CommitSummary -> CommitSummary
     addRunCounts runs summary =
@@ -163,6 +171,28 @@ getSingleCommit user' commit = do
             %~ (+ count (\r -> isNothing (_runStatus r) && isJust (_runRunStartedAt r)))
             & pending
             %~ (+ count (\r -> isNothing (_runStatus r) && isNothing (_runRunStartedAt r)))
+
+commitWaitNodes :: [Build] -> [Run] -> M [WaitNode]
+commitWaitNodes builds runs = do
+  tracker <- view #buildWaitTracker
+  buildNodes <- traverse (buildWaitNode tracker) $ filter (isNothing . (^. status)) builds
+  let runNodes = map (runWaitNode buildNodes) $ filter (isNothing . (^. status)) runs
+  pure $ buildNodes <> runNodes
+
+runWaitNode :: [WaitNode] -> Run -> WaitNode
+runWaitNode children run =
+  WaitNode
+    { _waitNodeId = "run:" <> runId,
+      _waitNodeKind = "run",
+      _waitNodeLabel = run ^. name,
+      _waitNodeDetail = Just $ if isJust (run ^. runStartedAt) then "Running" else "Pending",
+      _waitNodeHref = Just $ "/run/" <> runId,
+      _waitNodeStartedAt = run ^. runStartedAt <|> Just (run ^. startTime),
+      _waitNodeLastActivityAt = run ^. runStartedAt,
+      _waitNodeChildren = children
+    }
+  where
+    runId = run ^. id . to getRunId . re hashIdText
 
 -- | Cancel every still-pending build for a commit, including the "overall"
 -- eval/starting build the web UI never lists. Lets the user cancel a commit

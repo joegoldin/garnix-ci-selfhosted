@@ -67,8 +67,8 @@ addTestSecrets test =
         ("GARNIX_SERVER_SSH_KEYS", sshKey),
         ("GARNIX_TERMINAL_CA_KEY", sshKey),
         ("JWT_KEY", jwtKey),
-        -- withEnv requires this even though tests override #provisioner with the
-        -- in-memory testProvisioner; the socket itself is never dialed.
+        -- withEnv requires this even though withMockRepo replaces the local
+        -- provisioner and clears its socket before running the test.
         ("GARNIX_PROVISIONER_SOCKET", tempDir </> "provisioner.sock"),
         ("OPENSEARCH_API", "foo"),
         ("REPO_SECRETS_KEY_PATH", repoSecretsPath),
@@ -106,6 +106,8 @@ withMockRepo flake yaml branch action = do
               env'
                 & #provisioner
                 .~ testProvisioner
+                & #provisionerSocket
+                .~ Nothing
                 & #githubInterface
                 .~ ghInterface
                 & #s3CacheEnv

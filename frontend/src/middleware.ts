@@ -2,9 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 export function middleware(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+  const websocketScheme =
+    request.nextUrl.protocol === "https:" ? "wss:" : "ws:";
+  const sameOriginWebsocket = `${websocketScheme}//${request.nextUrl.host}`;
   const contentSecurityPolicy = [
     `default-src 'none'`,
-    `connect-src 'self' https://maps.googleapis.com https://plausible.io  https://api.github.com`,
+    `connect-src 'self' ${sameOriginWebsocket} https://maps.googleapis.com https://plausible.io https://api.github.com`,
     `script-src ${[
       "'self'",
       `'nonce-${nonce}'`,

@@ -6,7 +6,7 @@
 > [`garnix-io/garnix-ci`](https://github.com/garnix-io/garnix-ci), which they
 > generously open-sourced. All credit for garnix itself goes to its authors
 > (see [Acknowledgments](#acknowledgments)). This fork is **not affiliated
-> with or endorsed by garnix.io**; it adds a single-tenant *self-host mode* and
+> with or endorsed by garnix.io**; it adds a single-tenant _self-host mode_ and
 > the operational glue to run garnix on your own hardware. If you want managed
 > garnix with support, use [garnix.io](https://garnix.io). This fork comes with
 > no warranty — you run your own CI, cache, and secrets at your own risk.
@@ -19,13 +19,13 @@ as servers.
 This README documents **how to self-host this fork end-to-end** on a single
 NixOS machine. Everything below uses example values — substitute your own:
 
-| Placeholder | Meaning |
-|---|---|
-| `garnix.example.com` | the web UI / API domain |
-| `garnix-cache.example.com` | the binary-cache domain |
-| `auth.example.com` | your Authentik (or other OIDC IdP) domain |
-| `youruser` | your GitHub username/org |
-| `bigbox` | the NixOS host running garnix |
+| Placeholder                | Meaning                                   |
+| -------------------------- | ----------------------------------------- |
+| `garnix.example.com`       | the web UI / API domain                   |
+| `garnix-cache.example.com` | the binary-cache domain                   |
+| `auth.example.com`         | your Authentik (or other OIDC IdP) domain |
+| `youruser`                 | your GitHub username/org                  |
+| `bigbox`                   | the NixOS host running garnix             |
 
 ## What this fork adds vs upstream
 
@@ -63,14 +63,14 @@ NixOS machine. Everything below uses example values — substitute your own:
 - **`GARNIX_MODULES_ORG`** — publish [garnix modules](https://garnix.io/docs/modules)
   from your own org's repos instead of `garnix-io`'s.
 - **`buildNetRcFile`** — a netrc that is bound into the build sandbox so
-  sandboxed evals/builds can substitute from *authenticated* caches (e.g. a
+  sandboxed evals/builds can substitute from _authenticated_ caches (e.g. a
   private [attic](https://github.com/zhaofengli/attic)).
 - **External-fork approval inbox** (`/garnix-admin`) — ordinary repositories
   need no setup and never appear there. If an external fork first attempts to
   use private inputs, its base repo appears with Allow/Revoke controls.
 - **Configure page** (`/configure`, sidebar → "Configure") — a self-host web UI
   to set a **default max build time** and **per-repo overrides** (each caps the
-  eval and build phases *and* the pre-build nix commands — garnix-config eval,
+  eval and build phases _and_ the pre-build nix commands — garnix-config eval,
   attribute discovery, flake metadata — so a wedged nix-daemon fails the push
   with a visible timeout instead of leaving it "Build starting" forever), plus
   quick links to each forge's webhook admin.
@@ -115,9 +115,9 @@ NixOS machine. Everything below uses example values — substitute your own:
   DNS record for anything else. See
   [Custom & vanity domains](#custom--vanity-domains).
 - **Self-host action runner** — `garnix.yaml` `actions` run in a local
-  bubblewrap sandbox instead of upstream's runner fleet (`garnix.actionRunner`
-  + `services.garnixServer.actionHost`). Required setup if you use actions —
-  see [Actions](#actions-running-actions-on-a-self-host-runner).
+  bubblewrap sandbox instead of upstream's runner fleet (configured through
+  `garnix.actionRunner` and `services.garnixServer.actionHost`). Required setup
+  if you use actions — see [Actions](#actions-running-actions-on-a-self-host-runner).
 - **Transactional local hosting** — the provisioner applies public exposure as
   an atomic compensating transaction, tears VMs down in dependency order, and
   keeps deploy-delivered guest keys in RAM-only tmpfs. See
@@ -139,14 +139,14 @@ NixOS machine. Everything below uses example values — substitute your own:
 
 One NixOS host runs everything; only the reverse proxy listens publicly.
 
-| Component | Port | Notes |
-|---|---|---|
-| backend (Haskell/Servant) | 8321 | `garnixServer.service`; loopback only |
-| frontend (Next.js standalone) | 3000 | does **not** serve `/_next/static` — the proxy must |
-| PostgreSQL | 9178 | TLS `verify-full`; also used at *compile* time by `postgresql-typed` |
-| OpenSearch | 9200 | build-log search; fluent-bit ships logs into it |
-| oauth2-proxy | 4180 | OIDC against your IdP; injects `X-Auth-Request-*` |
-| Caddy (or nginx) | 443 | vhosts for UI/API, cache, webhooks |
+| Component                     | Port | Notes                                                                |
+| ----------------------------- | ---- | -------------------------------------------------------------------- |
+| backend (Haskell/Servant)     | 8321 | `garnixServer.service`; loopback only                                |
+| frontend (Next.js standalone) | 3000 | does **not** serve `/_next/static` — the proxy must                  |
+| PostgreSQL                    | 9178 | TLS `verify-full`; also used at _compile_ time by `postgresql-typed` |
+| OpenSearch                    | 9200 | build-log search; fluent-bit ships logs into it                      |
+| oauth2-proxy                  | 4180 | OIDC against your IdP; injects `X-Auth-Request-*`                    |
+| Caddy (or nginx)              | 443  | vhosts for UI/API, cache, webhooks                                   |
 
 Builds run in bubblewrap sandboxes on the host (plus any remote builders you
 register). Build outputs are uploaded to two S3 buckets: a **public** one
@@ -233,20 +233,20 @@ via netrc).
 The backend reads secrets from `/run/secrets/<name>` (or env vars). Provision
 these with agenix/sops/whatever — **never** in the Nix store:
 
-| Secret | Used for |
-|---|---|
-| `github-app-id`, `github-app-pk`, `github-client-id`, `github-client-secret`, `github-webhook-secret` | the GitHub App (created in step 6) |
-| `s3-cache-access-key-id`, `s3-cache-secret-access-key` | public cache bucket |
-| `s3-cache-private-access-key-id`, `s3-cache-private-secret-access-key` | private cache bucket (fork addition) |
-| `cache-priv-key` | Nix cache signing key (`nix key generate-secret --key-name garnix-cache.example.com-1`) |
-| `database-password` | postgres |
-| `garnix-jwt-key` | session JWTs |
-| `garnix_proxy_shared_secret` | Random proxy-provenance marker. The trusted gateway injects it as `X-Garnix-Proxy-Auth` only after successful authentication; the backend compares it with `proxySharedSecretFile` before trusting identity headers. |
-| `opensearch-garnix` | opensearch auth |
-| `repo-secrets-key`, `repo-secrets-key-pub` | age keypair for repo secrets |
-| `garnix_action_runner_ssh` | SSH key the backend uses to reach the action runner (only if you run `actions` — see [Actions](#actions-running-actions-on-a-self-host-runner)). **Must be mode 0400** — OpenSSH rejects a group-readable key. |
-| `garnix_terminal_ca` | Dedicated SSH CA private key used only to sign short-lived browser-terminal certificates. Keep it off guests and out of the Nix store; both the backend and local provisioner default to this path. |
-| `s3-artifacts-public-access-key-id`, `s3-artifacts-public-secret-access-key`, `s3-artifacts-private-access-key-id`, `s3-artifacts-private-secret-access-key` | artifact buckets, one key pair each (only if you use `artifacts:` — see [Artifacts](#artifacts)) |
+| Secret                                                                                                                                                       | Used for                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github-app-id`, `github-app-pk`, `github-client-id`, `github-client-secret`, `github-webhook-secret`                                                        | the GitHub App (created in step 6)                                                                                                                                                                                   |
+| `s3-cache-access-key-id`, `s3-cache-secret-access-key`                                                                                                       | public cache bucket                                                                                                                                                                                                  |
+| `s3-cache-private-access-key-id`, `s3-cache-private-secret-access-key`                                                                                       | private cache bucket (fork addition)                                                                                                                                                                                 |
+| `cache-priv-key`                                                                                                                                             | Nix cache signing key (`nix key generate-secret --key-name garnix-cache.example.com-1`)                                                                                                                              |
+| `database-password`                                                                                                                                          | postgres                                                                                                                                                                                                             |
+| `garnix-jwt-key`                                                                                                                                             | session JWTs                                                                                                                                                                                                         |
+| `garnix_proxy_shared_secret`                                                                                                                                 | Random proxy-provenance marker. The trusted gateway injects it as `X-Garnix-Proxy-Auth` only after successful authentication; the backend compares it with `proxySharedSecretFile` before trusting identity headers. |
+| `opensearch-garnix`                                                                                                                                          | opensearch auth                                                                                                                                                                                                      |
+| `repo-secrets-key`, `repo-secrets-key-pub`                                                                                                                   | age keypair for repo secrets                                                                                                                                                                                         |
+| `garnix_action_runner_ssh`                                                                                                                                   | SSH key the backend uses to reach the action runner (only if you run `actions` — see [Actions](#actions-running-actions-on-a-self-host-runner)). **Must be mode 0400** — OpenSSH rejects a group-readable key.       |
+| `garnix_terminal_ca`                                                                                                                                         | Dedicated SSH CA private key used only to sign short-lived browser-terminal certificates. Keep it off guests and out of the Nix store; both the backend and local provisioner default to this path.                  |
+| `s3-artifacts-public-access-key-id`, `s3-artifacts-public-secret-access-key`, `s3-artifacts-private-access-key-id`, `s3-artifacts-private-secret-access-key` | artifact buckets, one key pair each (only if you use `artifacts:` — see [Artifacts](#artifacts))                                                                                                                     |
 
 With agenix, the shape is:
 
@@ -391,7 +391,7 @@ the manifest flow ("Submit to GitHub") to create the App under your account.
 Put the returned credentials into the secrets from step 3 (again: no trailing
 newlines), redeploy, and **install the App** on the repos you want built.
 
-Recommended App settings: disable *"Expire user authorization tokens"* —
+Recommended App settings: disable _"Expire user authorization tokens"_ —
 garnix has no refresh-token flow, so 8-hour user tokens make GitHub-backed
 pages (e.g. Servers) start returning 401 mid-day until re-login.
 
@@ -582,7 +582,7 @@ owner may publish Garnix modules (set it to your own user or organization).
 3. **Add an action** to a repo's `garnix.yaml` and push:
    ```yaml
    actions:
-     - run: deploy          # apps.<system>.deploy — the nix app to execute
+     - run: deploy # apps.<system>.deploy — the nix app to execute
        on: push
    ```
 
@@ -611,19 +611,19 @@ fetches authenticate — just like GitHub Actions' own `GITHUB_TOKEN`.
 actions:
   - run: my-action
     on: push
-    githubToken: descoped   # none (default) | descoped | repo | repo-write
+    githubToken: descoped # none (default) | descoped | repo | repo-write
 ```
 
 `githubToken` accepts a **string**, a **list of repo names**, or an **object**:
 
-| Value | What garnix mints | Use it for |
-| --- | --- | --- |
-| `none` | Nothing (default). No token is set. | Actions that don't touch GitHub. |
-| `descoped` | A token with **no permissions** (`permissions: {}`). It grants no repo access — it only authenticates the requester, lifting the rate limit to **5000/hr** for public data. | Fetching **public** `github:` inputs (nixpkgs, etc.). |
-| `repo` | A token **scoped to this repo** with `contents: read`, like GitHub Actions' `GITHUB_TOKEN`. | Actions that read the current repo's contents via the GitHub API. |
-| `repo-write` | This repo with `contents: write` (shorthand). | Actions that push to the current repo. |
-| `[repo-a, repo-b]` | `contents: read` **scoped to exactly those repos** (short-names). | Actions that fetch/read several repos in the same org. |
-| `{ repositories: [...], permission: read\|write }` | Full control. Both fields optional — `repositories` defaults to this repo, `permission` to `read`. | Anything the shorthands don't cover (e.g. write access to a list of repos). |
+| Value                                              | What garnix mints                                                                                                                                                           | Use it for                                                                  |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `none`                                             | Nothing (default). No token is set.                                                                                                                                         | Actions that don't touch GitHub.                                            |
+| `descoped`                                         | A token with **no permissions** (`permissions: {}`). It grants no repo access — it only authenticates the requester, lifting the rate limit to **5000/hr** for public data. | Fetching **public** `github:` inputs (nixpkgs, etc.).                       |
+| `repo`                                             | A token **scoped to this repo** with `contents: read`, like GitHub Actions' `GITHUB_TOKEN`.                                                                                 | Actions that read the current repo's contents via the GitHub API.           |
+| `repo-write`                                       | This repo with `contents: write` (shorthand).                                                                                                                               | Actions that push to the current repo.                                      |
+| `[repo-a, repo-b]`                                 | `contents: read` **scoped to exactly those repos** (short-names).                                                                                                           | Actions that fetch/read several repos in the same org.                      |
+| `{ repositories: [...], permission: read\|write }` | Full control. Both fields optional — `repositories` defaults to this repo, `permission` to `read`.                                                                          | Anything the shorthands don't cover (e.g. write access to a list of repos). |
 
 Listed repositories must all belong to the **same GitHub App installation**
 (the org/user garnix is installed on); GitHub rejects the mint otherwise.
@@ -650,8 +650,8 @@ artifacts. Declared packages are **auto-included in builds**, so an
 
 ```yaml
 artifacts:
-  - package: web-skills-zips   # packages.<arch>.web-skills-zips
-    name: claude-skills        # optional; defaults to the package name
+  - package: web-skills-zips # packages.<arch>.web-skills-zips
+    name: claude-skills # optional; defaults to the package name
 ```
 
 On every successful build of the package, garnix walks the output
@@ -662,7 +662,7 @@ output's store hash: builds whose output didn't change upload nothing and
 share objects. Artifacts go to a public or private bucket by the same
 repo-publicity rules as the cache.
 
-**In the web UI.** A **View Artifacts** button (left of *Trigger Builds* on a
+**In the web UI.** A **View Artifacts** button (left of _Trigger Builds_ on a
 repo's builds page) opens a per-repo artifacts list with sizes, file counts, and
 one-click `.zip` / manifest / browse-files downloads. Build-list rows show an
 artifact icon + count for commits that produced artifacts, and each package /
@@ -719,19 +719,19 @@ curl -L -u youruser:<access token> \
 **API reference** (all under `/api/artifacts`; branch segments URL-encode
 slashes, e.g. `feature%2Ffoo`):
 
-| Method | Path | What |
-|---|---|---|
-| GET | `/repo/<owner>/<repo>[?branch=]` | list a repo's artifacts (JSON) |
-| GET | `/build/<buildId>` | list a build's artifacts (JSON) |
-| GET | `/build/<buildId>/<name>/all.zip` | 302 → whole artifact as a zip |
-| GET | `/build/<buildId>/<name>/manifest` | 302 → `manifest.json` (paths, sizes, sha256s, exec bits) |
-| GET | `/build/<buildId>/<name>/files/<path>` | 302 → a single file |
-| GET | `/<owner>/<repo>/<branch>/<name>/latest.zip` | newest published artifact, as a zip |
-| GET | `/<owner>/<repo>/<branch>/<name>/latest/manifest` | newest artifact's manifest |
-| GET | `/<owner>/<repo>/<branch>/<name>/latest/files/<path>` | a single file from the newest artifact |
-| POST | `/build/<buildId>/lock` | lock the build's artifacts (admin) |
-| DELETE | `/build/<buildId>/lock` | unlock (admin) |
-| DELETE | `/<artifactId>` | delete an artifact row (admin; objects GC'd later) |
+| Method | Path                                                  | What                                                     |
+| ------ | ----------------------------------------------------- | -------------------------------------------------------- |
+| GET    | `/repo/<owner>/<repo>[?branch=]`                      | list a repo's artifacts (JSON)                           |
+| GET    | `/build/<buildId>`                                    | list a build's artifacts (JSON)                          |
+| GET    | `/build/<buildId>/<name>/all.zip`                     | 302 → whole artifact as a zip                            |
+| GET    | `/build/<buildId>/<name>/manifest`                    | 302 → `manifest.json` (paths, sizes, sha256s, exec bits) |
+| GET    | `/build/<buildId>/<name>/files/<path>`                | 302 → a single file                                      |
+| GET    | `/<owner>/<repo>/<branch>/<name>/latest.zip`          | newest published artifact, as a zip                      |
+| GET    | `/<owner>/<repo>/<branch>/<name>/latest/manifest`     | newest artifact's manifest                               |
+| GET    | `/<owner>/<repo>/<branch>/<name>/latest/files/<path>` | a single file from the newest artifact                   |
+| POST   | `/build/<buildId>/lock`                               | lock the build's artifacts (admin)                       |
+| DELETE | `/build/<buildId>/lock`                               | unlock (admin)                                           |
+| DELETE | `/<artifactId>`                                       | delete an artifact row (admin; objects GC'd later)       |
 
 Retention settings live under `/api/configure`: the `GET` response carries
 `artifact_retention_days`, `artifact_keep_latest`, `artifact_repo_overrides`,
@@ -752,7 +752,7 @@ artifact row references them.
 
 ## Optional: Gitea as a second forge
 
-garnix can integrate a self-hosted **Gitea** instance *alongside* GitHub — both
+garnix can integrate a self-hosted **Gitea** instance _alongside_ GitHub — both
 forges work simultaneously, and each repo is tagged with the forge it came from.
 This is additive: leave `giteaUrl` unset and nothing changes.
 
@@ -775,8 +775,8 @@ publicity/collaborators are read from Gitea's API.
    - `/run/secrets/gitea-token` — the API token
    - `/run/secrets/gitea-webhook-secret` — a random string you'll also put in the
      Gitea webhook config
-   Both must be readable by the garnix server user; **strip trailing newlines**
-   (a `\n` breaks the webhook HMAC and the bearer token).
+     Both must be readable by the garnix server user; **strip trailing newlines**
+     (a `\n` breaks the webhook HMAC and the bearer token).
 3. Set the instance URL and deploy:
    ```nix
    services.garnixServer.giteaUrl = "https://gitea.example.com";
@@ -803,7 +803,7 @@ build pipeline with a Gitea commit-status reporter. All forge-specific calls
   gated by oauth2-proxy/Authentik regardless, and the Gitea webhook's sender is
   recorded as the build's requesting user — so builds work without Gitea login.
 - **Private caches for Gitea repos**: a _public_ Gitea repo's cache is served
-  normally; a *private* Gitea repo's cache paths are currently fail-closed (not
+  normally; a _private_ Gitea repo's cache paths are currently fail-closed (not
   served), because the cache-serve permission check is GitHub-API-based. Public
   repos and the build/status loop are unaffected.
 - **Private `github:` flake inputs from a Gitea repo** aren't supported (that
@@ -936,23 +936,23 @@ servers:
   - configuration: myServer
     deployment:
       branch: main
-      machine: i2x4        # 2 vCPU, 4 GiB — omit for the i1x1 default
+      machine: i2x4 # 2 vCPU, 4 GiB — omit for the i1x1 default
 ```
 
-| tier              | vCPU | RAM (MiB) |
-|-------------------|------|-----------|
-| `i1x1` (default)  | 1    | 1024      |
-| `i1x2`            | 1    | 2048      |
-| `i2x2`            | 2    | 2048      |
-| `i2x3`            | 2    | 3072      |
-| `i2x4`            | 2    | 4096      |
-| `i4x2`            | 4    | 2048      |
-| `i4x4`            | 4    | 4096      |
-| `i4x8`            | 4    | 8192      |
-| `i8x8`            | 8    | 8192      |
-| `i8x16`           | 8    | 16384     |
-| `i16x16`          | 16   | 16384     |
-| `i16x32`          | 16   | 32768     |
+| tier             | vCPU | RAM (MiB) |
+| ---------------- | ---- | --------- |
+| `i1x1` (default) | 1    | 1024      |
+| `i1x2`           | 1    | 2048      |
+| `i2x2`           | 2    | 2048      |
+| `i2x3`           | 2    | 3072      |
+| `i2x4`           | 2    | 4096      |
+| `i4x2`           | 4    | 2048      |
+| `i4x4`           | 4    | 4096      |
+| `i4x8`           | 4    | 8192      |
+| `i8x8`           | 8    | 8192      |
+| `i8x16`          | 8    | 16384     |
+| `i16x16`         | 16   | 16384     |
+| `i16x32`         | 16   | 32768     |
 
 ### View a deployed service log
 
@@ -1023,7 +1023,7 @@ servers:
     # Extra ports. `http` -> a Traefik subdomain; `tcp` -> a raw host port.
     ports:
       - { name: api, port: 8080, type: http }
-      - { name: db,  port: 5432, type: tcp }
+      - { name: db, port: 5432, type: tcp }
 ```
 
 **Hardened by default.** Password authentication is disabled
@@ -1152,8 +1152,8 @@ servers:
   - configuration: myServer
     deployment: { branch: main }
     domains:
-      - myapp.example.dev      # vanity, under a known hosting base
-      - app.example.com      # bare custom domain
+      - myapp.example.dev # vanity, under a known hosting base
+      - app.example.com # bare custom domain
 ```
 
 Each declared name is checked against the known **hosting bases** — the
@@ -1241,7 +1241,7 @@ port and set `garnix.authentik.upstream` to it.
 
 **Fastest path — reuse garnix's own login (`mode = "default"`):** put
 `authentik: default` on the server's `garnix.yaml` entry and garnix drops its
-*own* OIDC client credentials (plus this deployment's redirect URL) onto the
+_own_ OIDC client credentials (plus this deployment's redirect URL) onto the
 guest at deploy time — no provider setup, no client id, no secret in the repo.
 Whoever can log into garnix can reach the app. Ideal for dev deployments.
 
@@ -1373,18 +1373,18 @@ everything — can mean dozens of concurrent guest builds all streaming logs at
 once. These controls keep that from swamping the box or the log pipeline:
 
 - **`services.garnixServer.maxConcurrentBuilds`** (default `16`) caps how many
-  builds *run* at once. Every build is still created and reported as a pending
+  builds _run_ at once. Every build is still created and reported as a pending
   check immediately — the cap only queues the actual eval+build, so nothing is
   dropped, work just paces itself. Queued work is scheduled **round-robin
   across repos, FIFO within a repo**: one repo's giant fan-out can't monopolize
   the slots, and within a repo the oldest job always runs first. Evals are
   separately capped at 32. Sets `GARNIX_MAX_CONCURRENT_BUILDS`. The
-  `garnix_server_*_queue_len` gauges report the number of *waiters* (0 while
+  `garnix_server_*_queue_len` gauges report the number of _waiters_ (0 while
   slots are free).
 - Build logs ship best-effort from the server to a local fluent-bit HTTP input,
   then to OpenSearch. Under a heavy wave fluent-bit's default 128-slot accept
   backlog can saturate and silently drop lines (an empty **Logs** panel on a
-  *finished* build is the tell). The input now runs `Threaded` with a 1024-deep
+  _finished_ build is the tell). The input now runs `Threaded` with a 1024-deep
   `net.backlog`, and drops are counted in `garnix_server_log_ship_failures_total`
   (plus a rate-limited journal warning) instead of vanishing.
 
@@ -1415,21 +1415,21 @@ Run a restore drill before trusting it (`restic-b2 restore latest --target /tmp/
 
 ## Gotchas learned the hard way
 
-| Symptom | Cause / fix |
-|---|---|
-| Build "failed with no output" | eval/authorization failed before building — grep the commit sha in `journalctl -u garnixServer` |
-| `Header Authorization has newlines` | trailing `\n` in an S3 secret |
-| "Github didn't give us a user token" | trailing `\n` in the GitHub client secret |
-| White page, `/_next` 404s | proxy must serve `/_next/*` from the frontend package |
-| `getInstalledOrgs … 401` | expired 8h user token — re-login; disable token expiry on the App |
-| Jobs interrupted by a `garnixServer` restart (deploy) | complete manifests resume package rows on startup: pre-checkpoint work repeats attribute evaluation, checkpointed work reattaches/cache-hits Nix, and the commit continues its artifact/module/deploy tail. If setup was interrupted before every attribute row existed, Garnix cancels that partial manifest and restarts the whole commit instead. Synthetic overall rows and non-idempotent external action/deployment run processes are marked Cancelled. If pushes sit at "Build starting" with *no* restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
-| every eval hangs; plain `nix` commands block on the host | nix-daemon deadlock — for us it was `min-free`/`max-free` **auto-GC** deadlocking on `gc.lock` against a concurrent `addToStore`. Don't run auto-GC on the garnix host; use a scheduled `nix-collect-garbage` job instead, and if it happens find the fork holding the `gc.lock` flock in `/proc/locks` and kill it |
-| **Logs** panel empty on a *finished* build | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog |
-| `cabal build` fails with `Network.Socket.connect` | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up) |
-| nix build: `can't find source for <new file>` | new files must be `git add`ed before a git-flake build sees them |
-| 401s from your private substituter inside builds | set `buildNetRcFile` (the sandbox can't read the host's root-only netrc) |
-| FOD prepare/rebuild reports “source unavailable” or `--rebuild and --check error if the derivation was not previously built` | the checker always prepares/substitutes the baseline on the same store before strict `--rebuild`; any remaining error fails closed. Never classify builder-controlled stderr as a trusted fetch exception |
-| FOD check reports a manual/EULA-gated `requireFile` source | provide the licensed source through the package's documented setup or remove that package from the checked graph. Garnix will not call a cached FOD “verified” when its source cannot legally/technically be reconstructed |
+| Symptom                                                                                                                      | Cause / fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build "failed with no output"                                                                                                | eval/authorization failed before building — grep the commit sha in `journalctl -u garnixServer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `Header Authorization has newlines`                                                                                          | trailing `\n` in an S3 secret                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| "Github didn't give us a user token"                                                                                         | trailing `\n` in the GitHub client secret                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| White page, `/_next` 404s                                                                                                    | proxy must serve `/_next/*` from the frontend package                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `getInstalledOrgs … 401`                                                                                                     | expired 8h user token — re-login; disable token expiry on the App                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Jobs interrupted by a `garnixServer` restart (deploy)                                                                        | complete manifests resume package rows on startup: pre-checkpoint work repeats attribute evaluation, checkpointed work reattaches/cache-hits Nix, and the commit continues its artifact/module/deploy tail. If setup was interrupted before every attribute row existed, Garnix cancels that partial manifest and restarts the whole commit instead. Synthetic overall rows and non-idempotent external action/deployment run processes are marked Cancelled. If pushes sit at "Build starting" with _no_ restart involved, the pre-build nix commands are wedged (they'll fail with a `NixCommandTimeout` once the configured cap fires) — check the nix-daemon |
+| every eval hangs; plain `nix` commands block on the host                                                                     | nix-daemon deadlock — for us it was `min-free`/`max-free` **auto-GC** deadlocking on `gc.lock` against a concurrent `addToStore`. Don't run auto-GC on the garnix host; use a scheduled `nix-collect-garbage` job instead, and if it happens find the fork holding the `gc.lock` flock in `/proc/locks` and kill it                                                                                                                                                                                                                                                                                                                                              |
+| **Logs** panel empty on a _finished_ build                                                                                   | log-shipping to fluent-bit dropped the lines (best-effort) — usually a mass build wave saturating its accept backlog. Check `garnix_server_log_ship_failures_total` and `journalctl -u garnixServer \| grep 'fluent-bit writer'`. Mitigated by `maxConcurrentBuilds` + the 1024 backlog                                                                                                                                                                                                                                                                                                                                                                          |
+| `cabal build` fails with `Network.Socket.connect`                                                                            | `postgresql-typed` typechecks SQL against a live pg at compile time — build via `nix build .#backend_garnixHaskellPackage` (its sandbox spins one up)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| nix build: `can't find source for <new file>`                                                                                | new files must be `git add`ed before a git-flake build sees them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 401s from your private substituter inside builds                                                                             | set `buildNetRcFile` (the sandbox can't read the host's root-only netrc)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| FOD prepare/rebuild reports “source unavailable” or `--rebuild and --check error if the derivation was not previously built` | the checker always prepares/substitutes the baseline on the same store before strict `--rebuild`; any remaining error fails closed. Never classify builder-controlled stderr as a trusted fetch exception                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| FOD check reports a manual/EULA-gated `requireFile` source                                                                   | provide the licensed source through the package's documented setup or remove that package from the checked graph. Garnix will not call a cached FOD “verified” when its source cannot legally/technically be reconstructed                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ---
 
@@ -1492,10 +1492,9 @@ Then point your browser to [localhost:3000](http://localhost:3000).
 
 ### Running the backend test suite
 
-CI runs the full suite as the `backend_specs` action on every push (~35–40 min;
-tests tagged `@skip-ci` in their name are skipped there). Locally, give each
-run a throwaway Postgres dir — reusing a shared `pg-tmp` across runs leaves
-zombie postgreses that break the next run:
+CI runs the full suite as the `backend_specs` action on every push (~35–40 min).
+Locally, give each run a throwaway Postgres dir — reusing a shared `pg-tmp`
+across runs leaves zombie postgreses that break the next run:
 
 ```bash
 nix develop --command bash -c '
@@ -1505,7 +1504,7 @@ nix develop --command bash -c '
          TPG_HOST=$DB_DIR/test TPG_SOCK=$DB_DIR/test/.s.PGSQL.9178
   db new
   cd backend
-  cabal run spec -- --match "<substring>" --skip @skip-ci
+  cabal run spec -- --match "<substring>"
   db clear; rm -rf $DB_DIR'
 ```
 

@@ -18,6 +18,14 @@ jest.mock("../../../components/statusIcon", () => ({
   ),
 }));
 
+jest.mock("../../../components/waitingOn", () => ({
+  WaitingOn: ({ nodes }: { nodes: Array<{ label: string }> }) => (
+    <section data-testid="waiting-on">
+      {nodes.map((node) => node.label).join(", ")}
+    </section>
+  ),
+}));
+
 const build = (id: string, status: string) => ({
   id,
   tag: "Build",
@@ -60,6 +68,7 @@ describe("commit row status colors", () => {
             ],
             runs: [],
             running_build_ids: ["running"],
+            waitingOn: [],
           },
         },
         reload: jest.fn(),
@@ -79,5 +88,61 @@ describe("commit row status colors", () => {
     expect(rowFor("skipped")).not.toHaveClass("moduleSuccess");
     expect(rowFor("pending")).toHaveClass("modulePending");
     expect(rowFor("failure")).toHaveClass("moduleFailed");
+  });
+});
+
+describe("commit wait state", () => {
+  it("shows the expandable wait tree above the build rows", () => {
+    mockUseLoading
+      .mockReturnValueOnce({
+        loading: false,
+        data: {
+          ok: true,
+          data: {
+            summary: {
+              repoUser: "owner",
+              repoName: "repo",
+              gitCommit: "0123456789abcdef",
+              failed: 0,
+              pending: 1,
+              running: 0,
+            },
+            builds: [build("pending", "Pending")],
+            runs: [],
+            running_build_ids: [],
+            waitingOn: [
+              {
+                id: "build:pending",
+                kind: "build",
+                label: "nixosConfiguration pending",
+                detail: "Pending",
+                href: "/build/pending",
+                startedAt: null,
+                lastActivityAt: null,
+                children: [],
+              },
+            ],
+          },
+        },
+        reload: jest.fn(),
+      })
+      .mockReturnValueOnce({
+        loading: false,
+        data: {},
+        reload: jest.fn(),
+      });
+
+    render(<Page params={{ slug: "0123456789abcdef" }} />);
+
+    const waitTree = screen.getByTestId("waiting-on");
+    const buildRow = screen
+      .getAllByText("nixosConfiguration pending")
+      .find((element) => !waitTree.contains(element));
+    expect(buildRow).toBeDefined();
+    expect(waitTree).toHaveTextContent("nixosConfiguration pending");
+    expect(
+      waitTree.compareDocumentPosition(buildRow as Element) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

@@ -1085,7 +1085,7 @@ flakeWithPersistenceAndConfig enable name (PackageName package) t =
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
-    garnix.url = "github:garnix-io/garnix-lib";
+    garnix.url = "github:garnix-io/garnix-lib/d3f3a98a0baddb3bdc6e0d028d1b58251a1d86f5";
   };
 
   outputs =
@@ -1151,7 +1151,7 @@ flakeWithPersistence enable name (PackageName package) t =
     # If you update this, update also places where it matches.
     # Search for INNER_NIXPKGS_MATCHES
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
-    garnix.url = "github:garnix-io/garnix-lib";
+    garnix.url = "github:garnix-io/garnix-lib/d3f3a98a0baddb3bdc6e0d028d1b58251a1d86f5";
   };
 
   outputs =

@@ -10,7 +10,7 @@ import crossIcon from "@/components/icons/cross.svg";
 import { BuildWithRelatedBuilds } from "@/services/build";
 import { StatusIcon } from "@/components/statusIcon";
 import { formatCommitSha } from "@/utils/format";
-import { LogStream, useLogStream } from "@/hooks/useLogStream";
+import { LogEntry, LogStream, useLogStream } from "@/hooks/useLogStream";
 import { styleLines } from "@/utils/ansi";
 import { Loading } from "@/components/loading";
 import styles from "./styles.module.css";
@@ -97,9 +97,7 @@ const LogViewer = (props: {
               onClick={() => toggleLog(logGroupName)}
             >
               <div className={styles.logHeadTitle}>
-                <Text>
-                  {displayLogGroupName || props.defaultLogGroupName}
-                </Text>
+                <Text>{displayLogGroupName || props.defaultLogGroupName}</Text>
                 {isLive ? (
                   <span className={styles.phaseLive} title="Still streaming">
                     <span className={styles.phaseLiveDot} /> live
@@ -139,15 +137,18 @@ const LogViewer = (props: {
   );
 };
 
-const AnsiLogViewer = (props: {
-  logs: Array<string>;
-  isLive: boolean;
-}) => {
-  const logs = React.useMemo(() => styleLines(props.logs), [props.logs]);
+const AnsiLogViewer = (props: { logs: Array<LogEntry>; isLive: boolean }) => {
+  const styledLogs = React.useMemo(
+    () => styleLines(props.logs.map(({ message }) => message)),
+    [props.logs],
+  );
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const endRef = React.useRef<HTMLSpanElement>(null);
   const followsEndRef = React.useRef(false);
+  const followsLineEndRef = React.useRef(false);
   const hasMeasuredRef = React.useRef(false);
+  const lastMeasuredBottomRef = React.useRef<number | null>(null);
+  const lastMeasuredScrollWidthRef = React.useRef<number | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = React.useState(false);
 
   const measureEndVisibility = React.useCallback(() => {
@@ -155,29 +156,62 @@ const AnsiLogViewer = (props: {
     if (body == null) return;
 
     const bounds = body.getBoundingClientRect();
-    const endIsVisible = bounds.bottom >= 0 && bounds.bottom <= window.innerHeight + 24;
+    const endIsVisible =
+      bounds.bottom >= 0 && bounds.bottom <= window.innerHeight + 24;
     followsEndRef.current = endIsVisible;
+    followsLineEndRef.current =
+      body.scrollWidth - body.clientWidth - body.scrollLeft <= 24;
     hasMeasuredRef.current = true;
-    setShowScrollToBottom(
-      bounds.height > window.innerHeight && !endIsVisible,
-    );
+    lastMeasuredBottomRef.current = bounds.bottom;
+    lastMeasuredScrollWidthRef.current = body.scrollWidth;
+    setShowScrollToBottom(bounds.height > window.innerHeight && !endIsVisible);
   }, []);
 
   React.useEffect(() => {
+    const body = bodyRef.current;
     window.addEventListener("scroll", measureEndVisibility, { passive: true });
     window.addEventListener("resize", measureEndVisibility);
+    body?.addEventListener("scroll", measureEndVisibility, { passive: true });
     return () => {
       window.removeEventListener("scroll", measureEndVisibility);
       window.removeEventListener("resize", measureEndVisibility);
+      body?.removeEventListener("scroll", measureEndVisibility);
     };
   }, [measureEndVisibility]);
 
   React.useLayoutEffect(() => {
-    if (props.isLive && hasMeasuredRef.current && followsEndRef.current) {
-      endRef.current?.scrollIntoView({ block: "end" });
+    const body = bodyRef.current;
+    const previousBottom = lastMeasuredBottomRef.current;
+    const previousScrollWidth = lastMeasuredScrollWidthRef.current;
+    if (
+      body != null &&
+      props.isLive &&
+      hasMeasuredRef.current &&
+      followsEndRef.current &&
+      previousBottom != null
+    ) {
+      const growth = body.getBoundingClientRect().bottom - previousBottom;
+      if (growth !== 0) {
+        window.scrollBy({ behavior: "auto", left: 0, top: growth });
+      }
+      // Keep the expected post-scroll viewport position until the browser's
+      // scroll event measures the actual one. This preserves any space the
+      // viewer deliberately left below the log instead of snapping to an edge.
+      lastMeasuredBottomRef.current = previousBottom;
+    } else {
+      measureEndVisibility();
     }
-    measureEndVisibility();
-  }, [logs.length, measureEndVisibility, props.isLive]);
+    if (
+      body != null &&
+      props.isLive &&
+      hasMeasuredRef.current &&
+      followsLineEndRef.current &&
+      previousScrollWidth != null
+    ) {
+      body.scrollLeft += body.scrollWidth - previousScrollWidth;
+      lastMeasuredScrollWidthRef.current = body.scrollWidth;
+    }
+  }, [styledLogs.length, measureEndVisibility, props.isLive]);
 
   const scrollToBottom = () => {
     followsEndRef.current = true;
@@ -203,17 +237,43 @@ const AnsiLogViewer = (props: {
         </button>
       ) : null}
       <pre className={styles.logBodyInner}>
-        {logs.map((logLine, index) => (
-          <div key={index}>
-            {logLine.map(([style, text], idx) => (
-              <span key={idx} style={style}>
-                {text}
-              </span>
-            ))}
+        {styledLogs.map((styledLogLine, index) => (
+          <div key={index} className={styles.logLine}>
+            <LogTimestamp timestamp={props.logs[index]?.timestamp} />
+            <span>
+              {styledLogLine.map(([style, text], idx) => (
+                <span key={idx} style={style}>
+                  {text}
+                </span>
+              ))}
+            </span>
           </div>
         ))}
         <span ref={endRef} data-testid="log-end" aria-hidden="true" />
       </pre>
     </div>
+  );
+};
+
+const LogTimestamp = ({ timestamp }: { timestamp?: string }) => {
+  if (timestamp == null) return <span className={styles.logTimestamp} />;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return <span className={styles.logTimestamp} />;
+  }
+  const label = date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  return (
+    <time
+      className={styles.logTimestamp}
+      dateTime={timestamp}
+      title={timestamp}
+    >
+      {label}
+    </time>
   );
 };

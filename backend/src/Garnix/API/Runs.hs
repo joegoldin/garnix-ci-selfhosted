@@ -3,6 +3,7 @@ module Garnix.API.Runs where
 import Garnix.API.Builds.Types
 import Garnix.Access (Access (..), getRunWithAccess)
 import Garnix.BuildLogs qualified as BuildLogs
+import Garnix.BuildLogs.Types (BuildWaitTracker)
 import Garnix.DB qualified as DB
 import Garnix.Monad
 import Garnix.Prelude
@@ -42,21 +43,27 @@ getRunWaitNodes :: Run -> M [WaitNode]
 getRunWaitNodes run = do
   tracker <- view #buildWaitTracker
   builds <- DB.getBuildsByCommit (run ^. repoUser) (run ^. repoName) (run ^. gitCommit)
-  forM (filter (isNothing . (^. status)) builds) $ \build -> do
-    runStartedAt <- DB.getBuildRunStartedAt (build ^. id)
-    children <- BuildLogs.buildWaitNodes tracker build runStartedAt
-    let buildId = getHashId . getBuildId $ build ^. id
-    pure
-      WaitNode
-        { _waitNodeId = "build:" <> buildId,
-          _waitNodeKind = "build",
-          _waitNodeLabel = review asPackageType (build ^. packageType) <> " " <> getPackageName (build ^. package),
-          _waitNodeDetail = Just $ if isJust runStartedAt then "Running" else "Pending",
-          _waitNodeHref = Just $ "/build/" <> buildId,
-          _waitNodeStartedAt = runStartedAt <|> Just (build ^. startTime),
-          _waitNodeLastActivityAt = runStartedAt,
-          _waitNodeChildren = children
-        }
+  traverse (buildWaitNode tracker) $ filter (isNothing . (^. status)) builds
+
+buildWaitNode :: BuildWaitTracker -> Build -> M WaitNode
+buildWaitNode tracker build = do
+  runStartedAt <- DB.getBuildRunStartedAt (build ^. id)
+  children <- BuildLogs.buildWaitNodes tracker build runStartedAt
+  let buildId = getHashId . getBuildId $ build ^. id
+      label
+        | build ^. packageType == TypeOverall = "Commit evaluation"
+        | otherwise = review asPackageType (build ^. packageType) <> " " <> getPackageName (build ^. package)
+  pure
+    WaitNode
+      { _waitNodeId = "build:" <> buildId,
+        _waitNodeKind = "build",
+        _waitNodeLabel = label,
+        _waitNodeDetail = Just $ if isJust runStartedAt then "Running" else "Pending",
+        _waitNodeHref = Just $ "/build/" <> buildId,
+        _waitNodeStartedAt = runStartedAt <|> Just (build ^. startTime),
+        _waitNodeLastActivityAt = runStartedAt,
+        _waitNodeChildren = children
+      }
 
 -- | Mirrors 'Garnix.API.Builds.updateBuild': the only supported update is
 -- cancellation. Setting the run row to Cancelled is enough — the action

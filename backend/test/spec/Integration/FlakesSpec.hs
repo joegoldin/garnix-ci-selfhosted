@@ -33,7 +33,7 @@ import Turtle qualified
 
 spec :: Spec
 spec = removePrivateSourcePathsFromNixStore $ do
-  describe "the flakes spec @slow @skip-ci" $ do
+  describe "the flakes spec @slow" $ do
     testDirs <- runIO getTests
 
     it "has at least one dir" $ do

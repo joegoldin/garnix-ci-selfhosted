@@ -8,6 +8,8 @@ jest.mock("../../hooks/useLogStream", () => ({
 }));
 
 const mockedUseLogStream = jest.mocked(useLogStream);
+const lines = (...messages: Array<string>) =>
+  messages.map((message) => ({ message }));
 
 describe("build log phase status", () => {
   beforeEach(() => {
@@ -17,7 +19,7 @@ describe("build log phase status", () => {
   it("marks the final phase of a failed build as failed", () => {
     mockedUseLogStream.mockReturnValue({
       loading: false,
-      logs: [["farum-azula", ["evaluation failed"]]],
+      logs: [["farum-azula", lines("evaluation failed")]],
     });
 
     render(
@@ -40,7 +42,7 @@ describe("build log phase status", () => {
   it("uses an encoded FOD failure as status instead of title text", () => {
     mockedUseLogStream.mockReturnValue({
       loading: false,
-      logs: [["/nix/store/example.drv (failed)", ["FOD failed"]]],
+      logs: [["/nix/store/example.drv (failed)", lines("FOD failed")]],
     });
 
     render(<RunLog runId="run-id" />);
@@ -50,10 +52,35 @@ describe("build log phase status", () => {
     expect(screen.getByText("× failed")).toHaveClass("phaseFailed");
   });
 
+  it("shows each log line's durable event timestamp", () => {
+    mockedUseLogStream.mockReturnValue({
+      loading: false,
+      logs: [
+        [
+          "evaluation",
+          [
+            {
+              timestamp: "2026-07-22T12:34:56Z",
+              message: "evaluating package",
+            },
+          ],
+        ],
+      ],
+    });
+
+    render(<RunLog runId="run-id" />);
+
+    const timestamp = screen.getByTitle("2026-07-22T12:34:56Z");
+    expect(timestamp.tagName).toBe("TIME");
+    expect(timestamp).toHaveAttribute("datetime", "2026-07-22T12:34:56Z");
+    expect(timestamp).toHaveTextContent(/^\d{2}:\d{2}:\d{2}$/);
+    expect(screen.getByText("evaluating package")).toBeInTheDocument();
+  });
+
   it("offers a sticky jump to the bottom of a long expanded log", () => {
     mockedUseLogStream.mockReturnValue({
       loading: false,
-      logs: [["long phase", ["first", "last"]]],
+      logs: [["long phase", lines("first", "last")]],
     });
 
     render(<RunLog runId="run-id" />);
@@ -90,10 +117,10 @@ describe("build log phase status", () => {
     ).toHaveClass("scrollToBottomIcon");
   });
 
-  it("follows live output only while the log end is visible", () => {
-    const initialLogs: Array<[string, Array<string>]> = [
-      ["live phase", ["first"]],
-    ];
+  it("preserves the viewport offset while following visible live output", () => {
+    const initialLogs = [["live phase", lines("first")]] satisfies Array<
+      [string, ReturnType<typeof lines>]
+    >;
     mockedUseLogStream.mockReturnValue({ loading: true, logs: initialLogs });
 
     const view = render(<RunLog runId="run-id" />);
@@ -107,6 +134,11 @@ describe("build log phase status", () => {
     jest
       .spyOn(logBody, "getBoundingClientRect")
       .mockImplementation(() => bounds as DOMRect);
+    const scrollBy = jest.fn();
+    Object.defineProperty(window, "scrollBy", {
+      configurable: true,
+      value: scrollBy,
+    });
     const scrollIntoView = jest.fn();
     Object.defineProperty(logEnd, "scrollIntoView", {
       configurable: true,
@@ -116,19 +148,64 @@ describe("build log phase status", () => {
 
     mockedUseLogStream.mockReturnValue({
       loading: true,
-      logs: [["live phase", ["first", "second"]]],
+      logs: [["live phase", lines("first", "second")]],
     });
+    bounds.bottom = 760;
     view.rerender(<RunLog runId="run-id" />);
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "end" });
+    expect(scrollBy).toHaveBeenCalledWith({
+      behavior: "auto",
+      left: 0,
+      top: 60,
+    });
+    expect(scrollIntoView).not.toHaveBeenCalled();
 
-    scrollIntoView.mockClear();
+    scrollBy.mockClear();
     bounds.bottom = 1400;
     act(() => window.dispatchEvent(new Event("scroll")));
     mockedUseLogStream.mockReturnValue({
       loading: true,
-      logs: [["live phase", ["first", "second", "third"]]],
+      logs: [["live phase", lines("first", "second", "third")]],
     });
     view.rerender(<RunLog runId="run-id" />);
-    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(scrollBy).not.toHaveBeenCalled();
+  });
+
+  it("preserves the horizontal offset while following the visible line end", () => {
+    mockedUseLogStream.mockReturnValue({
+      loading: true,
+      logs: [["live phase", lines("first")]],
+    });
+
+    const view = render(<RunLog runId="run-id" />);
+    const logBody = screen.getByTestId("log-body");
+    const dimensions = { clientWidth: 400, scrollWidth: 1_000 };
+    Object.defineProperty(logBody, "clientWidth", {
+      configurable: true,
+      get: () => dimensions.clientWidth,
+    });
+    Object.defineProperty(logBody, "scrollWidth", {
+      configurable: true,
+      get: () => dimensions.scrollWidth,
+    });
+    logBody.scrollLeft = 590;
+    act(() => logBody.dispatchEvent(new Event("scroll")));
+
+    mockedUseLogStream.mockReturnValue({
+      loading: true,
+      logs: [["live phase", lines("first", "a wider second line")]],
+    });
+    dimensions.scrollWidth = 1_120;
+    view.rerender(<RunLog runId="run-id" />);
+    expect(logBody.scrollLeft).toBe(710);
+
+    logBody.scrollLeft = 400;
+    act(() => logBody.dispatchEvent(new Event("scroll")));
+    mockedUseLogStream.mockReturnValue({
+      loading: true,
+      logs: [["live phase", lines("first", "a wider second line", "third")]],
+    });
+    dimensions.scrollWidth = 1_240;
+    view.rerender(<RunLog runId="run-id" />);
+    expect(logBody.scrollLeft).toBe(400);
   });
 });

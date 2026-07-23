@@ -359,6 +359,16 @@ spec = do
             reports
               ! (commitInfo ^. commit)
               `shouldBeM` ("action test-action" ~> (RunReportStatusSuccess, "/dev/kvm\n"))
+
+          it "allows allocating pseudo-terminals" $ GH.withFakeGithubInterface $ \ghState -> do
+            void
+              $ testHandleCommit ghState
+              $ flakeFromScript "${pkgs.util-linux}/bin/script -qec 'echo pty-ok' /dev/null"
+            report <- GH.getReports ghState >>= GH.assertSingleRunForReport "action test-action"
+            let finalReport = report ^?! _last . _2
+            finalReport ^. status `shouldBeM` RunReportStatusSuccess
+            getRawLogs (finalReport ^. logs) `shouldBeM` "pty-ok\n"
+
           it "allows running initdb (postgres)" $ GH.withFakeGithubInterface $ \ghState -> do
             void
               $ testHandleCommit ghState

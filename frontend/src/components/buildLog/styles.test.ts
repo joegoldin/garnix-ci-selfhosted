@@ -30,4 +30,13 @@ describe("live build-log phase colors", () => {
       /\.scrollToBottomIcon\s*{[^}]*transform:\s*rotate\(90deg\)/,
     );
   });
+
+  it("contains wide log lines in a local horizontal scroller", () => {
+    expect(styles).toMatch(
+      /\.logBody\s*{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/,
+    );
+    expect(styles).toMatch(
+      /\.logBodyInner\s*{[^}]*width:\s*max-content[^}]*min-width:\s*100%/,
+    );
+  });
 });

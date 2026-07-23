@@ -47,7 +47,8 @@ spec = do
               repo_user: "owner",
               repo_name: "repo",
               git_commit: #{commitInfo ^. commit},
-              branch: "branch"
+              branch: "branch",
+              waiting_on: []
             }
           |]
 

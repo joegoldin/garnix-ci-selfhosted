@@ -595,6 +595,7 @@ getResumableOrphanedBuilds =
           AND c.git_commit = b.git_commit
           AND c.status = ${Evaluating}
       )
+    ORDER BY b.id ASC
   |]
 
 -- | One representative overall row for each commit whose setup was interrupted
