@@ -235,62 +235,75 @@ ensureRepoPrivateCache repoOwner repoName =
           DO UPDATE SET private_cache = TRUE
       |]
 
--- | Record the first time an external fork was blocked from using private
--- inputs. The cache is made private immediately so an eventual approved retry
--- cannot race configuration. Repeated blocked attempts keep the original time.
-recordPrivateInputForkBlock :: GhRepoOwner -> GhRepoName -> M ()
-recordPrivateInputForkBlock repoOwner repoName =
+-- | Record the first time a *specific* external fork was blocked from using
+-- private inputs. Approval is scoped to the exact fork, so each (base repo,
+-- fork) pair gets its own request row — approving one fork never trusts any
+-- other. The base repo's cache is made private immediately so an eventual
+-- approved retry cannot race configuration. Repeated blocked attempts keep the
+-- original row (and its blocked-at time).
+recordPrivateInputForkBlock :: GhRepoOwner -> GhRepoName -> PrFromFork -> M ()
+recordPrivateInputForkBlock repoOwner repoName fork = do
+  ensureRepoPrivateCache repoOwner repoName
+  let forkFullName = getPrFromForkFullName fork
   void
     $ pgExec
       [pgSQL|
-        INSERT INTO repo_config
-          (repo_user, repo_name, private_cache, private_input_fork_blocked_at)
-          VALUES (${repoOwner}, ${repoName}, TRUE, now())
-          ON CONFLICT (repo_user, repo_name)
-          DO UPDATE SET
-            private_cache = TRUE,
-            private_input_fork_blocked_at = COALESCE(
-              repo_config.private_input_fork_blocked_at,
-              EXCLUDED.private_input_fork_blocked_at
-            )
+        INSERT INTO private_input_fork_requests
+          (repo_user, repo_name, fork_full_name)
+          VALUES (${repoOwner}, ${repoName}, ${forkFullName})
+          ON CONFLICT (repo_user, repo_name, fork_full_name)
+          DO NOTHING
       |]
 
--- | Repositories that have actually encountered the external-fork private
--- input restriction. Ordinary private-cache rows are intentionally absent.
-getPrivateInputForkApprovalRequests :: M [(GhRepoOwner, GhRepoName, Bool, UTCTime)]
-getPrivateInputForkApprovalRequests =
-  catMaybes
-    . fmap
-      ( \(repoOwner, repoName, allowed, mBlockedAt) ->
-          (repoOwner,repoName,allowed,) <$> mBlockedAt
-      )
-    <$> pgQuery
-      [pgSQL|
-        SELECT
-          repo_user,
-          repo_name,
-          skip_private_inputs_check_for_collaborators,
-          private_input_fork_blocked_at
-        FROM repo_config
-        WHERE private_input_fork_blocked_at IS NOT NULL
-        ORDER BY private_input_fork_blocked_at DESC, repo_user, repo_name
-      |]
-
--- | Allow or revoke private inputs for external fork PRs. Only a recorded
--- block is mutable through this path; arbitrary repos cannot be made to appear
--- in the approval UI by calling the endpoint directly.
-setPrivateInputForkApproval :: GhRepoOwner -> GhRepoName -> Bool -> M ()
-setPrivateInputForkApproval repoOwner repoName allowed =
-  void
-    $ pgExec
-      [pgSQL|
-        UPDATE repo_config
-        SET
-          skip_private_inputs_check_for_collaborators = ${allowed},
-          private_cache = TRUE
+-- | Whether a specific external fork has been approved for private inputs on a
+-- given base repo. Unrecorded forks are not approved.
+isPrivateInputForkApproved :: GhRepoOwner -> GhRepoName -> PrFromFork -> M Bool
+isPrivateInputForkApproved repoOwner repoName fork = do
+  let forkFullName = getPrFromForkFullName fork
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT approved_at IS NOT NULL
+        FROM private_input_fork_requests
         WHERE repo_user = ${repoOwner}
           AND repo_name = ${repoName}
-          AND private_input_fork_blocked_at IS NOT NULL
+          AND fork_full_name = ${forkFullName}
+      |]
+  pure $ case rows :: [Bool] of
+    (approved : _) -> approved
+    [] -> False
+
+-- | The (base repo, fork) pairs that have actually encountered the
+-- external-fork private-input restriction, newest block first.
+getPrivateInputForkApprovalRequests :: M [(GhRepoOwner, GhRepoName, Text, Bool, UTCTime)]
+getPrivateInputForkApprovalRequests =
+  pgQuery
+    [pgSQL|!
+      SELECT
+        repo_user,
+        repo_name,
+        fork_full_name,
+        approved_at IS NOT NULL,
+        blocked_at
+      FROM private_input_fork_requests
+      ORDER BY blocked_at DESC, repo_user, repo_name, fork_full_name
+    |]
+
+-- | Allow or revoke private inputs for a *specific* external fork PR. This only
+-- touches the per-fork request row: it never sets the repo-wide
+-- 'skip_private_inputs_check_for_collaborators' flag, so approving one fork
+-- does not implicitly trust any other fork of the same repo.
+setPrivateInputForkApproval :: GhRepoOwner -> GhRepoName -> PrFromFork -> Bool -> M ()
+setPrivateInputForkApproval repoOwner repoName fork allowed = do
+  let forkFullName = getPrFromForkFullName fork
+  void
+    $ pgExec
+      [pgSQL|
+        UPDATE private_input_fork_requests
+        SET approved_at = CASE WHEN ${allowed} THEN now() ELSE NULL END
+        WHERE repo_user = ${repoOwner}
+          AND repo_name = ${repoName}
+          AND fork_full_name = ${forkFullName}
       |]
 
 getBuild :: BuildId -> M Build

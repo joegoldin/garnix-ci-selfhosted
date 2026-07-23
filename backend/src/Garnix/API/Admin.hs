@@ -40,6 +40,7 @@ data AdminAPI route = AdminAPI
 data PrivateInputForkRequestDto = PrivateInputForkRequestDto
   { _privateInputForkRequestDtoRepoUser :: GhRepoOwner,
     _privateInputForkRequestDtoRepoName :: GhRepoName,
+    _privateInputForkRequestDtoForkFullName :: Text,
     _privateInputForkRequestDtoAllowed :: Bool,
     _privateInputForkRequestDtoBlockedAt :: UTCTime
   }
@@ -49,8 +50,9 @@ instance ToJSON PrivateInputForkRequestDto where
   toEncoding = ourToEncoding
   toJSON = ourToJSON
 
-newtype SetPrivateInputForkApprovalDto = SetPrivateInputForkApprovalDto
-  { _setPrivateInputForkApprovalDtoAllowed :: Bool
+data SetPrivateInputForkApprovalDto = SetPrivateInputForkApprovalDto
+  { _setPrivateInputForkApprovalDtoAllowed :: Bool,
+    _setPrivateInputForkApprovalDtoForkFullName :: Text
   }
   deriving stock (Eq, Show, Generic)
 
@@ -63,10 +65,11 @@ adminAPI auth =
     { _adminAPIListPrivateInputForkRequests = do
         requireAdmin auth
         fmap
-          ( \(owner, repo, allowed, blockedAt) ->
+          ( \(owner, repo, forkFullName, allowed, blockedAt) ->
               PrivateInputForkRequestDto
                 { _privateInputForkRequestDtoRepoUser = owner,
                   _privateInputForkRequestDtoRepoName = repo,
+                  _privateInputForkRequestDtoForkFullName = forkFullName,
                   _privateInputForkRequestDtoAllowed = allowed,
                   _privateInputForkRequestDtoBlockedAt = blockedAt
                 }
@@ -74,7 +77,11 @@ adminAPI auth =
           <$> DB.getPrivateInputForkApprovalRequests,
       _adminAPISetPrivateInputForkApproval = \owner repo dto -> do
         requireAdmin auth
-        DB.setPrivateInputForkApproval owner repo (_setPrivateInputForkApprovalDtoAllowed dto)
+        DB.setPrivateInputForkApproval
+          owner
+          repo
+          (PrFromFork (_setPrivateInputForkApprovalDtoForkFullName dto))
+          (_setPrivateInputForkApprovalDtoAllowed dto)
         pure NoContent
     }
 

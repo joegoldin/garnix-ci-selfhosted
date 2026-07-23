@@ -17,27 +17,27 @@ spec = do
   describe "privateInputDecision" $ do
     let owner = GhRepoOwner (GhLogin "joegoldin")
     it "automatically allows private inputs for trusted self-host pushes"
-      $ privateInputDecision True owner Nothing False
+      $ privateInputDecision True owner Nothing False False
       `shouldBe` PrivateInputsAllowed
 
     it "automatically allows a same-owner fork"
-      $ privateInputDecision True owner (Just (PrFromFork "joegoldin/repo-fork")) False
+      $ privateInputDecision True owner (Just (PrFromFork "joegoldin/repo-fork")) False False
       `shouldBe` PrivateInputsAllowed
 
     it "compares github fork owners case-insensitively"
-      $ privateInputDecision True owner (Just (PrFromFork "JoeGoldin/repo-fork")) False
+      $ privateInputDecision True owner (Just (PrFromFork "JoeGoldin/repo-fork")) False False
       `shouldBe` PrivateInputsAllowed
 
     it "requires approval after an external fork requests private inputs"
-      $ privateInputDecision True owner (Just (PrFromFork "someone-else/repo-fork")) False
+      $ privateInputDecision True owner (Just (PrFromFork "someone-else/repo-fork")) False False
       `shouldBe` PrivateInputsNeedForkApproval
 
     it "allows an approved external fork and keeps managed-mode policy separate" $ do
-      privateInputDecision True owner (Just (PrFromFork "someone-else/repo-fork")) True
+      privateInputDecision True owner (Just (PrFromFork "someone-else/repo-fork")) False True
         `shouldBe` PrivateInputsAllowed
-      privateInputDecision False owner Nothing False
+      privateInputDecision False owner Nothing False False
         `shouldBe` PrivateInputsNeedRepoApproval
-      privateInputDecision False owner Nothing True
+      privateInputDecision False owner Nothing True False
         `shouldBe` PrivateInputsAllowed
 
   describe "self-host private-input authorization" $ inM $ beforeM_ truncateDBM $ do
@@ -70,16 +70,18 @@ spec = do
           $ local (#selfHostMode .~ True)
           $ authorizeGithubPrivateInputs defaultRepoConfig forkCommit (forkCommit ^. repoInfo) [privateInput]
         requests <- DB.getPrivateInputForkApprovalRequests
-        fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) requests
-          `shouldBeM` [("owner", "repo", False)]
+        fmap (\(owner, repo, forkFullName, allowed, _blockedAt) -> (owner, repo, forkFullName, allowed)) requests
+          `shouldBeM` [("owner", "repo", "outsider/repo-fork", False)]
 
-        DB.setPrivateInputForkApproval "owner" "repo" True
+        DB.setPrivateInputForkApproval "owner" "repo" (PrFromFork "outsider/repo-fork") True
         approvedConfig <- DB.getRepoConfig "owner" "repo"
         _ <-
           local (#selfHostMode .~ True)
             $ authorizeGithubPrivateInputs approvedConfig forkCommit (forkCommit ^. repoInfo) [privateInput]
         finalConfig <- DB.getRepoConfig "owner" "repo"
         finalConfig ^. privateCache `shouldBeM` True
+        -- Per-fork approval must not set the repo-wide collaborator-skip flag.
+        finalConfig ^. skipPrivateInputsCheckForCollaborators `shouldBeM` False
 
   describe "_extractPrivateReposFromErrors" $ do
     it "extracts a repo name from from nix error messages for private repos" $ do

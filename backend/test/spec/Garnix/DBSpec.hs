@@ -22,33 +22,43 @@ import Test.QuickCheck (generate, shuffle)
 spec :: Spec
 spec = do
   describe "private-input fork approval requests" $ inM $ beforeM_ truncateDBM $ do
-    it "records only actually blocked repos and forces their cache private" $ do
+    it "records only actually blocked forks and forces the base repo cache private" $ do
       DB.getPrivateInputForkApprovalRequests `shouldReturnM` []
-      DB.recordPrivateInputForkBlock "owner" "repo"
+      DB.recordPrivateInputForkBlock "owner" "repo" (PrFromFork "someone/fork")
       requests <- DB.getPrivateInputForkApprovalRequests
-      fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) requests
-        `shouldBeM` [("owner", "repo", False)]
+      fmap (\(owner, repo, forkFullName, allowed, _blockedAt) -> (owner, repo, forkFullName, allowed)) requests
+        `shouldBeM` [("owner", "repo", "someone/fork", False)]
       config <- DB.getRepoConfig "owner" "repo"
       config ^. privateCache `shouldBeM` True
       config ^. skipPrivateInputsCheckForCollaborators `shouldBeM` False
 
-    it "allows and revokes a recorded repo without exposing unblocked private-cache rows" $ do
+    it "approves and revokes a recorded fork without setting the repo-wide flag" $ do
       DB.ensureRepoPrivateCache "automatic" "repo"
       DB.getPrivateInputForkApprovalRequests `shouldReturnM` []
 
-      DB.recordPrivateInputForkBlock "blocked" "repo"
-      DB.setPrivateInputForkApproval "blocked" "repo" True
+      DB.recordPrivateInputForkBlock "blocked" "repo" (PrFromFork "forkowner/fork")
+      DB.setPrivateInputForkApproval "blocked" "repo" (PrFromFork "forkowner/fork") True
       approved <- DB.getPrivateInputForkApprovalRequests
-      fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) approved
-        `shouldBeM` [("blocked", "repo", True)]
+      fmap (\(owner, repo, forkFullName, allowed, _blockedAt) -> (owner, repo, forkFullName, allowed)) approved
+        `shouldBeM` [("blocked", "repo", "forkowner/fork", True)]
       approvedConfig <- DB.getRepoConfig "blocked" "repo"
       approvedConfig ^. privateCache `shouldBeM` True
-      approvedConfig ^. skipPrivateInputsCheckForCollaborators `shouldBeM` True
+      -- Per-fork approval must NOT flip the repo-wide collaborator-skip flag.
+      approvedConfig ^. skipPrivateInputsCheckForCollaborators `shouldBeM` False
 
-      DB.setPrivateInputForkApproval "blocked" "repo" False
+      DB.setPrivateInputForkApproval "blocked" "repo" (PrFromFork "forkowner/fork") False
       revoked <- DB.getPrivateInputForkApprovalRequests
-      fmap (\(owner, repo, allowed, _blockedAt) -> (owner, repo, allowed)) revoked
-        `shouldBeM` [("blocked", "repo", False)]
+      fmap (\(owner, repo, forkFullName, allowed, _blockedAt) -> (owner, repo, forkFullName, allowed)) revoked
+        `shouldBeM` [("blocked", "repo", "forkowner/fork", False)]
+
+    it "approves each fork of the same repo independently" $ do
+      DB.recordPrivateInputForkBlock "owner" "repo" (PrFromFork "forkA/fork")
+      DB.recordPrivateInputForkBlock "owner" "repo" (PrFromFork "forkB/fork")
+      DB.setPrivateInputForkApproval "owner" "repo" (PrFromFork "forkA/fork") True
+
+      -- Approving fork A must not approve fork B of the same base repo.
+      DB.isPrivateInputForkApproved "owner" "repo" (PrFromFork "forkA/fork") `shouldReturnM` True
+      DB.isPrivateInputForkApproved "owner" "repo" (PrFromFork "forkB/fork") `shouldReturnM` False
 
   describe "newBuild" $ inM $ beforeM_ truncateDBM $ do
     it "allows duplicate builds" $ do

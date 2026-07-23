@@ -23,23 +23,25 @@ const RepoConfigEditor = () => {
     request: PrivateInputForkRequest,
     allowed: boolean,
   ) => {
-    const key = `${request.repoUser}/${request.repoName}`;
+    const key = `${request.repoUser}/${request.repoName}#${request.forkFullName}`;
+    const label = `${request.repoUser}/${request.repoName} (fork ${request.forkFullName})`;
     setStatus(null);
     setBusyRepo(key);
     const result = await setPrivateInputForkApproval(
       request.repoUser,
       request.repoName,
+      request.forkFullName,
       allowed,
     );
     setBusyRepo(null);
     if (!result.ok) {
-      setStatus(`Error saving ${key}: ${result.error.message}`);
+      setStatus(`Error saving ${label}: ${result.error.message}`);
       return;
     }
     setStatus(
       allowed
-        ? `External-fork private inputs are allowed for ${key}. Retry the blocked build.`
-        : `External-fork private-input approval revoked for ${key}.`,
+        ? `External-fork private inputs are allowed for ${label}. Retry the blocked build.`
+        : `External-fork private-input approval revoked for ${label}.`,
     );
     requests.reload();
   };
@@ -61,11 +63,15 @@ const RepoConfigEditor = () => {
       ) : (
         <ul className={styles.requestList}>
           {requests.data.data.map((request) => {
-            const key = `${request.repoUser}/${request.repoName}`;
+            const repo = `${request.repoUser}/${request.repoName}`;
+            const key = `${repo}#${request.forkFullName}`;
             return (
               <li key={key} className={styles.requestRow}>
                 <div className={styles.requestDetails}>
-                  <span className={styles.requestRepo}>{key}</span>
+                  <span className={styles.requestRepo}>{repo}</span>
+                  <span className={styles.requestFork}>
+                    Fork {request.forkFullName}
+                  </span>
                   <span className={styles.requestTime}>
                     Blocked {request.blockedAt.toLocaleString()}
                   </span>

@@ -40,6 +40,10 @@
   font-weight: 600;
 }
 
+.requestFork {
+  font-size: 13px;
+}
+
 .requestTime {
   color: #666;
   font-size: 12px;

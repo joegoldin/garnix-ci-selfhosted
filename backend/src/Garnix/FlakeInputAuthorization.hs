@@ -111,7 +111,10 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
           let owner = repoInfo' ^. ghRepoOwner
               repo = repoInfo' ^. ghRepoName
               configuredApproval = repoConfig ^. skipPrivateInputsCheckForCollaborators
-          case privateInputDecision selfHost owner (commitInfo ^. prFromFork) configuredApproval of
+          forkApproved <- case commitInfo ^. prFromFork of
+            Just fork -> DB.isPrivateInputForkApproved owner repo fork
+            Nothing -> pure False
+          case privateInputDecision selfHost owner (commitInfo ^. prFromFork) configuredApproval forkApproved of
             PrivateInputsAllowed -> do
               -- In self-host mode private inputs are automatic for trusted
               -- pushes/branches. Persist private-cache routing before any
@@ -119,7 +122,9 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
               when selfHost $ DB.ensureRepoPrivateCache owner repo
               pure $ githubAccessTokenNixConfig $ repoInfo' ^. ghToken
             PrivateInputsNeedForkApproval -> do
-              DB.recordPrivateInputForkBlock owner repo
+              case commitInfo ^. prFromFork of
+                Just fork -> DB.recordPrivateInputForkBlock owner repo fork
+                Nothing -> pure () -- unreachable: NeedForkApproval implies an external fork
               throw
                 $ OtherError
                 $ "This external fork requested private flake inputs. An administrator must approve external-fork private inputs for "
@@ -141,14 +146,20 @@ authorizeGithubPrivateInputs repoConfig commitInfo repoInfo' githubInputs = do
               throw
                 $ OtherError
                   "Repository has private dependencies, but PR is from fork."
-        _ ->
+        _ -> do
+          forkApproved <- case commitInfo ^. prFromFork of
+            Just fork -> DB.isPrivateInputForkApproved (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) fork
+            Nothing -> pure False
           case privateInputDecision
             selfHost
             (repoInfo' ^. ghRepoOwner)
             (commitInfo ^. prFromFork)
-            (repoConfig ^. skipPrivateInputsCheckForCollaborators) of
+            (repoConfig ^. skipPrivateInputsCheckForCollaborators)
+            forkApproved of
             PrivateInputsNeedForkApproval -> do
-              DB.recordPrivateInputForkBlock (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName)
+              case commitInfo ^. prFromFork of
+                Just fork -> DB.recordPrivateInputForkBlock (repoInfo' ^. ghRepoOwner) (repoInfo' ^. ghRepoName) fork
+                Nothing -> pure () -- unreachable: NeedForkApproval implies an external fork
               throw
                 $ OtherError
                 $ "This external fork requested private flake inputs. An administrator must approve external-fork private inputs for "
@@ -193,13 +204,14 @@ data PrivateInputDecision
   | PrivateInputsNeedRepoApproval
   deriving stock (Eq, Show)
 
-privateInputDecision :: Bool -> GhRepoOwner -> Maybe PrFromFork -> Bool -> PrivateInputDecision
-privateInputDecision selfHost baseOwner mFork configuredApproval
+privateInputDecision :: Bool -> GhRepoOwner -> Maybe PrFromFork -> Bool -> Bool -> PrivateInputDecision
+privateInputDecision selfHost baseOwner mFork configuredApproval forkApproved
   | configuredApproval = PrivateInputsAllowed
   | not selfHost = PrivateInputsNeedRepoApproval
-  | maybe False (not . forkOwnedBy baseOwner) mFork = PrivateInputsNeedForkApproval
+  | isExternalFork = if forkApproved then PrivateInputsAllowed else PrivateInputsNeedForkApproval
   | otherwise = PrivateInputsAllowed
   where
+    isExternalFork = maybe False (not . forkOwnedBy baseOwner) mFork
     forkOwnedBy :: GhRepoOwner -> PrFromFork -> Bool
     forkOwnedBy (GhRepoOwner (GhLogin owner)) (PrFromFork fullName) =
       case T.breakOn "/" fullName of

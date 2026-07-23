@@ -5,12 +5,14 @@ const privateInputForkRequestSchema = z
   .object({
     repo_user: z.string(),
     repo_name: z.string(),
+    fork_full_name: z.string(),
     allowed: z.boolean(),
     blocked_at: z.coerce.date(),
   })
   .transform((request) => ({
     repoUser: request.repo_user,
     repoName: request.repo_name,
+    forkFullName: request.fork_full_name,
     allowed: request.allowed,
     blockedAt: request.blocked_at,
   }));
@@ -34,11 +36,12 @@ export const getPrivateInputForkRequests = async (): Promise<
 export const setPrivateInputForkApproval = async (
   owner: string,
   repo: string,
+  forkFullName: string,
   allowed: boolean,
 ): Promise<APIResult<unknown>> =>
   await fetchFromAPI(
     z.unknown(),
     "PUT",
     `admin/private-input-forks/${owner}/${repo}`,
-    { body: JSON.stringify({ allowed }) },
+    { body: JSON.stringify({ allowed, fork_full_name: forkFullName }) },
   );

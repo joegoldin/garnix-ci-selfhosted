@@ -26,6 +26,7 @@ describe("external-fork private-input approvals", () => {
         {
           repoUser: "joegoldin",
           repoName: "example",
+          forkFullName: "outsider/example-fork",
           allowed: false,
           blockedAt: new Date("2026-07-21T18:00:00Z"),
         },
@@ -52,6 +53,7 @@ describe("external-fork private-input approvals", () => {
       expect(mockSetApproval).toHaveBeenCalledWith(
         "joegoldin",
         "example",
+        "outsider/example-fork",
         true,
       ),
     );
