@@ -5,6 +5,8 @@ import React from "react";
 import { Text } from "@/components/text";
 import dashIcon from "@/components/icons/dash.svg";
 import arrowRightIcon from "@/components/icons/arrow-right.svg";
+import copyIcon from "@/components/icons/copy.svg";
+import checkIcon from "@/components/icons/check.svg";
 import { Link } from "@/components/link";
 import crossIcon from "@/components/icons/cross.svg";
 import { BuildWithRelatedBuilds } from "@/services/build";
@@ -116,11 +118,16 @@ const LogViewer = (props: {
                   </span>
                 )}
               </div>
-              {openLog === logGroupName ? (
-                <Image src={dashIcon} alt="close" className={styles.icon} />
-              ) : (
-                <Image src={crossIcon} alt="open" className={styles.icon} />
-              )}
+              <div className={styles.logHeadIcons}>
+                {openLog === logGroupName && logs.length > 0 ? (
+                  <CopyLogButton logs={logs} />
+                ) : null}
+                {openLog === logGroupName ? (
+                  <Image src={dashIcon} alt="close" className={styles.icon} />
+                ) : (
+                  <Image src={crossIcon} alt="open" className={styles.icon} />
+                )}
+              </div>
             </div>
             {openLog === logGroupName && (
               <AnsiLogViewer logs={logs} isLive={isLive} />
@@ -134,6 +141,43 @@ const LogViewer = (props: {
         </div>
       )}
     </>
+  );
+};
+
+// Plain text of a group's log lines, ANSI styling stripped, matching what's
+// actually rendered on screen (see AnsiLogViewer below) rather than the raw
+// escape-coded message.
+const plainLogText = (logs: Array<LogEntry>): string =>
+  styleLines(logs.map(({ message }) => message))
+    .map((line) => line.map(([, text]) => text).join(""))
+    .join("\n");
+
+// Copies the currently-expanded group's log output. Lives in the same
+// floating icon row as the expand/collapse arrow, to its left, so when it's
+// not rendered (the group is collapsed) the arrow sits alone in that same
+// top-right spot instead of the layout shifting.
+const CopyLogButton = ({ logs }: { logs: Array<LogEntry> }) => {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <button
+      type="button"
+      className={styles.copyLog}
+      title="Copy log output"
+      aria-label="Copy log output"
+      onClick={(event) => {
+        event.stopPropagation();
+        void navigator.clipboard?.writeText(plainLogText(logs));
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      <Image
+        src={copied ? checkIcon : copyIcon}
+        alt=""
+        aria-hidden="true"
+        className={styles.icon}
+      />
+    </button>
   );
 };
 

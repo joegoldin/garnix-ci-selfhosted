@@ -26,6 +26,47 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    /* Without these, a long unbroken string (e.g. a /nix/store derivation
+       path with no spaces) refuses to shrink below its own content width -
+       the browser's flex default - and overflows past its column, running
+       under the icons on the right instead of wrapping under itself. */
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* Icon(s) pinned to the top-right of the entry. A flex row so the copy
+     button (only present once the entry is expanded) sits to the left of
+     the expand/collapse arrow; when it's absent the arrow is simply the
+     lone/last child and stays put in the same right-aligned spot rather
+     than the layout shifting. Never shrinks, so .logHeadTitle above always
+     wraps its first line clear of whichever icons are showing. */
+  .logHeadIcons {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .copyLog {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .copyLog:hover {
+    border-color: var(--color-stone-300);
+    background: var(--color-stone-100);
+  }
+
+  .copyLog:focus-visible {
+    outline: 1px solid var(--color-stone-600);
+    outline-offset: 1px;
   }
 
   /* A phase group still receiving output: a pulsing dot, kept subtle. */
