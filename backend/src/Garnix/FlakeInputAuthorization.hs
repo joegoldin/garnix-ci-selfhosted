@@ -11,6 +11,7 @@ module Garnix.FlakeInputAuthorization
     GithubFlakeInput (..),
     PrivateInputDecision (..),
     privateInputDecision,
+    isExternalForkPr,
     _parseFlakeMetaData,
     _extractPrivateReposFromErrors,
   )
@@ -208,10 +209,16 @@ privateInputDecision :: Bool -> GhRepoOwner -> Maybe PrFromFork -> Bool -> Bool 
 privateInputDecision selfHost baseOwner mFork configuredApproval forkApproved
   | configuredApproval = PrivateInputsAllowed
   | not selfHost = PrivateInputsNeedRepoApproval
-  | isExternalFork = if forkApproved then PrivateInputsAllowed else PrivateInputsNeedForkApproval
+  | isExternalForkPr baseOwner mFork = if forkApproved then PrivateInputsAllowed else PrivateInputsNeedForkApproval
   | otherwise = PrivateInputsAllowed
+
+-- | True when a PR originates from a fork owned by somebody other than the base
+-- repo owner. A same-owner fork, or a plain branch push ('Nothing'), is not
+-- external. Shared by the private-input gate and the default-OIDC hosting gate
+-- (an external fork must not receive garnix's own OIDC credentials).
+isExternalForkPr :: GhRepoOwner -> Maybe PrFromFork -> Bool
+isExternalForkPr baseOwner = maybe False (not . forkOwnedBy baseOwner)
   where
-    isExternalFork = maybe False (not . forkOwnedBy baseOwner) mFork
     forkOwnedBy :: GhRepoOwner -> PrFromFork -> Bool
     forkOwnedBy (GhRepoOwner (GhLogin owner)) (PrFromFork fullName) =
       case T.breakOn "/" fullName of

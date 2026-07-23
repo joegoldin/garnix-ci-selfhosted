@@ -112,6 +112,7 @@ describe("build runtime settings", () => {
           repoName: "dotfiles",
           buildTimeoutMinutes: 120,
           maxEvalMemoryGib: 32,
+          defaultAuthentikApproved: false,
         },
       ],
       artifactRetentionDays: 30,

@@ -1941,6 +1941,11 @@ data RepoConfig = RepoConfig
     -- lets a public repo pull in private flake inputs without leaking the
     -- resulting closures to the unauthenticated public cache.
     _repoConfigPrivateCache :: Bool,
+    -- | When True, an admin has approved this repo for @authentik: default@
+    -- hosting, which drops garnix's own OIDC client credentials onto the
+    -- deployed guest (/var/garnix/keys/default-authentik.env). Deploys that
+    -- request it fail closed unless this is set (see 'Garnix.Hosting.Deploy').
+    _repoConfigDefaultAuthentikApproved :: Bool,
     -- | Per-repo build/eval timeout override, in minutes. 'Nothing' means fall
     -- back to the global default (or, absent that, the plan's timeout). Only
     -- consulted in self-host mode via the Configure page.
@@ -1949,7 +1954,7 @@ data RepoConfig = RepoConfig
   deriving stock (Show)
 
 defaultRepoConfig :: RepoConfig
-defaultRepoConfig = RepoConfig False (fromGigabytes 16) False Nothing
+defaultRepoConfig = RepoConfig False (fromGigabytes 16) False False Nothing
 
 newtype Memory = Memory Int64
   deriving stock (Show, Eq, Generic, Ord)

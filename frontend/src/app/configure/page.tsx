@@ -29,6 +29,7 @@ import {
   setDefaultBuildTimeout,
   setRepoArtifactSettings,
   setRepoBuildTimeout,
+  setRepoDefaultAuthentik,
   setRepoEvaluationMemory,
   verifyConnectedDomain,
   verifyConfiguredDomain,
@@ -294,6 +295,17 @@ export const BuildRuntimeSettings = ({
         await deleteRepoEvaluationMemory(o.repoUser, o.repoName);
       }
     });
+  // Default-OIDC hosting is approved/revoked immediately (its own endpoint),
+  // independent of the timeout/memory "Save override" button.
+  const toggleAuthentik = (
+    repoUser: string,
+    repoName: string,
+    approved: boolean,
+  ) => run(() => setRepoDefaultAuthentik(repoUser, repoName, approved));
+  const authentikApprovedFor = (repoUser: string, repoName: string): boolean =>
+    settings.repoOverrides.find(
+      (o) => o.repoUser === repoUser && o.repoName === repoName,
+    )?.defaultAuthentikApproved ?? false;
 
   return (
     <div className={styles.timeout}>
@@ -367,6 +379,21 @@ export const BuildRuntimeSettings = ({
                 Save override
               </Button>
             </div>
+            <label className={styles.toggleField}>
+              <span>Allow default-OIDC hosting</span>
+              <ToggleSwitch
+                value={authentikApprovedFor(repo.repoUser, repo.repoName)}
+                onChange={(v) => {
+                  void toggleAuthentik(repo.repoUser, repo.repoName, v);
+                }}
+              />
+            </label>
+            <Text className={styles.help}>
+              Lets this repo&apos;s deployed servers use{" "}
+              <code className={styles.code}>authentik: default</code>, which
+              hands them garnix&apos;s own login/OIDC client credentials. Only
+              enable for repositories you fully trust.
+            </Text>
           </div>
         ) : null}
       </div>
@@ -393,6 +420,10 @@ export const BuildRuntimeSettings = ({
                   {o.maxEvalMemoryGib == null
                     ? `default (${settings.defaultMaxEvalMemoryGib} GiB)`
                     : `${o.maxEvalMemoryGib} GiB`}
+                </span>
+                <span className={styles.overrideValue}>
+                  default-OIDC:{" "}
+                  {o.defaultAuthentikApproved ? "allowed" : "off"}
                 </span>
               </span>
               <span className={styles.overrideActions}>

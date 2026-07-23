@@ -19,3 +19,4 @@ add-private-input-fork-approval-requests 2026-07-21T18:20:00Z joegoldin <joe@joe
 add-configured-domain-verifications [add-connected-domains] 2026-07-21T22:10:00Z joegoldin <joe@joegold.in> # Persist DNS verification for Nix-configured hosting bases
 add-server-log-file 2026-07-22T00:30:00Z joegoldin <joe@joegold.in> # Optional deployed-server application log stream path
 add-private-input-fork-scoping 2026-07-23T20:00:00Z joegoldin <joe@joegold.in> # Per-fork private-input approval: track each (base repo, fork) pair separately
+add-default-authentik-approval 2026-07-23T21:00:00Z joegoldin <joe@joegold.in> # Gate authentik:default hosting (shares garnix's own OIDC creds) behind per-repo admin approval

@@ -24,6 +24,10 @@ const settingsSchema = z
           .number()
           .nullish()
           .transform((v) => v ?? null),
+        default_authentik_approved: z
+          .boolean()
+          .nullish()
+          .transform((v) => v ?? false),
       }),
     ),
     // Artifact settings; tolerate a backend that predates artifacts (absent
@@ -88,6 +92,7 @@ const settingsSchema = z
       repoName: o.repo_name,
       buildTimeoutMinutes: o.build_timeout_minutes,
       maxEvalMemoryGib: o.max_eval_memory_gib,
+      defaultAuthentikApproved: o.default_authentik_approved,
     })),
     artifactRetentionDays: s.artifact_retention_days,
     artifactKeepLatest: s.artifact_keep_latest,
@@ -166,6 +171,21 @@ export const deleteRepoEvaluationMemory = async (
     z.any(),
     "DELETE",
     `configure/repo/${owner}/${repo}/evaluation-memory`,
+  );
+
+// Approve (or revoke) a repo for `authentik: default` hosting, which lets its
+// deployed servers reuse garnix's own OIDC login/client credentials. JSON key
+// is `approved` to match the backend SetDefaultAuthentikDto codec.
+export const setRepoDefaultAuthentik = async (
+  owner: string,
+  repo: string,
+  approved: boolean,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "PUT",
+    `configure/repo/${owner}/${repo}/default-authentik`,
+    { body: JSON.stringify({ approved }) },
   );
 
 export const setDefaultArtifactSettings = async (

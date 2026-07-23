@@ -37,7 +37,25 @@ spec = do
       repoConfig ^. maxEvalMemory `shouldBeM` fromGigabytes 16
       configured <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides configured
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16)]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16) False]
+
+    it "approves, surfaces, and revokes default-authentik hosting per repo" $ asAdmin $ \api -> do
+      _configureAPISetRepoDefaultAuthentik api "some-owner" "some-repo" (SetDefaultAuthentikDto True)
+        `shouldReturnM` NoContent
+      DB.isDefaultAuthentikApproved "some-owner" "some-repo" `shouldReturnM` True
+      -- An approved repo with no timeout/memory override still surfaces.
+      approvedDto <- _configureAPIGet api
+      _configureSettingsDtoRepoOverrides approvedDto
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing Nothing True]
+      _configureAPISetRepoDefaultAuthentik api "some-owner" "some-repo" (SetDefaultAuthentikDto False)
+        `shouldReturnM` NoContent
+      DB.isDefaultAuthentikApproved "some-owner" "some-repo" `shouldReturnM` False
+      revokedDto <- _configureAPIGet api
+      _configureSettingsDtoRepoOverrides revokedDto `shouldBeM` []
+
+    it "rejects non-admin callers on the default-authentik route" $ asUser FreeSubscription $ \api ->
+      _configureAPISetRepoDefaultAuthentik api "o" "r" (SetDefaultAuthentikDto True)
+        `shouldThrowM` Unauthorized
 
     it "sets, lists, and clears memory independently of the timeout" $ asAdmin $ \api -> do
       _configureAPISetRepo api "some-owner" "some-repo" (SetTimeoutDto $ Just 120)
@@ -48,13 +66,13 @@ spec = do
       configured <- _configureAPIGet api
       _configureSettingsDtoDefaultMaxEvalMemoryGib configured `shouldBeM` 16
       _configureSettingsDtoRepoOverrides configured
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32)]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32) False]
 
       _configureAPIDeleteRepoEvaluationMemory api "some-owner" "some-repo"
         `shouldReturnM` NoContent
       memoryCleared <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides memoryCleared
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing False]
       inherited <- DB.getRepoConfig "some-owner" "some-repo"
       inherited ^. maxEvalMemory `shouldBeM` fromGigabytes 16
       inherited ^. buildTimeoutMinutes `shouldBeM` Just 120
@@ -213,7 +231,8 @@ spec = do
                         repo_user: "some-owner",
                         repo_name: "some-repo",
                         build_timeout_minutes: 120,
-                        max_eval_memory_gib: 32
+                        max_eval_memory_gib: 32,
+                        default_authentik_approved: false
                       } |]
                     ]
       map toJSON (_configureSettingsDtoArtifactRepoOverrides dto)

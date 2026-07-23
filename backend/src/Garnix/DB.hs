@@ -101,11 +101,12 @@ getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
     map
-      ( \(skipInputChecks, evalMemory, privateCache, buildTimeout) ->
+      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout) ->
           RepoConfig
             skipInputChecks
             (max (defaultRepoConfig ^. maxEvalMemory) (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory))
             privateCache
+            defaultAuthentikApproved
             buildTimeout
       )
       <$> pgQuery
@@ -114,6 +115,7 @@ getRepoConfig repoOwner repoName = do
             skip_private_inputs_check_for_collaborators,
             max_eval_memory,
             private_cache,
+            default_authentik_approved,
             build_timeout_minutes
           FROM repo_config
           WHERE repo_user = ${repoOwner}
@@ -147,17 +149,50 @@ setDefaultBuildTimeout mMinutes =
           DO UPDATE SET default_build_timeout_minutes = ${mMinutes}
       |]
 
--- | Every repo with a build-timeout or evaluation-memory override.
-getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory)]
+-- | Every repo with a build-timeout or evaluation-memory override, or that has
+-- been approved for @authentik: default@ hosting (so an approved repo with no
+-- other override still surfaces on the Configure page).
+getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool)]
 getRepoRuntimeOverrides =
   pgQuery
     [pgSQL|
-      SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory
+      SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved
       FROM repo_config
       WHERE build_timeout_minutes IS NOT NULL
          OR max_eval_memory IS NOT NULL
+         OR default_authentik_approved = true
       ORDER BY repo_user, repo_name
     |]
+
+-- | Approve or revoke a repo for @authentik: default@ hosting. When approved,
+-- the repo's deployed servers receive garnix's own OIDC client credentials
+-- (see 'Garnix.Hosting.Deploy'). Admin-only, driven from the Configure page.
+setDefaultAuthentikApproved :: GhRepoOwner -> GhRepoName -> Bool -> M ()
+setDefaultAuthentikApproved repoOwner repoName approved =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config (repo_user, repo_name, default_authentik_approved)
+          VALUES (${repoOwner}, ${repoName}, ${approved})
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET default_authentik_approved = ${approved}
+      |]
+
+-- | Whether an admin has approved this repo for @authentik: default@ hosting.
+-- Unconfigured repos are not approved (fail closed).
+isDefaultAuthentikApproved :: GhRepoOwner -> GhRepoName -> M Bool
+isDefaultAuthentikApproved repoOwner repoName = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT default_authentik_approved
+        FROM repo_config
+        WHERE repo_user = ${repoOwner}
+          AND repo_name = ${repoName}
+      |]
+  pure $ case rows :: [Bool] of
+    (approved : _) -> approved
+    [] -> False
 
 -- | Set (or clear, with 'Nothing') a repo's build/eval timeout override.
 setRepoBuildTimeout :: GhRepoOwner -> GhRepoName -> Maybe Int32 -> M ()

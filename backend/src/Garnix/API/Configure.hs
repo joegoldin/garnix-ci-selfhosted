@@ -13,6 +13,7 @@ module Garnix.API.Configure
     RepoRuntimeOverrideDto (..),
     SetTimeoutDto (..),
     SetEvaluationMemoryDto (..),
+    SetDefaultAuthentikDto (..),
     ArtifactRepoOverrideDto (..),
     ArtifactUsageDto (..),
     LockedArtifactBuildDto (..),
@@ -73,6 +74,14 @@ data ConfigureAPI route = ConfigureAPI
         :> Capture "repo" GhRepoName
         :> "evaluation-memory"
         :> Delete '[JSON] NoContent,
+    _configureAPISetRepoDefaultAuthentik ::
+      route
+        :- "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> "default-authentik"
+        :> ReqBody '[JSON] SetDefaultAuthentikDto
+        :> Put '[JSON] NoContent,
     _configureAPISetArtifactDefaults ::
       route
         :- "artifacts"
@@ -139,7 +148,10 @@ data RepoRuntimeOverrideDto = RepoRuntimeOverrideDto
   { _repoRuntimeOverrideDtoRepoUser :: GhRepoOwner,
     _repoRuntimeOverrideDtoRepoName :: GhRepoName,
     _repoRuntimeOverrideDtoBuildTimeoutMinutes :: Maybe Int32,
-    _repoRuntimeOverrideDtoMaxEvalMemoryGib :: Maybe Int64
+    _repoRuntimeOverrideDtoMaxEvalMemoryGib :: Maybe Int64,
+    -- | Whether this repo is admin-approved for @authentik: default@ hosting
+    -- (sharing garnix's own OIDC client credentials with the deployed guest).
+    _repoRuntimeOverrideDtoDefaultAuthentikApproved :: Bool
   }
   deriving stock (Eq, Show, Generic)
 
@@ -173,6 +185,21 @@ instance ToJSON SetEvaluationMemoryDto where
   toJSON = ourToJSON
 
 instance FromJSON SetEvaluationMemoryDto where
+  parseJSON = ourParseJSON
+
+-- | Body of @PUT configure\/repo\/\<owner\>\/\<repo\>\/default-authentik@:
+-- whether the repo is approved for @authentik: default@ hosting (which shares
+-- garnix's own OIDC client credentials with the deployed guest).
+newtype SetDefaultAuthentikDto = SetDefaultAuthentikDto
+  { _setDefaultAuthentikDtoApproved :: Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetDefaultAuthentikDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetDefaultAuthentikDto where
   parseJSON = ourParseJSON
 
 -- | A repo's artifact retention override. 'Nothing' fields inherit the
@@ -306,12 +333,13 @@ configureAPI auth =
                 toGigabytes minimumEvalMemory,
               _configureSettingsDtoRepoOverrides =
                 map
-                  ( \(o, r, timeout, memory) ->
+                  ( \(o, r, timeout, memory, authentikApproved) ->
                       RepoRuntimeOverrideDto
                         o
                         r
                         timeout
                         (toGigabytes . max minimumEvalMemory <$> memory)
+                        authentikApproved
                   )
                   overrides,
               _configureSettingsDtoArtifactRetentionDays = artifactRetentionDays,
@@ -356,6 +384,10 @@ configureAPI auth =
       _configureAPIDeleteRepoEvaluationMemory = \owner repo -> do
         requireSelfHostConfig auth
         DB.setRepoMaxEvalMemory owner repo Nothing
+        pure NoContent,
+      _configureAPISetRepoDefaultAuthentik = \owner repo dto -> do
+        requireSelfHostConfig auth
+        DB.setDefaultAuthentikApproved owner repo (_setDefaultAuthentikDtoApproved dto)
         pure NoContent,
       _configureAPISetArtifactDefaults = \dto -> do
         requireSelfHostConfig auth

@@ -26,6 +26,7 @@ import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.Duration
 import Garnix.Entitlements (getConfiguredEvalTimeout)
+import Garnix.FlakeInputAuthorization (isExternalForkPr)
 import Garnix.Hosting.Domains qualified as Domains
 import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Hosting.ServerPool qualified as ServerPool
@@ -293,6 +294,31 @@ cleanupUnreadyServers = do
       )
   pure (sum cleaned)
 
+-- | Fail closed before dropping garnix's own OIDC credentials onto a guest.
+-- @authentik: default@ shares garnix's shared OIDC client_id/client_secret with
+-- the deployed server, so it is allowed only when (1) the deployment is not a PR
+-- from an external fork — fork-controlled code must never receive those
+-- credentials — and (2) an admin has approved the repo for default-OIDC hosting
+-- on the Configure page. Only call this when the server actually requests
+-- @authentik: default@; it is a no-op cost otherwise.
+requireDefaultAuthentikAllowed :: CommitInfo -> M ()
+requireDefaultAuthentikAllowed commitInfo = do
+  let authOwner = commitInfo ^. repoInfo . ghRepoOwner
+      authRepo = commitInfo ^. repoInfo . ghRepoName
+  when (isExternalForkPr authOwner (commitInfo ^. prFromFork))
+    $ throw
+    $ OtherError
+      "`authentik: default` is not allowed for pull requests from external forks (it would expose garnix's OIDC credentials to fork-controlled code). Use a dedicated Authentik app for fork deployments."
+  approved <- DB.isDefaultAuthentikApproved authOwner authRepo
+  unless approved
+    $ throw
+    $ OtherError
+    $ "This server requests `authentik: default`, which shares garnix's own OIDC login credentials with the deployed guest. An administrator must approve default-OIDC hosting for "
+      <> showPretty authOwner
+      <> "/"
+      <> showPretty authRepo
+      <> " on the Configure page before deploying."
+
 startServer ::
   Reporter ->
   CommitInfo ->
@@ -307,6 +333,8 @@ startServer = curry4
       domain <- view #hostingDomain
       let publicHost = publicHostFor domain commitInfo deploymentType (serverToSpinUp ^. #build)
       serverInfo <- ServerPool.createServer (commitInfo ^. repoInfo) deploymentType serverToSpinUp
+      when (serverToSpinUp ^. #useDefaultAuthentik)
+        $ requireDefaultAuthentikAllowed commitInfo
       if serverToSpinUp ^. #useDefaultAuthentik
         then copyDefaultAuthentikEnv (SshUser "root") serverInfo publicHost <?> "Copying default Authentik credentials"
         else removeRuntimeFile (SshUser "root") serverInfo "/var/garnix/keys/default-authentik.env" <?> "Removing stale default Authentik credentials"
@@ -380,6 +408,8 @@ redeployServer reporter commitInfo deploymentType serverInfo wanted = do
         copyTerminalCa sshUser serverInfo <?> "Copying terminal CA public key"
         copyTerminalPrincipals sshUser serverInfo <?> "Copying terminal principals file"
         copyStatsEnv sshUser serverInfo <?> "Copying guest stats configuration"
+        when (wanted ^. #useDefaultAuthentik)
+          $ requireDefaultAuthentikAllowed commitInfo
         if wanted ^. #useDefaultAuthentik
           then copyDefaultAuthentikEnv sshUser serverInfo publicHost <?> "Copying default Authentik credentials"
           else removeRuntimeFile sshUser serverInfo "/var/garnix/keys/default-authentik.env" <?> "Removing stale default Authentik credentials"
