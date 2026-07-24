@@ -201,6 +201,21 @@ def wait_for_ssh(ip: str, timeout: float):
     raise RuntimeError(f"guest {ip} did not open tcp/22 within {int(timeout)}s")
 
 
+def guest_console_tail(name: str, lines: int = 80) -> str:
+    """Recent journal (serial console) of a guest's microvm unit, for failure
+    diagnosis: an OOM during first-boot activation, a kernel panic, or a stuck
+    unit shows up here instead of an opaque tcp/22 timeout."""
+    try:
+        out = run(
+            ["journalctl", "-u", f"microvm@{name}.service", "--no-pager", "-n", str(lines)],
+            check=False,
+            timeout=15,
+        )
+        return out.stdout.strip()[-4000:]
+    except Exception:
+        return ""
+
+
 def _dnat_specs(host_port: int, guest_ip: str, guest_port: int):
     """(table, chain, rest-args) for the PREROUTING DNAT + FORWARD ACCEPT."""
     return [
@@ -640,8 +655,16 @@ def do_create(req: dict) -> dict:
             if start.returncode != 0:
                 raise RuntimeError(f"systemctl start microvm@{name} failed: {start.stdout.strip()[-2000:]}")
             wait_for_ssh(ip, SSH_WAIT_SECONDS)
-        except BaseException:
+        except BaseException as exc:
+            # Grab the guest's console BEFORE cleanup tears the unit down, so a
+            # boot failure surfaces in the deploy log instead of a bare tcp/22
+            # timeout. Only for real errors (not KeyboardInterrupt/SystemExit).
+            console = guest_console_tail(name) if isinstance(exc, Exception) else ""
             cleanup_vm(name)
+            if console:
+                raise RuntimeError(
+                    f"{exc}\n--- guest {name} console (tail) ---\n{console}"
+                ) from exc
             raise
     log.info("created %s (%s, %s vcpu, %s MiB) at %s", name, mac, vcpu, mem, ip)
     return {"ipv4": ip}
