@@ -1,6 +1,7 @@
 module Garnix.YamlConfigSpec (spec) where
 
 import Autodocodec (HasCodec, eitherDecodeJSONViaCodec, encodeJSONViaCodec)
+import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
 import Data.String.Interpolate
 import Data.String.Interpolate.Util
@@ -328,6 +329,12 @@ spec = do
             Right _ -> False
 
     describe "servers[].backups" $ do
+      let roundtripTest :: (Show a, Eq a, HasCodec a) => a -> IO ()
+          roundtripTest a = do
+            let encoded = encodeJSONViaCodec a
+                decoded = eitherDecodeJSONViaCodec encoded
+            decoded `shouldBe` Right a
+
       it "parses a full backups section" $ do
         let config :: ByteString
             config =
@@ -343,13 +350,19 @@ spec = do
                           paths: [ /var/lib/app ]
                           schedule: daily
                           preBackupCommand: "echo pre"
+                          preRestoreCommand: "echo pre-restore"
                           postRestoreCommand: "echo post"
                   |]
+            actual = (^. serverSection) <$> decodeConfig config
             Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
         _backupSectionPaths section `shouldBe` ["/var/lib/app"]
         _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 24
         _backupSectionPreBackupCommand section `shouldBe` Just "echo pre"
         _backupSectionPostBackupCommand section `shouldBe` Nothing
+        _backupSectionPreRestoreCommand section `shouldBe` Just "echo pre-restore"
+        _backupSectionPostRestoreCommand section `shouldBe` Just "echo post"
+        roundtripTest actual
+        Aeson.decode (Aeson.encode section) `shouldBe` Just section
 
       it "defaults schedule to daily" $ do
         let config :: ByteString
@@ -391,6 +404,26 @@ spec = do
         hoursFor "6h" `shouldBe` Right 6
         hoursFor "hourly" `shouldBe` Right 1
         hoursFor "weekly" `shouldBe` Right 168
+
+      it "round-trips an interval schedule" $ do
+        let config :: ByteString
+            config =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: fridge
+                        deployment:
+                          type: on-branch
+                          branch: main
+                        backups:
+                          paths: [ /var/lib/app ]
+                          schedule: 6h
+                  |]
+            actual = (^. serverSection) <$> decodeConfig config
+            Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
+        _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 6
+        roundtripTest actual
 
       it "rejects bad schedules" $ do
         let scheduleConfig :: String -> ByteString
