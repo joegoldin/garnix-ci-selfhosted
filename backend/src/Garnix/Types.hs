@@ -729,7 +729,7 @@ data Run = Run
   deriving stock (Eq, Show, Generic)
 
 newtype RunId = RunId {getRunId :: HashId}
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving newtype
     ( PGColumn "bigint",
       PGParameter "bigint",

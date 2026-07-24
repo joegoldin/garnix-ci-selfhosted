@@ -434,6 +434,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
   featureFlagConfig <- getFeatureFlagConfig
   fodCheckPool <- Garnix.Monad.Pool.newPool 20 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
   buildWaitTracker <- BuildLogs.newBuildWaitTracker
+  runPhaseTracker <- newRunPhaseTracker
   terminalSessions <- newMVar Map.empty
   serverLogStreams <- ServerLogStream.newServerLogStreams
   withDefaultLogger $ \defaultLogger -> do
@@ -511,6 +512,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               featureFlagConfig,
               fodCheckPool,
               buildWaitTracker,
+              runPhaseTracker,
               terminalSessions,
               serverLogStreams
             }

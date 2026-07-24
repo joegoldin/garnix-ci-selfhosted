@@ -266,6 +266,7 @@ withTestEnvironment tempDir action = do
       featureFlagConfig <- getFeatureFlagConfig
       fodCheckPool <- Garnix.Monad.Pool.newPool 40 metrics #fodCheckQueueWaitTime #fodCheckQueueLen
       buildWaitTracker <- Garnix.BuildLogs.newBuildWaitTracker
+      runPhaseTracker <- newRunPhaseTracker
       terminalSessions <- newMVar Map.empty
       serverLogStreams <- ServerLogStream.newServerLogStreams
       withDefaultLogger $ \defaultLogger -> do
@@ -329,6 +330,7 @@ withTestEnvironment tempDir action = do
                   featureFlagConfig,
                   fodCheckPool,
                   buildWaitTracker,
+                  runPhaseTracker,
                   hostingDomain = "garnix.me",
                   statsReportUrl = "https://garnix.io/api/hosts/stats",
                   extraHostingDomains = [],

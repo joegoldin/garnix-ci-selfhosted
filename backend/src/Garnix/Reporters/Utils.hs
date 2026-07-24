@@ -35,10 +35,21 @@ withRunReporter report reportType action = do
           { reportLogs = \logLine -> do
               isFirst <- liftIO $ atomicModifyIORef' pendingRef (False,)
               when isFirst $ DB.markRunRunning (_runId run)
-              reportLogs runReporter' logLine
+              -- Surface the run's current step inline in the commit WAITING-ON
+              -- tree (empty lines are ignored, keeping the last real phase).
+              setRunPhase (_runId run) (phaseFromLogLine logLine)
+              reportLogs runReporter' logLine,
+            reportComplete = \status -> do
+              clearRunPhase (_runId run)
+              reportComplete runReporter' status
           }
     _ -> pure runReporter'
-  catchEither (action runReporter) $ \e -> do
+  -- Never leak a run's tracked phase, whether it finishes normally, via
+  -- reportComplete, or by throwing.
+  let cleanup = case reportType of
+        ReportRun run -> clearRunPhase (_runId run)
+        _ -> pure ()
+  flip finally cleanup $ catchEither (action runReporter) $ \e -> do
     let message = case e of
           Right e -> show $ pretty $ err e
           Left e -> show e

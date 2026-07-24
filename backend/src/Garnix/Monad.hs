@@ -10,6 +10,7 @@ where
 import Amazonka.Env qualified as Amazonka (Env)
 import Amazonka.S3 qualified as Amazonka
 import Control.Concurrent (MVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO)
 import Control.Exception.Safe qualified as SafeException
 import Control.Lens (IndexedTraversal')
 import Control.Lens.Regex.Text qualified as RE
@@ -20,6 +21,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Containers.ListUtils (nubOrd)
 import Data.Map (Map)
+import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Text.Format.Numbers (PrettyCfg (PrettyCfg), prettyF)
@@ -29,7 +31,7 @@ import Data.UUID qualified
 import Data.UUID.V4 qualified
 import Garnix.Async (Promise)
 import Garnix.Build.Types (EvaluationResult)
-import Garnix.BuildLogs.Types (BuildWaitTracker, LogLine)
+import Garnix.BuildLogs.Types (BuildWaitTracker, LogLine (LogLine))
 import Garnix.DB.FeatureFlags.Types (FeatureFlagConfig)
 import Garnix.Duration
 import Garnix.GithubInterface.Types
@@ -174,6 +176,12 @@ data Env = Env
     -- | Bounded process-local detail for the work an active build is waiting
     -- on. Durable fallback state comes from the build row after restarts.
     buildWaitTracker :: BuildWaitTracker,
+    -- | Process-local "current phase" per in-flight run (actions, FOD checks,
+    -- module-publish, deployments — anything that goes through the run
+    -- reporter). Surfaces the run's latest step inline in the commit
+    -- WAITING-ON tree. Empty for runs with no reported line yet, in which case
+    -- the tree falls back to the durable Running/Pending state.
+    runPhaseTracker :: RunPhaseTracker,
     -- | Live web-terminal websocket sessions per user (github login), backing
     -- the per-user concurrency cap on /api/terminal (see Garnix.API.Terminal).
     terminalSessions :: MVar (Map Text Int),
@@ -181,6 +189,41 @@ data Env = Env
     serverLogStreams :: ServerLogStreams
   }
   deriving stock (Generic)
+
+-- | Process-local live "current phase" per in-flight run. Mirrors
+-- 'BuildWaitTracker' for runs: durable run state stays in Postgres, this
+-- bounded overlay supplies the useful current-step detail while the backend is
+-- attached to the run's output. Keyed by 'RunId'; the value is the run's most
+-- recent concise phase string (see 'phaseFromLogLine').
+newtype RunPhaseTracker = RunPhaseTracker (TVar (Map RunId Text))
+
+-- | Construct an empty 'RunPhaseTracker' (mirrors 'newBuildWaitTracker').
+newRunPhaseTracker :: (MonadIO m) => m RunPhaseTracker
+newRunPhaseTracker = liftIO $ RunPhaseTracker <$> newTVarIO mempty
+
+-- | Record a run's current phase. No-op for an empty phase so a blank line
+-- never clobbers a real phase (and the tree keeps its Running/Pending
+-- fallback).
+setRunPhase :: RunId -> Text -> M ()
+setRunPhase runId phase
+  | T.null phase = pure ()
+  | otherwise = do
+      RunPhaseTracker tracker <- view #runPhaseTracker
+      liftIO $ atomically $ modifyTVar' tracker (Map.insert runId phase)
+
+-- | Forget a run's tracked phase (on completion), so the overlay does not leak.
+clearRunPhase :: RunId -> M ()
+clearRunPhase runId = do
+  RunPhaseTracker tracker <- view #runPhaseTracker
+  liftIO $ atomically $ modifyTVar' tracker (Map.delete runId)
+
+-- | A concise "current phase" string for a run, derived from a 'LogLine': the
+-- last non-empty line of its text, stripped and truncated to ~140 chars.
+phaseFromLogLine :: LogLine -> Text
+phaseFromLogLine (LogLine _ _ txt) =
+  case reverse [l | l <- map T.strip (T.lines txt), not (T.null l)] of
+    (lastLine : _) -> T.take 140 lastLine
+    [] -> ""
 
 data MonitoringBuilderTarget = MonitoringBuilderTarget
   { _monitoringBuilderTargetName :: Text,

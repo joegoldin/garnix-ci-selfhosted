@@ -1,5 +1,8 @@
 module Garnix.API.Commits where
 
+import Control.Concurrent.STM (readTVarIO)
+import Data.Map (Map)
+import Data.Map qualified as Map
 import Garnix.API.Runs (RunSummary, buildWaitNode, toRunSummary)
 import Garnix.Access (canCancelBuild, getRepoPublicityForForge, hasAccessTo, hasAccessToRepo)
 import Garnix.Build.Reporting (reportBuildCancelledToForge, reportRunCancelledToForge)
@@ -175,17 +178,24 @@ getSingleCommit user' commit = do
 commitWaitNodes :: [Build] -> [Run] -> M [WaitNode]
 commitWaitNodes builds runs = do
   tracker <- view #buildWaitTracker
+  phases <- view #runPhaseTracker >>= \(RunPhaseTracker t) -> liftIO (readTVarIO t)
   buildNodes <- traverse (buildWaitNode tracker) $ filter (isNothing . (^. status)) builds
-  let runNodes = map (runWaitNode buildNodes) $ filter (isNothing . (^. status)) runs
+  let runNodes = map (runWaitNode phases buildNodes) $ filter (isNothing . (^. status)) runs
   pure $ buildNodes <> runNodes
 
-runWaitNode :: [WaitNode] -> Run -> WaitNode
-runWaitNode children run =
+runWaitNode :: Map RunId Text -> [WaitNode] -> Run -> WaitNode
+runWaitNode phases children run =
   WaitNode
     { _waitNodeId = "run:" <> runId,
       _waitNodeKind = "run",
       _waitNodeLabel = run ^. name,
-      _waitNodeDetail = Just $ if isJust (run ^. runStartedAt) then "Running" else "Pending",
+      -- Show the live tracked phase when present; otherwise fall back to the
+      -- durable Running/Pending state (backward-compatible).
+      _waitNodeDetail =
+        Just
+          $ fromMaybe
+            (if isJust (run ^. runStartedAt) then "Running" else "Pending")
+            (Map.lookup (run ^. id) phases),
       _waitNodeHref = Just $ "/run/" <> runId,
       _waitNodeStartedAt = run ^. runStartedAt <|> Just (run ^. startTime),
       _waitNodeLastActivityAt = run ^. runStartedAt,

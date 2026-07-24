@@ -260,7 +260,7 @@ hashIdContext = Hashids.hashidsMinimum "the smell of petroleum pervades througho
 -- This should only be constructed from the DB, so we don't export the
 -- constructor.
 newtype HashId = HashId {getHashId :: Text}
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Ord, Show)
   deriving newtype (ToJSON, FromJSON, Pretty, ToHttpApiData)
 
 instance Servant.FromHttpApiData HashId where
