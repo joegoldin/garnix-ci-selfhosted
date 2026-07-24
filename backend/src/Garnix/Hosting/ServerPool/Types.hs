@@ -55,15 +55,20 @@ serverTierToText = \case
   I16x32 -> "i16x32"
 
 -- | vCPU count and memory (MiB) the microVM provisioner allocates for a tier.
--- The tier names encode vCPUxGiB.
+-- The tier names encode vCPUxGiB. The x2 (nominally 2 GiB) tiers allocate
+-- 2112 MiB, not 2048: microvm.nix #171 — a qemu microVM guest with virtiofs
+-- shares hangs at boot at EXACTLY 2048 MiB (the kernel stalls right after early
+-- ACPI init, before unpacking the initramfs). Nudging ~64 MiB off the exact
+-- 2 GiB boundary avoids it (verified against the 6.18 guest kernel) while
+-- keeping ACPI and KASLR enabled.
 tierResources :: ServerTier -> (Int, Int)
 tierResources = \case
   I1x1 -> (1, 1024)
-  I1x2 -> (1, 2048)
-  I2x2 -> (2, 2048)
+  I1x2 -> (1, 2112)
+  I2x2 -> (2, 2112)
   I2x3 -> (2, 3072)
   I2x4 -> (2, 4096)
-  I4x2 -> (4, 2048)
+  I4x2 -> (4, 2112)
   I4x4 -> (4, 4096)
   I4x8 -> (4, 8192)
   I8x8 -> (8, 8192)
