@@ -420,7 +420,11 @@ servers:
                 void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
               let (Just testReport) = result ^? ix "deployment default"
               (testReport ^. #success) `shouldBeM` Just False
-              liftIO $ testReport ^. #logs . to cs `shouldStartWith` "Error provisioning server: test error"
+              -- `shouldContain`, not `shouldStartWith`: the deploy report now
+              -- opens with the live provisioning-progress lines ("Provisioning …
+              -- on a … guest", "Guest … ready — activating configuration…") that
+              -- the WAITING-ON tree shows, so the failure message no longer leads.
+              liftIO $ testReport ^. #logs . to cs `shouldContain` "Error provisioning server: test error"
 
         it "reports failed activations to github" $ do
           let event = defaultEvent
@@ -456,7 +460,9 @@ servers:
                 void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
               let (Just testReport) = result ^? ix "deployment default"
               (testReport ^. #success) `shouldBeM` Just False
-              liftIO $ testReport ^. #logs . to cs `shouldStartWith` "Failed to activate server\nYou may be able to debug this by sshing into 12.34.56.78 or 0123:4567:89ab:cdef::/64\nStderr:\nsome stderr\n"
+              -- `shouldContain`, not `shouldStartWith`: the report now opens with
+              -- the live provisioning-progress prefix before the activation error.
+              liftIO $ testReport ^. #logs . to cs `shouldContain` "Failed to activate server\nYou may be able to debug this by sshing into 12.34.56.78 or 0123:4567:89ab:cdef::/64\nStderr:\nsome stderr\n"
 
         it "reports successful deployments to github" $ do
           let event = defaultEvent
@@ -976,6 +982,15 @@ virtualisationModules =
       {
         virtualisation.useNixStoreImage = true;
         virtualisation.writableStore = true;
+        # switch-to-configuration-ng (nixpkgs 26.05-small, 2026-07) intermittently
+        # fails restarting systemd-udevd and its coupled control/kernel sockets
+        # during a switch onto the already-running guest (the sockets can't
+        # rebind while udevd still holds them), exiting 4 and flaking @slow
+        # activations. Pin udevd across the switch so it (and its Sockets=) are
+        # left running. `restartIfChanged` is a service-only option; the sockets
+        # have none, but are restarted as a consequence of the service restart.
+        # Test guests only; production uses microvm.nix guests, which don't hit this.
+        systemd.services.systemd-udevd.restartIfChanged = false;
       }
     |]
 
