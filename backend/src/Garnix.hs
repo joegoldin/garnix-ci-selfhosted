@@ -25,6 +25,7 @@ import GHC.Conc (getNumProcessors)
 import Garnix.API
 import Garnix.Artifacts.Reaper qualified as ArtifactReaper
 import Garnix.Artifacts.Store (s3ArtifactStore)
+import Garnix.Backups.Store (s3BackupStore)
 import Garnix.BuildLogs qualified as BuildLogs
 import Garnix.DB qualified as DB
 import Garnix.DB.FeatureFlags (withRecachedFeatureFlags)
@@ -256,6 +257,23 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               (cs baseUrl)
         _ -> error "S3_ARTIFACTS_* buckets are set but their key pairs are missing."
     _ -> pure Nothing
+  -- Server backups (optional feature): one private bucket with its own
+  -- single-bucket credential pair. Never public — no base URL.
+  backupsBucket <- lookupEnv "S3_BACKUPS_BUCKET"
+  maxBackupSize <-
+    lookupEnv "GARNIX_MAX_BACKUP_SIZE" >>= \case
+      Just s | Just n <- readMaybe s, n > 0 -> pure n
+      _ -> pure (4 * 2 ^ (30 :: Integer))
+  backupStore <- case backupsBucket of
+    Just bucket -> do
+      keyId <- readOptionalSecret "S3_BACKUPS_ACCESS_KEY_ID" "/run/secrets/s3-backups-access-key-id"
+      key <- readOptionalSecret "S3_BACKUPS_SECRET_ACCESS_KEY" "/run/secrets/s3-backups-secret-access-key"
+      case (keyId, key) of
+        (Just a, Just b) -> do
+          bEnv <- mkAmazonkaEnv (Amazonka.AccessKey a) (Amazonka.SecretKey b)
+          pure $ Just $ s3BackupStore bEnv (Amazonka.BucketName (cs bucket)) maxBackupSize
+        _ -> error "S3_BACKUPS_BUCKET is set but its key pair is missing."
+    Nothing -> pure Nothing
   actionServerUrl <- fromMaybe "action-runner2.garnix.io" <$> lookupEnv "GARNIX_ACTION_HOST"
   actionRunnerSshKey <- lookupEnv "GARNIX_ACTION_RUNNER_SSH_KEY" >>= maybe (pure "/run/secrets/garnix_action_runner_ssh") makeAbsolute
   sshTerminalCaKey' <-
@@ -494,7 +512,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               guestSubnetPrefix = guestSubnetPrefix',
               s3CacheEnv,
               artifactStore,
-              backupStore = Nothing,
+              backupStore,
               action =
                 ActionEnv
                   { runnerHost = cs actionServerUrl,
