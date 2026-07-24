@@ -151,6 +151,10 @@ data Env = Env
     -- 'Nothing' when the S3_ARTIFACTS_* buckets are not configured, which
     -- disables the feature.
     artifactStore :: Maybe ArtifactStore,
+    -- | Storage backend for server backups (garnix.yaml @servers[].backups:@).
+    -- 'Nothing' when S3_BACKUPS_BUCKET is not configured, which disables the
+    -- feature (API 404s, no scheduler).
+    backupStore :: Maybe BackupStore,
     action :: ActionEnv,
     repoSecretsEncryptionKeyPath :: RepoSecretsEncryptionKeyPath,
     repoSecretsEncryptionPubKey :: RepoSecretsEncryptionPubKey,
@@ -320,6 +324,19 @@ data ArtifactStore = ArtifactStore
     -- manifest, so the web UI's @fetch@ doesn't have to follow a
     -- cross-origin redirect that CORS would block.
     _artifactStoreGetBytes :: ArtifactBucket -> Text -> M BSL.ByteString
+  }
+  deriving (Generic)
+
+-- | Storage operations for server backups (garnix.yaml @servers[].backups:@),
+-- as a record of functions so tests can plug in an in-memory implementation.
+-- Single private bucket — backups are always sensitive, there is no public
+-- variant. Production impl: "Garnix.Backups.Store".
+data BackupStore = BackupStore
+  { _backupStorePutFile :: Text -> FilePath -> M (), -- key, local file
+    _backupStoreGetFile :: Text -> FilePath -> M (), -- key, local target file
+    _backupStoreDeleteObject :: Text -> M (),
+    _backupStorePresignGet :: Text -> M Text, -- 10-minute URL
+    _backupStoreMaxSize :: Integer -- compressed-size cap in bytes
   }
   deriving (Generic)
 

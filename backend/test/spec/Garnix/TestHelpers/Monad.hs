@@ -312,6 +312,7 @@ withTestEnvironment tempDir action = do
                   guestSubnetPrefix = "10.111.0.",
                   s3CacheEnv = error "s3CacheEnv: cache uploading should be mocked",
                   artifactStore = Nothing,
+                  backupStore = Nothing,
                   action =
                     ActionEnv
                       { runnerHost = error "misconfigured-host",

@@ -494,6 +494,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               guestSubnetPrefix = guestSubnetPrefix',
               s3CacheEnv,
               artifactStore,
+              backupStore = Nothing,
               action =
                 ActionEnv
                   { runnerHost = cs actionServerUrl,
