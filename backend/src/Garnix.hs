@@ -564,7 +564,7 @@ runWith opts = do
               let recoveryGroups = Orchestrator.groupResumableBuilds resumable
               cancelled <- DB.cancelOrphanedWork
               forM_ interrupted $ \build ->
-                forkDetachedM $ Orchestrator.restartCommit (build ^. reqUser) build
+                forkDetachedM $ Orchestrator.restartCommit (build ^. reqUser) build Nothing
               forM_ recoveryGroups $ \builds -> forkDetachedM $ Orchestrator.resumeBuilds builds
               pure (cancelled, length interrupted, length resumable, length recoveryGroups)
           )

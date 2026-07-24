@@ -280,10 +280,10 @@ restartFailedCommit user commit = do
           -- re-executed by re-running the whole commit: runs are driven by the
           -- full pipeline, not by a per-package build.
           then case builds of
-            build : _ -> Just $ Orchestrator.restartCommit restarter build
+            build : _ -> Just $ Orchestrator.restartCommit restarter build Nothing
             [] -> Nothing
           else case (failedPackageBuilds, failedOverall) of
-            ([], overallBuild : _) -> Just $ Orchestrator.restartCommit restarter overallBuild
+            ([], overallBuild : _) -> Just $ Orchestrator.restartCommit restarter overallBuild Nothing
             (_ : _, _) -> Just $ Orchestrator.restartBuilds restarter failedPackageBuilds
             _ -> Nothing
   forM_ restart $ \schedule -> do
@@ -328,5 +328,5 @@ triggerBranchForRepo user owner repo req = do
   repoPublicity <- getRepoPublicityForForge owner repo
   hasAccess <- hasAccessToRepo (Just user) repoPublicity owner repo
   when (not hasAccess) $ throw NoSuchRepo {_owner = owner, _name = repo}
-  commit <- Orchestrator.triggerBranchBuild (user ^. githubLogin) repoPublicity owner repo (_triggerBranchReqBranch req)
+  commit <- Orchestrator.triggerBranchBuild (user ^. githubLogin) repoPublicity owner repo (_triggerBranchReqBranch req) Nothing
   pure $ TriggerBranchResp commit

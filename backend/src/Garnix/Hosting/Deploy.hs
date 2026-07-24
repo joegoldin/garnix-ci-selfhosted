@@ -56,7 +56,16 @@ rolloutNewServerVersion reporter commitInfo deploymentType =
     $ (<?> "Rolling out new servers")
     $ do
       plan <- getDeployPlan reporter commitInfo deploymentType
-      executeDeployPlan reporter commitInfo plan deploymentType
+      servers <- executeDeployPlan reporter commitInfo plan deploymentType
+      -- Consume any single-deployment target now the rollout succeeded, so it
+      -- can't leak into a later full rebuild of the same commit (the PR redeploy
+      -- path reuses the real commit SHA). A no-op when none was set.
+      DB.setManualDeployTarget
+        (commitInfo ^. repoInfo . ghRepoOwner)
+        (commitInfo ^. repoInfo . ghRepoName)
+        (commitInfo ^. commit)
+        Nothing
+      pure servers
 
 stopUnusedServers :: M ()
 stopUnusedServers = do
@@ -83,7 +92,7 @@ getDeployPlan reporter commitInfo deploymentType = do
         (commitInfo ^. repoInfo . ghRepoOwner)
         (commitInfo ^. repoInfo . ghRepoName)
     cfg <- getConfig evalTimeout
-    let wantedPackagesMapping :: Map PackageName (ServerTier, Bool, ServerSection) = Map.fromList $ case deploymentType of
+    let fullWantedPackagesMapping :: Map PackageName (ServerTier, Bool, ServerSection) = Map.fromList $ case deploymentType of
           BranchDeployment thisBranch -> flip mapMaybe (cfg ^. serverSection)
             $ \s -> case s ^. deploySection of
               OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary, s))
@@ -92,6 +101,18 @@ getDeployPlan reporter commitInfo deploymentType = do
             $ \s -> case s ^. deploySection of
               OnPullRequest prTier -> Just (s ^. configuration, (prTier, False, s))
               _ -> Nothing
+    -- A single-deployment redeploy (Servers-page "Redeploy" with "only this
+    -- deployment" checked) restricts the rollout to one package and leaves the
+    -- repo's other running deployments untouched. The target is persisted
+    -- per-commit by the redeploy trigger (Garnix.API.Hosts -> Orchestrator).
+    mDeployTarget <-
+      DB.getManualDeployTarget
+        (commitInfo ^. repoInfo . ghRepoOwner)
+        (commitInfo ^. repoInfo . ghRepoName)
+        (commitInfo ^. commit)
+    let wantedPackagesMapping = case mDeployTarget of
+          Just pkg -> Map.filterWithKey (\k _ -> k == pkg) fullWantedPackagesMapping
+          Nothing -> fullWantedPackagesMapping
     let wantedPackages = Map.keys wantedPackagesMapping
     existing <- DB.getRunningServersOf (commitInfo ^. repoInfo) deploymentType
     wantedBuilds <- withPolling (PollingConfig (fromSeconds @Int 2) (fromHours @Int 2)) $ do
@@ -157,7 +178,11 @@ getDeployPlan reporter commitInfo deploymentType = do
               server ^. buildPersistenceName == wanted ^. #build . persistenceName,
               isJust (wanted ^. #build . persistenceName)
           ]
-        toSpinDown = filter (`notElem` (fst <$> toRedeploy)) existing
+        -- In single-deployment mode never stop the repo's other deployments:
+        -- only the targeted package is (re)deployed; everything else stays put.
+        toSpinDown
+          | isJust mDeployTarget = []
+          | otherwise = filter (`notElem` (fst <$> toRedeploy)) existing
         redeployBuilds = map (^. #build) (snd <$> toRedeploy)
         toSpinUp = filter ((`notElem` redeployBuilds) . (^. #build)) wantedServers
     Domains.validateServerDomainsExcept

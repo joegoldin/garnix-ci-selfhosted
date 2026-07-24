@@ -21,3 +21,4 @@ add-server-log-file 2026-07-22T00:30:00Z joegoldin <joe@joegold.in> # Optional d
 add-private-input-fork-scoping 2026-07-23T20:00:00Z joegoldin <joe@joegold.in> # Per-fork private-input approval: track each (base repo, fork) pair separately
 add-default-authentik-approval 2026-07-23T21:00:00Z joegoldin <joe@joegold.in> # Gate authentik:default hosting (shares garnix's own OIDC creds) behind per-repo admin approval
 add-fod-check-skip 2026-07-23T22:00:00Z joegoldin <joe@joegold.in> # Per-repo FOD-check skip patterns: glob allowlist of fixed-output derivations skipped instead of failing closed
+add-manual-deploy-target 2026-07-23T23:00:00Z joegoldin <joe@joegold.in> # Per-commit single-deployment redeploy target: restrict a redeploy to one package, leaving the repo's other deployments running

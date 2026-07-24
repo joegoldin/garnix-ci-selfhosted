@@ -186,6 +186,53 @@ setRepoFodCheckSkip repoOwner repoName patterns =
           DO UPDATE SET fod_check_skip = ${patterns}::text[]
       |]
 
+-- | Set (with 'Just') or clear (with 'Nothing') the single-package target for a
+-- redeploy of this commit. When set, the deploy planner
+-- ('Garnix.Hosting.Deploy.getDeployPlan') restricts the rollout to that package
+-- and leaves the repo's other running deployments in place. Keyed by the commit
+-- carrying the rollout (a synthetic @manual-\<ts\>@ for a branch redeploy, or the
+-- config's own commit for a PR redeploy). 'Nothing' deletes any existing row, so
+-- a "redeploy all" (or the post-deploy consume in 'rolloutNewServerVersion')
+-- can't leave a stale target to leak into a later full rebuild of the same
+-- commit. Written before the commit row exists, so there is deliberately no FK.
+setManualDeployTarget :: GhRepoOwner -> GhRepoName -> CommitHash -> Maybe PackageName -> M ()
+setManualDeployTarget owner name commit = \case
+  Just package ->
+    void
+      $ pgExec
+        [pgSQL|
+          INSERT INTO manual_deploy_target (repo_user, repo_name, git_commit, package_name)
+            VALUES (${owner}, ${name}, ${commit}, ${package})
+            ON CONFLICT (repo_user, repo_name, git_commit)
+            DO UPDATE SET package_name = ${package}
+        |]
+  Nothing ->
+    void
+      $ pgExec
+        [pgSQL|
+          DELETE FROM manual_deploy_target
+          WHERE repo_user = ${owner}
+            AND repo_name = ${name}
+            AND git_commit = ${commit}
+        |]
+
+-- | The single package a redeploy of this commit is restricted to, if any.
+-- 'Nothing' (the common case) means redeploy every deployment of the repo.
+getManualDeployTarget :: GhRepoOwner -> GhRepoName -> CommitHash -> M (Maybe PackageName)
+getManualDeployTarget owner name commit = do
+  rows <-
+    pgQuery
+      [pgSQL|!
+        SELECT package_name
+        FROM manual_deploy_target
+        WHERE repo_user = ${owner}
+          AND repo_name = ${name}
+          AND git_commit = ${commit}
+      |]
+  pure $ case rows :: [PackageName] of
+    (pkg : _) -> Just pkg
+    [] -> Nothing
+
 -- | Approve or revoke a repo for @authentik: default@ hosting. When approved,
 -- the repo's deployed servers receive garnix's own OIDC client credentials
 -- (see 'Garnix.Hosting.Deploy'). Admin-only, driven from the Configure page.

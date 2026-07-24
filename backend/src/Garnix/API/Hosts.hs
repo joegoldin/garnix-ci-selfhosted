@@ -56,8 +56,10 @@ data HostsAPI route = HostsAPI
     _hostsAPIDeleteHost :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> Delete '[JSON] (),
     -- | Kick off a fresh build+deploy job for this server's current commit,
     -- re-running the pipeline and redeploying the guest. Auth + ownership-gated
-    -- the same way as DELETE / stats. Async: returns immediately.
-    _hostsAPIRedeployHost :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "redeploy" :> Post '[JSON] (),
+    -- the same way as DELETE / stats. Async: returns immediately. The body's
+    -- @onlyThisServer@ restricts the rollout to this one deployment (see
+    -- 'RedeployRequest').
+    _hostsAPIRedeployHost :: route :- Auth '[JWT, Cookie] AuthJwtPayload :> Capture "serverId" ServerId :> "redeploy" :> ReqBody '[JSON] RedeployRequest :> Post '[JSON] (),
     -- | Current sample + the short rolling window of samples for one server,
     -- for the per-server Monitor page. Auth + ownership-gated the same way as
     -- GET /api/hosts.
@@ -397,8 +399,25 @@ deleteHost _ _ = throw Unauthorized
 -- PR deployments have no manual-branch trigger, so they fall back to re-running
 -- the config's own commit. Same auth + ownership gate as GET
 -- /api/hosts/<id>/stats. Async; progress shows on the new commit/run page.
-redeployHost :: AuthResult AuthJwtPayload -> ServerId -> M ()
-redeployHost (Authenticated (WebSession user ghToken)) serverId = do
+-- | Body of @POST hosts/\<id\>/redeploy@. @onlyThisServer@ true restricts the
+-- redeploy to this one server's deployment, leaving the repo's other
+-- deployments running; false (also the default when the key is absent)
+-- redeploys every deployment the branch/PR declares, as before.
+newtype RedeployRequest = RedeployRequest
+  { redeployOnlyThisServer :: Bool
+  }
+  deriving (Generic)
+
+instance Aeson.FromJSON RedeployRequest where
+  parseJSON = Aeson.withObject "RedeployRequest" $ \o ->
+    RedeployRequest <$> o Aeson..:? "onlyThisServer" Aeson..!= False
+
+instance Aeson.ToJSON RedeployRequest where
+  toJSON (RedeployRequest onlyThisServer) =
+    Aeson.object ["onlyThisServer" Aeson..= onlyThisServer]
+
+redeployHost :: AuthResult AuthJwtPayload -> ServerId -> RedeployRequest -> M ()
+redeployHost (Authenticated (WebSession user ghToken)) serverId req = do
   servers <-
     getRunningAndRecentServersForOwners
       . (GhRepoOwner (user ^. githubLogin) :)
@@ -410,13 +429,16 @@ redeployHost (Authenticated (WebSession user ghToken)) serverId = do
       let owner = _runningServerRepoOwner server
           repo = _runningServerRepoName server
           publicity = build ^. repoIsPublic
+          -- Restrict the rollout to this server's own package when asked, so the
+          -- repo's other running deployments are left in place.
+          mOnlyPackage = if redeployOnlyThisServer req then Just (build ^. package) else Nothing
       case _runningServerType server of
         BranchDeployment branch ->
-          forkM . void $ Orchestrator.triggerBranchBuild (user ^. githubLogin) publicity owner repo branch
+          forkM . void $ Orchestrator.triggerBranchBuild (user ^. githubLogin) publicity owner repo branch mOnlyPackage
         GhPrDeployment _ ->
-          forkM $ Orchestrator.restartCommit (user ^. githubLogin) build
+          forkM $ Orchestrator.restartCommit (user ^. githubLogin) build mOnlyPackage
     [] -> throw NotFound
-redeployHost _ _ = throw Unauthorized
+redeployHost _ _ _ = throw Unauthorized
 
 data OnDemandResolverDomainNames = OnDemandResolverDomainNames
   { domains :: [Text]

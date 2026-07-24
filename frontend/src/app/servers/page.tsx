@@ -12,6 +12,7 @@ import {
   redeployServer,
 } from "@/services/servers";
 import { Table } from "@/components/table";
+import { ToggleSwitch } from "@/components/toggleSwitch";
 import { Link } from "@/components/link";
 import { diffTime, formatDurationLong, fromSecs } from "@/utils/duration";
 import { Text } from "@/components/text";
@@ -209,35 +210,6 @@ const ConnectCell = ({
   );
 };
 
-// Per-row Redeploy: kicks off a fresh build+deploy job for this server's
-// branch/PR and reloads the list. Disabled (spinner) while the request is
-// in flight.
-const RedeployButton = ({
-  serverId,
-  onRedeployed,
-}: {
-  serverId: string;
-  onRedeployed: () => void;
-}) => {
-  const [loading, setLoading] = React.useState(false);
-  return (
-    <Button
-      loading={loading}
-      onClick={async () => {
-        setLoading(true);
-        try {
-          await redeployServer(serverId);
-          onRedeployed();
-        } finally {
-          setLoading(false);
-        }
-      }}
-    >
-      Redeploy
-    </Button>
-  );
-};
-
 const ServersTable = (props: {
   servers: Array<RunningServer>;
   sshHost: string;
@@ -249,6 +221,8 @@ const ServersTable = (props: {
   const [deleteServerModal, setDeleteServerModal] = React.useState<
     null | string
   >(null);
+  const [redeployModal, setRedeployModal] =
+    React.useState<null | RunningServer>(null);
   const [showDomainsHelp, setShowDomainsHelp] = React.useState(false);
   return (
     <>
@@ -267,6 +241,16 @@ const ServersTable = (props: {
           onRequestClose={() => setDeleteServerModal(null)}
           onServerDeleted={() => {
             setDeleteServerModal(null);
+            props.onRequestReload();
+          }}
+        />
+      )}
+      {redeployModal != null && (
+        <RedeployConfirmationModal
+          server={redeployModal}
+          onRequestClose={() => setRedeployModal(null)}
+          onRedeployed={() => {
+            setRedeployModal(null);
             props.onRequestReload();
           }}
         />
@@ -376,10 +360,9 @@ const ServersTable = (props: {
                   </Button>
                   <Button href={`/servers/${server.id}`}>Monitor</Button>
                   {server.status !== "Ended" ? (
-                    <RedeployButton
-                      serverId={server.id}
-                      onRedeployed={props.onRequestReload}
-                    />
+                    <Button onClick={() => setRedeployModal(server)}>
+                      Redeploy
+                    </Button>
                   ) : null}
                   {server.status !== "Ended" ? (
                     <Button
@@ -539,6 +522,58 @@ const DeleteServerConfirmationModal = (props: {
             <div>
               <Button style="warning" loading={form.loading} submit>
                 Yes, delete
+              </Button>
+              <Button onClick={props.onRequestClose}>Cancel</Button>
+            </div>
+          </div>
+        </ModalSection>
+      </form>
+    </FloatingModal>
+  );
+};
+
+const RedeployConfirmationModal = (props: {
+  server: RunningServer;
+  onRequestClose: () => void;
+  onRedeployed: () => void;
+}) => {
+  const [onlyThisServer, setOnlyThisServer] = React.useState(false);
+  const form = useForm({}, async () => {
+    await redeployServer(props.server.id, onlyThisServer);
+    props.onRedeployed();
+    return Ok(null);
+  });
+  return (
+    <FloatingModal onRequestClose={props.onRequestClose}>
+      <form {...form.props}>
+        <ModalSection>
+          <Text type="h1">Redeploy</Text>
+          <Text type="p">
+            Redeploying re-runs this repo&apos;s whole pipeline. By default it
+            redeploys <strong>all</strong> of this repo&apos;s deployments on this
+            branch/PR — not just this one server. Other deployments&apos; guests
+            will be rebooted too.
+          </Text>
+          <div className={styles.redeployOnlyThis}>
+            <ToggleSwitch value={onlyThisServer} onChange={setOnlyThisServer} />
+            <span>
+              Only redeploy this deployment (<code>{props.server.package_name}</code>)
+              — leave the repo&apos;s other deployments running.
+            </span>
+          </div>
+          {match(form.result)
+            .with(Err({ message: P.select() }), (message) => (
+              <div className={styles.error}>
+                Failed to redeploy:
+                <br />
+                {`${message}`}
+              </div>
+            ))
+            .otherwise(() => null)}
+          <div className={styles.actions}>
+            <div>
+              <Button loading={form.loading} submit>
+                {onlyThisServer ? "Redeploy this one" : "Redeploy all"}
               </Button>
               <Button onClick={props.onRequestClose}>Cancel</Button>
             </div>

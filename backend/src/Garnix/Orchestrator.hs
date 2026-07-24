@@ -276,10 +276,14 @@ groupResumableBuilds (build : builds) =
 -- | Re-run the whole commit (fresh eval, then all builds/actions). Used when
 -- the failure is the eval/overall build itself, which has no per-package
 -- build to restart.
-restartCommit :: (HasCallStack) => GhLogin -> Build -> M ()
-restartCommit reqUser' build = do
+-- The optional 'PackageName' restricts a redeploy to that single package's
+-- deployment (leaving the repo's other deployments running); 'Nothing' is the
+-- normal full re-run.
+restartCommit :: (HasCallStack) => GhLogin -> Build -> Maybe PackageName -> M ()
+restartCommit reqUser' build mOnlyPackage = do
   (commitInfo, reporter) <- commitInfoForBuild reqUser' build
   assertIsAllowedToBuild (build ^. repoUser) (build ^. repoName)
+  DB.setManualDeployTarget (build ^. repoUser) (build ^. repoName) (commitInfo ^. commit) mOnlyPackage
   void $ handleCommit reporter True commitInfo
 
 assertIsAllowedToBuild :: GhRepoOwner -> GhRepoName -> M ()
@@ -312,8 +316,11 @@ listRepoBranches owner repo = do
 -- builds the branch's current tip on both GitHub and Gitea. It reports to garnix
 -- (OpenSearch) only — not the forge — because the built ref is a synthetic id,
 -- not a real commit. Returns the synthetic @manual-<timestamp>@ id.
-triggerBranchBuild :: (HasCallStack) => GhLogin -> RepoPublicity -> GhRepoOwner -> GhRepoName -> Branch -> M CommitHash
-triggerBranchBuild reqUser' publicity owner repo targetBranch = do
+-- The optional 'PackageName' restricts the resulting redeploy to that single
+-- package's deployment (leaving the repo's other deployments running);
+-- 'Nothing' deploys every server the branch declares, as usual.
+triggerBranchBuild :: (HasCallStack) => GhLogin -> RepoPublicity -> GhRepoOwner -> GhRepoName -> Branch -> Maybe PackageName -> M CommitHash
+triggerBranchBuild reqUser' publicity owner repo targetBranch mOnlyPackage = do
   assertIsAllowedToBuild owner repo
   commits <- DB.getCommitsByOwnerAndRepo owner repo
   now <- liftIO getCurrentTime
@@ -334,6 +341,10 @@ triggerBranchBuild reqUser' publicity owner repo targetBranch = do
             _commitInfoPrFromFork = Nothing,
             _commitInfoCommit = manualCommit
           }
+  -- Record the single-deployment target (or clear it, with Nothing) before the
+  -- pipeline runs, so the later getDeployPlan for this commit restricts the
+  -- rollout to it. The commit is fresh here, so Nothing is a harmless no-op.
+  DB.setManualDeployTarget owner repo manualCommit mOnlyPackage
   void $ handleCommit openSearchReporter True commitInfo
   pure manualCommit
 

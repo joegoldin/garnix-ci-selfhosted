@@ -112,8 +112,15 @@ export async function deleteServer(id: string): Promise<APIResult<null>> {
 
 // Kick off a fresh build+deploy job for this server's branch/PR. The backend
 // resolves the server's repo + ref and re-runs the pipeline (which redeploys).
-export async function redeployServer(id: string): Promise<APIResult<null>> {
-  return await fetchFromAPI(z.null(), "POST", `hosts/${id}/redeploy`);
+// When `onlyThisServer` is true, only this server's deployment is redeployed and
+// the repo's other deployments are left running; otherwise all are redeployed.
+export async function redeployServer(
+  id: string,
+  onlyThisServer: boolean = false,
+): Promise<APIResult<null>> {
+  return await fetchFromAPI(z.null(), "POST", `hosts/${id}/redeploy`, {
+    body: JSON.stringify({ onlyThisServer }),
+  });
 }
 
 export async function getServerStats(
