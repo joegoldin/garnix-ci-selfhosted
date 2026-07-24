@@ -2149,6 +2149,10 @@ deleteServerFromPool sId = do
         WHERE id = ${sId}
       |]
   case changes of
+    -- Idempotent: the row may already be gone (the 15-min stale-unready reaper,
+    -- a concurrent claim, or a test TRUNCATE). This is the onError cleanup of
+    -- provisionOne, so throwing here would only mask the real provisioning error.
+    0 -> pure ()
     1 -> pure ()
     _ -> throw $ OtherError "deleteServerFromPool: Unexpected number of updates"
 
