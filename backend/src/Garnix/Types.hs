@@ -1632,7 +1632,17 @@ data ServerToSpinUp = ServerToSpinUp
     domains :: [Text],
     -- | Resolved garnix.yaml servers[].applicationLog path: an absolute guest
     -- file followed over private deploy SSH with bounded control-plane memory.
-    logFile :: Maybe Text
+    logFile :: Maybe Text,
+    -- | garnix.yaml servers[].backups, carried as raw JSON: Garnix.Types
+    -- cannot import Garnix.YamlConfig's BackupSection without an import
+    -- cycle (YamlConfig already imports Types). Callers decode this back
+    -- into a BackupSection before handing it to Garnix.DB.Backups.setServerBackups.
+    -- Named backupsJson (not backups) because YamlConfig's makeFields
+    -- ''ServerSection already defines a classy-lens field called "backups"
+    -- that it imports from here unqualified; a same-named ServerToSpinUp
+    -- field would be an ambiguous occurrence (see the `hiding` list on
+    -- YamlConfig's "import Garnix.Types").
+    backupsJson :: Maybe Aeson.Value
   }
   deriving stock (Show, Eq, Generic)
 

@@ -562,7 +562,7 @@ servers:
         build <- fromSingleton . filter (\p -> p ^. packageType == TypeNixosConfiguration) <$> builds
         secondGenServers <- getAllDbServers
         let serverInfo2 = fromSingleton secondGenServers
-            wanted = ServerToSpinUp def build False False False False [] [] [] [] Nothing
+            wanted = ServerToSpinUp def build False False False False [] [] [] [] Nothing Nothing
         reports <- withTestReporter_ $ \reporter -> do
           void $ redeployServer reporter commitInfo (BranchDeployment branch) serverInfo2 wanted
         let logs' = cs $ (reports Map.! "redeployment db") ^. #logs

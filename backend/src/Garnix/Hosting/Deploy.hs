@@ -24,6 +24,7 @@ import Data.Text.IO qualified as TIO
 import Garnix.API.Keys (getRepoKeys)
 import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
+import Garnix.DB.Backups qualified as DBBackups
 import Garnix.Duration
 import Garnix.Entitlements (getConfiguredEvalTimeout)
 import Garnix.FlakeInputAuthorization (isExternalForkPr)
@@ -167,7 +168,8 @@ getDeployPlan reporter commitInfo deploymentType = do
                       httpPorts,
                       tcpPorts,
                       domains = _serverSectionDomains section,
-                      logFile = getServerLogFile <$> _serverSectionLogFile section
+                      logFile = getServerLogFile <$> _serverSectionLogFile section,
+                      backupsJson = Aeson.toJSON <$> _serverSectionBackups section
                     }
               Nothing -> throw $ OtherError "impossible: wantedPackagesMap should contain all deployable packages"
           )
@@ -344,6 +346,18 @@ requireDefaultAuthentikAllowed commitInfo = do
       <> showPretty authRepo
       <> " on the Configure page before deploying."
 
+-- | ServerToSpinUp.backups round-trips through 'Aeson.Value' (Garnix.Types
+-- cannot import Garnix.YamlConfig's BackupSection without an import cycle —
+-- YamlConfig already imports Types). Decode it back before handing it to
+-- Garnix.DB.Backups.setServerBackups. A decode failure here would mean the
+-- 'Aeson.toJSON' in getDeployPlan and this decode disagree, which the
+-- YamlConfig round-trip tests rule out.
+decodeBackups :: Maybe Aeson.Value -> M (Maybe BackupSection)
+decodeBackups Nothing = pure Nothing
+decodeBackups (Just value) = case Aeson.fromJSON value of
+  Aeson.Success section -> pure (Just section)
+  Aeson.Error err -> throw $ OtherError $ "impossible: servers[].backups failed to decode from its own encoded JSON: " <> T.pack err
+
 startServer ::
   Reporter ->
   CommitInfo ->
@@ -395,6 +409,11 @@ startServer = curry4
       exposeResult <- exposeServerPorts serverInfo serverToSpinUp
       when (wantsExposure || isJust exposeResult) $ do
         DB.setServerExposed (serverInfo ^. id) (exposedBlob serverToSpinUp authorizesGarnixUser exposeResult)
+      -- domains are captured by DB.claimServerDB's INSERT at claim time, but
+      -- backups has no such column there, so spin-up persists it explicitly
+      -- here — same as the redeploy path does right after setServerDomains.
+      spunUpBackups <- decodeBackups (serverToSpinUp ^. #backupsJson)
+      DBBackups.setServerBackups (serverInfo ^. id) spunUpBackups
       (serverInfo, stderr) <-
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
           let logs = showPretty (err error)
@@ -460,6 +479,8 @@ redeployServer reporter commitInfo deploymentType serverInfo wanted = do
         exposeResult <- exposeServerPorts serverInfo wanted
         DB.setServerExposed (serverInfo ^. id) (exposedBlob wanted authorizesGarnixUser exposeResult)
         DB.setServerDomains (serverInfo ^. id) (wanted ^. #domains)
+        wantedBackups <- decodeBackups (wanted ^. #backupsJson)
+        DBBackups.setServerBackups (serverInfo ^. id) wantedBackups
         copyClosure sshUser serverInfo storePath <?> "Copying closure for redeployment"
         deploymentLogs <-
           (switchToConfiguration sshUser serverInfo storePath <?> "Switching to redeployment configuration")
