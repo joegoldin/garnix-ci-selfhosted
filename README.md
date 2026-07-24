@@ -103,7 +103,7 @@ NixOS machine. Everything below uses example values — substitute your own:
   from the hosting/deploy key. See
   [SSH into a deployed server](#ssh-into-a-deployed-server-and-expose-extra-ports).
 - **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
-  picks a tier (`i1x1`…`i16x32`, default `i1x1` = 1 vCPU / 1 GiB); see
+  picks a tier (`i1x1`…`i16x32`, default `i1x2` = 1 vCPU / 2 GiB); see
   [Server deployments](#server-deployments-self-host-microvm-hosting).
 - **Live deployed-server logs** — `servers[].applicationLog` is disabled by
   default; enable it to follow its absolute guest `path` over the existing
@@ -873,7 +873,7 @@ services.garnixServer = {
   hostingDomain = "apps.garnix.example.com";
   statsReportUrl = "https://garnix.example.com/api/hosts/stats";
   provisionerSocket = "/run/garnix-provisioner/provisioner.sock";
-  provisionServerPool = true;            # pre-warm the pool (default: one i1x1)
+  provisionServerPool = true;            # pre-warm the pool (default: one i1x2)
 };
 ```
 
@@ -932,7 +932,7 @@ standalone guest reboot, redeploy it before expecting services that consume
 those runtime credentials to start successfully.
 
 Pick a size per server with `deployment.machine` in `garnix.yaml` (default
-`i1x1`); the tier name encodes `<vCPU>x<GiB>` and maps to guest resources
+`i1x2`); the tier name encodes `<vCPU>x<GiB>` and maps to guest resources
 (20 GiB root + 20 GiB writable-store overlay for every tier):
 
 ```yaml
@@ -940,23 +940,27 @@ servers:
   - configuration: myServer
     deployment:
       branch: main
-      machine: i2x4 # 2 vCPU, 4 GiB — omit for the i1x1 default
+      machine: i2x4 # 2 vCPU, 4 GiB — omit for the i1x2 default
 ```
 
 | tier             | vCPU | RAM (MiB) |
 | ---------------- | ---- | --------- |
-| `i1x1` (default) | 1    | 1024      |
-| `i1x2`           | 1    | 2048      |
-| `i2x2`           | 2    | 2048      |
+| `i1x1`           | 1    | 1024      |
+| `i1x2` (default) | 1    | 2112      |
+| `i2x2`           | 2    | 2112      |
 | `i2x3`           | 2    | 3072      |
 | `i2x4`           | 2    | 4096      |
-| `i4x2`           | 4    | 2048      |
+| `i4x2`           | 4    | 2112      |
 | `i4x4`           | 4    | 4096      |
 | `i4x8`           | 4    | 8192      |
 | `i8x8`           | 8    | 8192      |
 | `i8x16`          | 8    | 16384     |
 | `i16x16`         | 16   | 16384     |
 | `i16x32`         | 16   | 32768     |
+
+The nominal-2-GiB tiers allocate 2112 MiB, not 2048: a qemu microVM with
+virtiofs hangs at boot at exactly 2048 (microvm.nix #171), so they sit just off
+that boundary.
 
 ### View a deployed service log
 
@@ -1079,9 +1083,11 @@ provisioner's `exposePortRange` (firewall) for the DNAT methods.
 Each row on the **Servers** page has, alongside Visit / Delete / Logs / Monitor:
 
 - **Redeploy** — kicks off a fresh build+deploy job for the server's current
-  commit (`POST /api/hosts/<id>/redeploy`, auth + ownership-gated). It re-runs
-  the whole pipeline (`Orchestrator.restartCommit`), so it rebuilds and
-  redeploys; works for both branch and PR deployments.
+  commit (`POST /api/hosts/<id>/redeploy` with `{onlyThisServer}`, auth +
+  ownership-gated). A confirm dialog makes clear it redeploys **all** of the
+  repo's deployments on that branch/PR by default; a toggle scopes it to only
+  that one deployment (leaving the others running). Works for both branch and PR
+  deployments.
 - **Open Terminal** — an in-browser shell to the guest, at
   `/servers/<id>/terminal`. A websocket endpoint (`/api/terminal/<id>`) attaches
   a PTY running SSH to the guest IP resolved from the DB, never from the client.
