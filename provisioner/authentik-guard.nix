@@ -304,8 +304,30 @@ in
       };
     };
     systemd.services.oauth2-proxy = {
-      after = [ "garnix-authentik-secrets.service" ];
-      wants = [ "garnix-authentik-secrets.service" ];
+      # oauth2-proxy does OIDC provider discovery against the issuer at startup,
+      # so it needs egress AND DNS working the moment it starts. On a guest's
+      # first full activation, switch-to-configuration restarts systemd-networkd
+      # and systemd-resolved; ordered only after garnix-authentik-secrets (which
+      # merely waits for the SSH-delivered creds file, i.e. inbound), oauth2-proxy
+      # could start inside that DNS/connectivity blackout, fail discovery, and
+      # exit non-zero — failing the whole deploy ("Failed to activate server")
+      # intermittently, depending on the race. Gate it on the network being back
+      # online and resolved being up.
+      after = [
+        "garnix-authentik-secrets.service"
+        "network-online.target"
+        "systemd-resolved.service"
+      ];
+      wants = [
+        "garnix-authentik-secrets.service"
+        "network-online.target"
+      ];
+      # Defense in depth: if provider discovery still flakes transiently, recover
+      # instead of leaving the gate — and the deploy — wedged in a failed state.
+      serviceConfig = {
+        Restart = lib.mkForce "on-failure";
+        RestartSec = "3s";
+      };
     };
 
     # nginx forward-auth gate on :80 (the port Traefik proxies to). Strips any
