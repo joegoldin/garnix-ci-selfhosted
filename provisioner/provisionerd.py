@@ -65,11 +65,12 @@ TCP_PORTS_PER_VM = 20
 # Inclusive top of the host DNAT port range (exposePortRange.to on the host).
 PORT_RANGE_END = int(os.environ.get("PROVISIONER_PORT_RANGE_END", "41999"))
 
-# How long to wait for a freshly-booted guest to open tcp/22. A fresh on-demand
-# boot (cold guest, virtio-fs paging in the store closure) genuinely takes ~2min
-# and lands right on a 120s deadline under load, so give it real headroom.
-# Env-tunable via PROVISIONER_SSH_WAIT_SECONDS.
-SSH_WAIT_SECONDS = int(os.environ.get("PROVISIONER_SSH_WAIT_SECONDS", "300"))
+# How long to wait for a freshly-booted guest to open tcp/22. Env-tunable via
+# PROVISIONER_SSH_WAIT_SECONDS. (The earlier 300s bump was chasing a red herring:
+# the "did not open tcp/22" failures were the leaked-DHCP-lease bug handing the
+# guest an unreachable IP, not slow boots — fixed at the dnsmasq layer. 120s is
+# comfortable for a real cold boot.)
+SSH_WAIT_SECONDS = int(os.environ.get("PROVISIONER_SSH_WAIT_SECONDS", "120"))
 
 # DHCP lease time for guest reservations. Deliberately NOT "infinite": vm_ip()
 # wraps the /24 every 240 ids, so a long-dead guest's reservation lease used to
