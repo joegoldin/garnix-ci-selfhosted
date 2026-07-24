@@ -23,3 +23,7 @@ host-map.json
 personal-dev.sh
 /node_modules/
 /tsconfig.tsbuildinfo
+
+# Python bytecode caches (machine- and interpreter-version specific)
+__pycache__/
+*.pyc
