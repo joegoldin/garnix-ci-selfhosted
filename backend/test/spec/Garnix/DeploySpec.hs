@@ -237,13 +237,14 @@ servers:
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
           writeMatchingConfig branch (PackageName "default")
-          firstGenServers <-
-            withMock
-              #waitTillServerIsInitializedMock
-              (const $ return False)
-              $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-              `catchError` const (pure [])
+          firstGenServers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
           liftIO $ length firstGenServers `shouldBe` 1
+          -- Simulate a previous deploy that never initialized: clear the
+          -- readiness the pool set. (Servers now provision on demand, so the
+          -- old waitTillServerIsInitializedMock=False no longer models this —
+          -- it just makes provisionOne throw.) getRunningServersOf filters on
+          -- ended_at only, so deploy-2 still picks this up and must reap it.
+          void $ DB.pgExec [pgSQL| UPDATE servers SET ready_at = NULL |]
           void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
           forM_ firstGenServers $ \server ->
             assertNotExists server

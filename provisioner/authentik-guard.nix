@@ -316,6 +316,16 @@ in
       recommendedProxySettings = true;
       virtualHosts."_" = {
         default = true;
+        # oauth2-proxy's session cookie carries the id_token + claims and is
+        # large; the /oauth2/callback response sets it, overflowing nginx's
+        # default 4k/8k proxy buffers -> "upstream sent too big header" -> 502
+        # on the callback, while /oauth2/auth and /oauth2/start (small
+        # responses) succeed. Give the proxy generous response-header buffers.
+        extraConfig = ''
+          proxy_buffer_size 16k;
+          proxy_buffers 8 16k;
+          proxy_busy_buffers_size 32k;
+        '';
         locations = {
           "/oauth2/" = {
             proxyPass = "http://127.0.0.1:4180";
