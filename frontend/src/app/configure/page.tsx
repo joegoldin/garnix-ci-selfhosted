@@ -13,13 +13,16 @@ import { formatBytes } from "@/utils/format";
 import { RepoPicker } from "@/app/modules/configure/moduleInputs/repoPicker";
 import {
   ArtifactRepoOverride,
+  BackupRepoOverride,
   ConfigureSettings,
   ConnectedDomain,
   LockedArtifactBuild,
+  LockedBackup,
   RepoOverride,
   addConnectedDomain,
   deleteConnectedDomain,
   deleteRepoArtifactSettings,
+  deleteRepoBackupSettings,
   deleteRepoBuildTimeout,
   deleteRepoEvaluationMemory,
   getBuiltRepos,
@@ -27,8 +30,10 @@ import {
   getConnectedDomains,
   putRepoFodCheckSkip,
   setDefaultArtifactSettings,
+  setDefaultBackupSettings,
   setDefaultBuildTimeout,
   setRepoArtifactSettings,
+  setRepoBackupSettings,
   setRepoBuildTimeout,
   setRepoDefaultAuthentik,
   setRepoEvaluationMemory,
@@ -39,6 +44,7 @@ import {
   artifactLatestZipUrl,
   unlockBuildArtifacts,
 } from "@/services/artifacts";
+import { unlockBackup } from "@/services/backups";
 import styles from "./styles.module.css";
 
 // Build/eval timeouts are stored as whole minutes; the UI works in hours.
@@ -130,6 +136,29 @@ const Page = () => {
             <Text className={styles.error}>{settings.data.error.message}</Text>
           ) : (
             <ArtifactSettings
+              settings={settings.data.data}
+              reload={settings.reload}
+            />
+          )}
+        </div>
+      )}
+
+      {selfHostMode && (
+        <div className={styles.section}>
+          <Text type="h2" className={styles.h2}>
+            Backups
+          </Text>
+          <Text className={styles.help}>
+            Server snapshots are retained for the configured number of days.
+            Keep-latest always preserves the newest snapshot per repo and
+            configuration; locked snapshots are never reaped.
+          </Text>
+          {settings.loading ? (
+            <Loading />
+          ) : !settings.data.ok ? (
+            <Text className={styles.error}>{settings.data.error.message}</Text>
+          ) : (
+            <BackupSettings
               settings={settings.data.data}
               reload={settings.reload}
             />
@@ -910,6 +939,239 @@ const ArtifactSettings = ({
           </div>
         </>
       ) : null}
+    </div>
+  );
+};
+
+const BackupSettings = ({
+  settings,
+  reload,
+}: {
+  settings: ConfigureSettings;
+  reload: () => void;
+}) => {
+  const [retentionDays, setRetentionDays] = React.useState(
+    String(settings.backupRetentionDays),
+  );
+  const [keepLatest, setKeepLatest] = React.useState(settings.backupKeepLatest);
+  const [repo, setRepo] = React.useState<{
+    repoUser: string;
+    repoName: string;
+  } | null>(null);
+  const [overrideDays, setOverrideDays] = React.useState("");
+  const [overrideKeepLatest, setOverrideKeepLatest] =
+    React.useState<KeepLatestChoice>("inherit");
+  const [busy, setBusy] = React.useState(false);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    await fn();
+    setBusy(false);
+    reload();
+  };
+
+  const saveDefault = () => {
+    const days = parseDays(retentionDays);
+    if (days == null) return;
+    return run(() => setDefaultBackupSettings(days, keepLatest));
+  };
+  const addOverride = () => {
+    if (repo == null) return;
+    const days = overrideDays.trim() === "" ? null : parseDays(overrideDays);
+    const keep =
+      overrideKeepLatest === "inherit" ? null : overrideKeepLatest === "on";
+    // An override with both fields inheriting is a no-op; don't create it.
+    if (days == null && keep == null) return;
+    return run(async () => {
+      await setRepoBackupSettings(repo.repoUser, repo.repoName, days, keep);
+      setRepo(null);
+      setOverrideDays("");
+      setOverrideKeepLatest("inherit");
+    });
+  };
+  const editOverride = (o: BackupRepoOverride) => {
+    setRepo({ repoUser: o.repoUser, repoName: o.repoName });
+    setOverrideDays(o.retentionDays == null ? "" : String(o.retentionDays));
+    setOverrideKeepLatest(
+      o.keepLatest == null ? "inherit" : o.keepLatest ? "on" : "off",
+    );
+  };
+  const removeOverride = (o: BackupRepoOverride) =>
+    run(() => deleteRepoBackupSettings(o.repoUser, o.repoName));
+  const unlock = (b: LockedBackup) => run(() => unlockBackup(b.id));
+
+  const totalUsage = settings.backupUsage.reduce(
+    (acc, u) => acc + u.totalSize,
+    0,
+  );
+
+  return (
+    <div className={styles.timeout}>
+      <div className={styles.settingsPanel}>
+        <div className={styles.settingsGrid}>
+          <label className={styles.settingField}>
+            <span>Retention (days)</span>
+            <input
+              className={styles.hoursInput}
+              type="number"
+              min="1"
+              step="1"
+              placeholder="30"
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(e.target.value)}
+            />
+          </label>
+          <label className={styles.toggleField}>
+            <span>Keep latest per branch</span>
+            <ToggleSwitch value={keepLatest} onChange={setKeepLatest} />
+          </label>
+          <div className={styles.settingsActions}>
+            <Button onClick={saveDefault} loading={busy}>
+              Save default
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <Text type="h3" className={styles.h3}>
+        Per-repo overrides
+      </Text>
+      <div className={styles.overrideComposer}>
+        <div>
+          <div className={styles.fieldLabel}>Repository</div>
+          <RepoPicker value={repo} onChange={setRepo} />
+        </div>
+        {repo != null ? (
+          <div className={styles.overrideEditor}>
+            <label className={styles.settingField}>
+              <span>Retention (days)</span>
+              <input
+                className={styles.hoursInput}
+                type="number"
+                min="1"
+                step="1"
+                placeholder="inherit default"
+                value={overrideDays}
+                onChange={(e) => setOverrideDays(e.target.value)}
+              />
+            </label>
+            <label className={styles.settingField}>
+              <span>Keep latest per branch</span>
+              <select
+                className={styles.keepLatestSelect}
+                value={overrideKeepLatest}
+                onChange={(e) =>
+                  setOverrideKeepLatest(e.target.value as KeepLatestChoice)
+                }
+              >
+                <option value="inherit">Inherit default</option>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+            <div className={styles.settingsActions}>
+              <Button onClick={addOverride} loading={busy}>
+                Save override
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {settings.backupRepoOverrides.length === 0 ? (
+        <Text className={styles.help}>No per-repo overrides yet.</Text>
+      ) : (
+        <ul className={styles.overrideList}>
+          {settings.backupRepoOverrides.map((o) => (
+            <li
+              key={`${o.repoUser}/${o.repoName}`}
+              className={styles.overrideRow}
+            >
+              <span className={styles.overrideRepo}>
+                {o.repoUser}/{o.repoName}
+              </span>
+              <span className={styles.overrideValue}>
+                {o.retentionDays == null ? "inherit" : `${o.retentionDays}d`} ·
+                keep latest:{" "}
+                {o.keepLatest == null ? "inherit" : o.keepLatest ? "on" : "off"}
+              </span>
+              <span className={styles.overrideActions}>
+                <Button style="secondary" onClick={() => editOverride(o)}>
+                  Edit
+                </Button>
+                <Button
+                  style="warning"
+                  onClick={() => removeOverride(o)}
+                  loading={busy}
+                >
+                  Clear
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Text type="h3" className={styles.h3}>
+        Storage usage
+      </Text>
+      {settings.backupUsage.length === 0 ? (
+        <Text className={styles.help}>No backups stored yet.</Text>
+      ) : (
+        <ul className={styles.overrideList}>
+          {settings.backupUsage.map((u) => (
+            <li
+              key={`${u.repoUser}/${u.repoName}`}
+              className={styles.overrideRow}
+            >
+              <span className={styles.overrideRepo}>
+                {u.repoUser}/{u.repoName}
+              </span>
+              <span className={styles.overrideValue}>
+                {formatBytes(u.totalSize)}
+              </span>
+            </li>
+          ))}
+          <li className={`${styles.overrideRow} ${styles.usageTotal}`}>
+            <span className={styles.overrideRepo}>Total</span>
+            <span className={styles.overrideValue}>
+              {formatBytes(totalUsage)}
+            </span>
+          </li>
+        </ul>
+      )}
+
+      <Text type="h3" className={styles.h3}>
+        Locked snapshots
+      </Text>
+      {settings.lockedBackups.length === 0 ? (
+        <Text className={styles.help}>No locked backups.</Text>
+      ) : (
+        <ul className={styles.overrideList}>
+          {settings.lockedBackups.map((b) => (
+            <li key={b.id} className={styles.overrideRow}>
+              <span className={styles.overrideRepo}>
+                {b.repoUser}/{b.repoName}
+              </span>
+              <span className={styles.overrideValue}>{b.configuration}</span>
+              <span className={styles.overrideValue}>
+                {b.startedAt.toLocaleDateString(undefined, {
+                  dateStyle: "medium",
+                })}
+              </span>
+              <span className={styles.overrideActions}>
+                <Button
+                  style="warning"
+                  onClick={() => unlock(b)}
+                  loading={busy}
+                >
+                  Unlock
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 };

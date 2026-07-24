@@ -89,6 +89,59 @@ const settingsSchema = z
       )
       .nullish()
       .transform((v) => v ?? []),
+    // Backup settings; tolerate a backend that predates backups (absent
+    // fields fall back to the server-side defaults: 30 days, no keep-latest).
+    backup_retention_days: z
+      .number()
+      .nullish()
+      .transform((v) => v ?? 30),
+    backup_keep_latest: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? false),
+    backup_repo_overrides: z
+      .array(
+        z.object({
+          repo_user: z.string(),
+          repo_name: z.string(),
+          retention_days: z
+            .number()
+            .nullish()
+            .transform((v) => v ?? null),
+          keep_latest: z
+            .boolean()
+            .nullish()
+            .transform((v) => v ?? null),
+        }),
+      )
+      .nullish()
+      .transform((v) => v ?? []),
+    backup_usage: z
+      .array(
+        z.object({
+          repo_user: z.string(),
+          repo_name: z.string(),
+          total_size: z.number(),
+        }),
+      )
+      .nullish()
+      .transform((v) => v ?? []),
+    locked_backups: z
+      .array(
+        z.object({
+          id: z.number(),
+          repo_user: z.string(),
+          repo_name: z.string(),
+          configuration: z.string(),
+          started_at: z.coerce.date(),
+          size: z
+            .number()
+            .nullish()
+            .transform((v) => v ?? null),
+        }),
+      )
+      .nullish()
+      .transform((v) => v ?? []),
   })
   .transform((s) => ({
     defaultBuildTimeoutMinutes: s.default_build_timeout_minutes,
@@ -122,6 +175,27 @@ const settingsSchema = z
       name: b.name,
       createdAt: b.created_at,
     })),
+    backupRetentionDays: s.backup_retention_days,
+    backupKeepLatest: s.backup_keep_latest,
+    backupRepoOverrides: s.backup_repo_overrides.map((o) => ({
+      repoUser: o.repo_user,
+      repoName: o.repo_name,
+      retentionDays: o.retention_days,
+      keepLatest: o.keep_latest,
+    })),
+    backupUsage: s.backup_usage.map((u) => ({
+      repoUser: u.repo_user,
+      repoName: u.repo_name,
+      totalSize: u.total_size,
+    })),
+    lockedBackups: s.locked_backups.map((b) => ({
+      id: b.id,
+      repoUser: b.repo_user,
+      repoName: b.repo_name,
+      configuration: b.configuration,
+      startedAt: b.started_at,
+      size: b.size,
+    })),
   }));
 
 export type ConfigureSettings = z.infer<typeof settingsSchema>;
@@ -130,6 +204,9 @@ export type ArtifactRepoOverride =
   ConfigureSettings["artifactRepoOverrides"][number];
 export type LockedArtifactBuild =
   ConfigureSettings["lockedArtifactBuilds"][number];
+export type BackupRepoOverride =
+  ConfigureSettings["backupRepoOverrides"][number];
+export type LockedBackup = ConfigureSettings["lockedBackups"][number];
 
 export const getConfigureSettings = async (): Promise<
   APIResult<ConfigureSettings>
@@ -248,6 +325,41 @@ export const deleteRepoArtifactSettings = async (
     z.any(),
     "DELETE",
     `configure/artifacts/repo/${owner}/${repo}`,
+  );
+
+export const setDefaultBackupSettings = async (
+  retentionDays: number,
+  keepLatest: boolean,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(z.any(), "PUT", "configure/backups/default", {
+    body: JSON.stringify({
+      retention_days: retentionDays,
+      keep_latest: keepLatest,
+    }),
+  });
+
+// A null field means "inherit the global setting".
+export const setRepoBackupSettings = async (
+  owner: string,
+  repo: string,
+  retentionDays: number | null,
+  keepLatest: boolean | null,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(z.any(), "PUT", `configure/backups/repo/${owner}/${repo}`, {
+    body: JSON.stringify({
+      retention_days: retentionDays,
+      keep_latest: keepLatest,
+    }),
+  });
+
+export const deleteRepoBackupSettings = async (
+  owner: string,
+  repo: string,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "DELETE",
+    `configure/backups/repo/${owner}/${repo}`,
   );
 
 const connectedDomainSchema = z.object({

@@ -11,6 +11,16 @@ import {
   getServerLogStream,
   redeployServer,
 } from "@/services/servers";
+import {
+  Backup,
+  backupDownloadUrl,
+  backupNow,
+  getServerBackups,
+  getServerRestores,
+  lockBackup,
+  restoreBackup,
+  unlockBackup,
+} from "@/services/backups";
 import { Table } from "@/components/table";
 import { ToggleSwitch } from "@/components/toggleSwitch";
 import { Link } from "@/components/link";
@@ -230,6 +240,9 @@ const ServersTable = (props: {
   >(null);
   const [redeployModal, setRedeployModal] =
     React.useState<null | RunningServer>(null);
+  const [backupsModal, setBackupsModal] = React.useState<RunningServer | null>(
+    null,
+  );
   const [showDomainsHelp, setShowDomainsHelp] = React.useState(false);
   return (
     <>
@@ -262,6 +275,12 @@ const ServersTable = (props: {
           }}
         />
       )}
+      {backupsModal ? (
+        <BackupsModal
+          server={backupsModal}
+          close={() => setBackupsModal(null)}
+        />
+      ) : null}
       <Table>
         <thead>
           <tr>
@@ -376,6 +395,11 @@ const ServersTable = (props: {
                     Logs
                   </Button>
                   <Button href={`/servers/${server.id}`}>Monitor</Button>
+                  {server.status === "Online" ? (
+                    <Button onClick={() => setBackupsModal(server)}>
+                      Backups
+                    </Button>
+                  ) : null}
                   {server.status !== "Ended" ? (
                     <Button onClick={() => setRedeployModal(server)}>
                       Redeploy
@@ -591,6 +615,223 @@ const RedeployConfirmationModal = (props: {
             <div>
               <Button loading={form.loading} submit>
                 {onlyThisServer ? "Redeploy this one" : "Redeploy all"}
+              </Button>
+              <Button onClick={props.onRequestClose}>Cancel</Button>
+            </div>
+          </div>
+        </ModalSection>
+      </form>
+    </FloatingModal>
+  );
+};
+
+const BackupsModal = (props: { server: RunningServer; close: () => void }) => {
+  const loadBackups = React.useCallback(
+    () => getServerBackups(props.server.id),
+    [props.server.id],
+  );
+  const loadRestores = React.useCallback(
+    () => getServerRestores(props.server.id),
+    [props.server.id],
+  );
+  const backupsResult = useLoading(loadBackups, { poll: fromSecs(5) });
+  const restoresResult = useLoading(loadRestores, { poll: fromSecs(5) });
+  const [backingUp, setBackingUp] = React.useState(false);
+  const [busyBackupId, setBusyBackupId] = React.useState<number | null>(null);
+  const [restoreTarget, setRestoreTarget] = React.useState<Backup | null>(
+    null,
+  );
+
+  const backups =
+    !backupsResult.loading && backupsResult.data.ok
+      ? backupsResult.data.data
+      : [];
+  const backupsError =
+    !backupsResult.loading && !backupsResult.data.ok
+      ? backupsResult.data.error.message
+      : null;
+  const restores =
+    !restoresResult.loading && restoresResult.data.ok
+      ? restoresResult.data.data
+      : [];
+  const hasRunning = backups.some((b) => b.status === "running");
+
+  const runBackupNow = async () => {
+    setBackingUp(true);
+    await backupNow(props.server.id);
+    setBackingUp(false);
+    backupsResult.reload();
+  };
+
+  const toggleLock = async (backup: Backup) => {
+    setBusyBackupId(backup.id);
+    await (backup.locked ? unlockBackup(backup.id) : lockBackup(backup.id));
+    setBusyBackupId(null);
+    backupsResult.reload();
+  };
+
+  return (
+    <FloatingModal className={styles.logsModal} onRequestClose={props.close}>
+      <ModalSection className={styles.logsModalSection}>
+        <div className={styles.logPanelHeader}>
+          <Text type="h1">
+            Backups — {props.server.repo_owner}/{props.server.repo_name}
+          </Text>
+          <Button
+            onClick={() => void runBackupNow()}
+            loading={backingUp || hasRunning}
+          >
+            Back up now
+          </Button>
+        </div>
+        {backupsError != null ? (
+          <div className={styles.error}>{backupsError}</div>
+        ) : backups.length === 0 ? (
+          <Text className={styles.muted}>No backups yet.</Text>
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <th>Started</th>
+                <th>Kind</th>
+                <th>Status</th>
+                <th>Size</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {backups.map((backup) => (
+                <tr key={backup.id}>
+                  <td>{backup.started_at.toLocaleString()}</td>
+                  <td>{backup.kind}</td>
+                  <td
+                    title={
+                      backup.status === "failed"
+                        ? (backup.error ?? undefined)
+                        : undefined
+                    }
+                  >
+                    {backup.status}
+                    {backup.locked ? " (locked)" : ""}
+                  </td>
+                  <td>
+                    {backup.size != null
+                      ? `${(backup.size / 1024 / 1024).toFixed(1)} MB`
+                      : "—"}
+                  </td>
+                  <td>
+                    <div className={styles.rowActions}>
+                      {backup.status === "success" ? (
+                        <Link href={backupDownloadUrl(backup.id)} target="_blank">
+                          Download
+                        </Link>
+                      ) : null}
+                      <Button
+                        style="secondary"
+                        onClick={() => void toggleLock(backup)}
+                        loading={busyBackupId === backup.id}
+                      >
+                        {backup.locked ? "Unlock" : "Lock"}
+                      </Button>
+                      {backup.status === "success" ? (
+                        <Button
+                          style="warning"
+                          onClick={() => setRestoreTarget(backup)}
+                        >
+                          Restore
+                        </Button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+        {restores.length > 0 ? (
+          <section>
+            <Text type="h2">Restores</Text>
+            <ul>
+              {restores.map((restore) => (
+                <li key={restore.id} className={styles.muted}>
+                  {restore.status} · {restore.initiated_by} ·{" "}
+                  {restore.started_at.toLocaleString()}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </ModalSection>
+      {restoreTarget != null ? (
+        <RestoreConfirmationModal
+          server={props.server}
+          backup={restoreTarget}
+          onRequestClose={() => setRestoreTarget(null)}
+          onRestored={() => {
+            setRestoreTarget(null);
+            restoresResult.reload();
+          }}
+        />
+      ) : null}
+    </FloatingModal>
+  );
+};
+
+// Requires typing the server's package name before the restore can be
+// confirmed — restoring overwrites the server's live data with a snapshot,
+// and there's no undo.
+const RestoreConfirmationModal = (props: {
+  server: RunningServer;
+  backup: Backup;
+  onRequestClose: () => void;
+  onRestored: () => void;
+}) => {
+  const [confirmText, setConfirmText] = React.useState("");
+  const form = useForm({}, async () => {
+    await restoreBackup(props.backup.id);
+    props.onRestored();
+    return Ok(null);
+  });
+  return (
+    <FloatingModal onRequestClose={props.onRequestClose}>
+      <form {...form.props}>
+        <ModalSection>
+          <Text type="h1">Restore backup</Text>
+          <Text type="p">
+            Restoring replaces {props.server.package_name}&apos;s current data
+            with the snapshot started{" "}
+            {props.backup.started_at.toLocaleString()}. This action is
+            irreversible.
+          </Text>
+          <Text type="p">
+            Type <strong>{props.server.package_name}</strong> to confirm.
+          </Text>
+          <input
+            type="text"
+            aria-label="Confirm server name"
+            placeholder={props.server.package_name}
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+          />
+          {match(form.result)
+            .with(Err({ message: P.select() }), (message) => (
+              <div className={styles.error}>
+                Failed to restore:
+                <br />
+                {`${message}`}
+              </div>
+            ))
+            .otherwise(() => null)}
+          <div className={styles.actions}>
+            <div>
+              <Button
+                style="warning"
+                submit
+                loading={
+                  form.loading || confirmText !== props.server.package_name
+                }
+              >
+                Yes, restore
               </Button>
               <Button onClick={props.onRequestClose}>Cancel</Button>
             </div>
