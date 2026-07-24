@@ -189,10 +189,20 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 4px 2px 8px;
+  padding: 3px 6px 3px 10px;
   background: var(--color-stone-100);
   border: 1px solid var(--color-stone-300);
   border-radius: 99px;
+}
+
+/* Plain monospace text inside the pill — the chip is the container, so the
+   text must NOT carry its own box (the shared .code class does, which nested
+   a bordered box inside the bordered pill). */
+.fodSkipChipText {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-stone-700);
 }
 
 .fodSkipRemove {

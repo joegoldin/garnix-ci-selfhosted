@@ -489,7 +489,7 @@ const FodCheckSkipEditor = ({
         <div className={styles.fodSkipList}>
           {patterns.map((p) => (
             <span key={p} className={styles.fodSkipChip}>
-              <code className={styles.code}>{p}</code>
+              <code className={styles.fodSkipChipText}>{p}</code>
               <button
                 type="button"
                 className={styles.fodSkipRemove}
