@@ -121,6 +121,11 @@ describe("build runtime settings", () => {
       artifactRepoOverrides: [],
       artifactUsage: [],
       lockedArtifactBuilds: [],
+      backupRetentionDays: 30,
+      backupKeepLatest: true,
+      backupRepoOverrides: [],
+      backupUsage: [],
+      lockedBackups: [],
     };
 
     render(<BuildRuntimeSettings settings={settings} reload={jest.fn()} />);

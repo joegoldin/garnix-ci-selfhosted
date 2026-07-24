@@ -720,7 +720,7 @@ const BackupsModal = (props: { server: RunningServer; close: () => void }) => {
                       : "—"}
                   </td>
                   <td>
-                    <div className={styles.rowActions}>
+                    <div className={styles.backupActions}>
                       {backup.status === "success" ? (
                         <Link href={backupDownloadUrl(backup.id)} target="_blank">
                           Download
