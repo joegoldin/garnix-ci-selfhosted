@@ -33,6 +33,15 @@ export const fetchFromAPI = async <Input, Output>(
   const finalOptions: RequestInit = {
     ...(options || {}),
     method,
+    // When our oauth2-proxy session has expired, the gateway answers every API
+    // call with a cross-origin 3xx to the SSO login. A same-origin `fetch` can't
+    // complete an OAuth flow (CSP blocks the authorize endpoint), so following
+    // the redirect throws a bare "NetworkError". `manual` turns it into an
+    // opaque redirect we detect below and report clearly instead. Every route
+    // reached here returns JSON/204; the only redirecting routes (artifact
+    // downloads) are plain hrefs, never fetched — so an opaque redirect here
+    // always means the session expired.
+    redirect: "manual",
   };
   if ((method === "POST" || method === "PUT") && finalOptions?.body)
     finalOptions.headers = {
@@ -40,6 +49,13 @@ export const fetchFromAPI = async <Input, Output>(
       "Content-Type": "application/json",
     };
   const response = await fetch(url, finalOptions);
+  if (response.type === "opaqueredirect")
+    return Err({
+      path,
+      reason: "not-ok",
+      message: "Your session expired — refresh the page to sign in again.",
+      status: 401,
+    });
   const rawBody = await response.text();
   const body = safeParseJson(rawBody);
   if (!response.ok) {
