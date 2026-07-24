@@ -40,6 +40,29 @@ let
   # Credentials garnix drops at deploy time for mode = "default"
   # (servers[].authentik = "default" in garnix.yaml).
   defaultCredsFile = "/var/garnix/keys/default-authentik.env";
+  # oauth2-proxy performs OIDC discovery against the issuer at startup and exits
+  # if it can't reach it. On a guest's first activation switch-to-configuration
+  # restarts systemd-networkd + systemd-resolved, and network-online.target does
+  # not actually gate on the microvm guest, so oauth2-proxy can start inside that
+  # brief DNS blackout, fail discovery, and fail the whole deploy — intermittently
+  # (when the guest boots with the network already settled it starts clean). Gate
+  # the real start on the issuer's discovery doc being reachable; give up after
+  # ~2min so a genuinely-unreachable issuer still surfaces oauth2-proxy's own
+  # error rather than blocking forever. In default mode the issuer is in the
+  # delivered env (EnvironmentFile); otherwise it's the configured issuerUrl.
+  fallbackIssuer = if cfg.mode == "default" then "" else cfg.issuerUrl;
+  waitForOidcIssuer = pkgs.writeShellScript "oauth2-wait-for-issuer" ''
+    set -u
+    issuer="''${OAUTH2_PROXY_OIDC_ISSUER_URL:-}"
+    [ -n "$issuer" ] || issuer=${lib.escapeShellArg fallbackIssuer}
+    [ -n "$issuer" ] || exit 0
+    disc="''${issuer%/}/.well-known/openid-configuration"
+    for _ in $(seq 1 60); do
+      ${pkgs.curl}/bin/curl -fsS --max-time 5 "$disc" >/dev/null 2>&1 && exit 0
+      sleep 2
+    done
+    exit 0
+  '';
 in
 {
   options.garnix.authentik = {
@@ -304,15 +327,9 @@ in
       };
     };
     systemd.services.oauth2-proxy = {
-      # oauth2-proxy does OIDC provider discovery against the issuer at startup,
-      # so it needs egress AND DNS working the moment it starts. On a guest's
-      # first full activation, switch-to-configuration restarts systemd-networkd
-      # and systemd-resolved; ordered only after garnix-authentik-secrets (which
-      # merely waits for the SSH-delivered creds file, i.e. inbound), oauth2-proxy
-      # could start inside that DNS/connectivity blackout, fail discovery, and
-      # exit non-zero — failing the whole deploy ("Failed to activate server")
-      # intermittently, depending on the race. Gate it on the network being back
-      # online and resolved being up.
+      # Ordering hints (kept as cheap defence; network-online.target proved not to
+      # actually gate on the microvm guest, which is why the real wait lives in
+      # ExecStartPre below).
       after = [
         "garnix-authentik-secrets.service"
         "network-online.target"
@@ -322,9 +339,13 @@ in
         "garnix-authentik-secrets.service"
         "network-online.target"
       ];
-      # Defense in depth: if provider discovery still flakes transiently, recover
-      # instead of leaving the gate — and the deploy — wedged in a failed state.
       serviceConfig = {
+        # Block the real start until OIDC discovery will succeed (see
+        # waitForOidcIssuer), so startup can't lose the race with
+        # networkd/resolved restarting during the guest's first activation.
+        ExecStartPre = waitForOidcIssuer;
+        # If discovery still flakes transiently after that, recover instead of
+        # leaving the gate — and the deploy — wedged in a failed state.
         Restart = lib.mkForce "on-failure";
         RestartSec = "3s";
       };
