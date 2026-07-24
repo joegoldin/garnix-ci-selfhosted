@@ -399,6 +399,11 @@ startServer = curry4
         setupServer (commitInfo ^. repoInfo) (serverToSpinUp ^. #build) serverInfo `whenError` \error -> do
           let logs = showPretty (err error)
           DB.appendToServerDeployLog (serverInfo ^. id) logs
+          -- If the guest booted but failed to activate, it is still reachable
+          -- (teardown runs later), so capture WHY the switch failed.
+          case err error of
+            ActivationError {} -> captureGuestFailureDiagnostics serverInfo
+            _ -> pure ()
       let logs =
             T.unlines
               [ "Server has been successfully deployed to: https://"
@@ -456,7 +461,11 @@ redeployServer reporter commitInfo deploymentType serverInfo wanted = do
         DB.setServerExposed (serverInfo ^. id) (exposedBlob wanted authorizesGarnixUser exposeResult)
         DB.setServerDomains (serverInfo ^. id) (wanted ^. #domains)
         copyClosure sshUser serverInfo storePath <?> "Copying closure for redeployment"
-        deploymentLogs <- switchToConfiguration sshUser serverInfo storePath <?> "Switching to redeployment configuration"
+        deploymentLogs <-
+          (switchToConfiguration sshUser serverInfo storePath <?> "Switching to redeployment configuration")
+            `whenError` \error -> case err error of
+              ActivationError {} -> captureGuestFailureDiagnostics serverInfo
+              _ -> pure ()
         now <- liftIO getCurrentTime
         let serverInfo' =
               serverInfo
@@ -879,6 +888,38 @@ captureAndStoreSshUsers server =
           $ cmd "ssh"
           & addArgs (sshArgs <> ["garnix@" <> ip, "getent passwd"])
       DB.setServerSshUsers (server ^. id) (parseLoginUsers output)
+
+-- | Best-effort: when activation fails the guest is still up (its teardown runs
+-- later), so pull the guest's failed-unit list and recent warning+ journal (as
+-- root over the hosting key) into the server's deploy log. @switch-to-configuration@
+-- only reports "the following units failed: <unit>", never WHY; this surfaces the
+-- actual cause (e.g. a service that couldn't start) in the run's deploy logs.
+-- Never fails the deploy: any ssh/journal error is logged and swallowed.
+captureGuestFailureDiagnostics :: ServerInfo -> M ()
+captureGuestFailureDiagnostics server =
+  capture `catchEither` \e ->
+    log Informational
+      $ "captureGuestFailureDiagnostics: best-effort guest diagnostics failed for server "
+      <> show (server ^. id)
+      <> ": "
+      <> either show show e
+  where
+    capture = do
+      (ip, sshArgs) <- ServerPool.sshArgsFor server
+      StdoutUntrimmed output <-
+        runSubProcess
+          $ cmd "ssh"
+          & addArgs (sshArgs <> ["root@" <> ip, diagCmd])
+      DB.appendToServerDeployLog (server ^. id)
+        $ "\n=== guest diagnostics ("
+        <> ip
+        <> ") ===\n"
+        <> cs output
+    diagCmd =
+      "echo '--- failed units ---'; "
+        <> "systemctl --failed --no-legend --plain 2>/dev/null; "
+        <> "echo; echo '--- journal since boot (warning and above), tail ---'; "
+        <> "journalctl -b --no-pager -p warning -o short-precise 2>/dev/null | tail -150"
 
 -- | Parse @getent passwd@ output (@name:passwd:uid:gid:gecos:home:shell@ per
 -- line) into login usernames, dropping service/system accounts whose shell
