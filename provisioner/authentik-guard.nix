@@ -351,6 +351,20 @@ in
       };
     };
 
+    # The real fix for the intermittent oauth2-proxy activation failure. The
+    # 2026-07 nixpkgs / switch-to-configuration-ng restarts systemd-networkd and
+    # systemd-resolved on the guest's FIRST activation (visible in the deploy
+    # stderr), and on some guests that restart leaves DNS broken for the rest of
+    # the switch — so oauth2-proxy's startup OIDC discovery can't resolve the
+    # issuer (and neither can the ExecStartPre curl above; the outage is not
+    # transient), and the deploy fails. Their config does not change across this
+    # switch and the network is already working (garnix just SSH'd in over it to
+    # deploy), so pin them: leave the running, working instances in place. Same
+    # class of switch-to-configuration-ng restart flake that the @slow tests hit
+    # with the udev sockets.
+    systemd.services.systemd-networkd.restartIfChanged = false;
+    systemd.services.systemd-resolved.restartIfChanged = false;
+
     # nginx forward-auth gate on :80 (the port Traefik proxies to). Strips any
     # client-supplied auth headers, proxies /oauth2/* to the proxy, and gates
     # everything else through /oauth2/auth before reaching the upstream.
