@@ -155,6 +155,8 @@ dependencies:
 
 library:
   source-dirs: src
+  dependencies:
+    - conduit
 
 extra-source-files:
   - test/spec/data/create-server-response.json
@@ -205,6 +207,7 @@ tests:
       - -fno-warn-incomplete-uni-patterns
     dependencies:
       - binary
+      - conduit
       - generic-random
       - hspec
       - hspec-core

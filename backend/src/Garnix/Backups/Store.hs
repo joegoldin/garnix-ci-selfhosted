@@ -33,16 +33,18 @@ s3BackupStore env bucket maxSize =
 
     getFile :: Text -> FilePath -> M ()
     getFile key path = do
-      response <-
+      result <-
         liftIO
           $ runResourceT
           $ Amazonka.sendEither env (Amazonka.newGetObject bucket (Amazonka.ObjectKey key))
-      case response of
-        Left err -> throw $ OtherError $ show err
-        Right ok ->
-          liftIO
-            $ runResourceT
-            $ Amazonka.sinkBody (ok ^. #body) (sinkFile path)
+          >>= \case
+            Left err -> pure $ Left $ show err
+            Right ok -> do
+              Amazonka.sinkBody (ok ^. #body) (sinkFile path)
+              pure $ Right ()
+      case result of
+        Left err -> throw $ OtherError err
+        Right () -> pure ()
 
     deleteObject :: Text -> M ()
     deleteObject key =
