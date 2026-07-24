@@ -114,6 +114,13 @@ const InternalIpCell = ({ server }: { server: RunningServer }) =>
 // KiB -> GiB, one decimal (matches the compact table style).
 const kbToGiB = (kb: number): string => (kb / 1024 / 1024).toFixed(1);
 
+// The deployed version shown in the Servers table. A manual "Redeploy" / "Trigger
+// Builds" run keeps its readable `manual-<ts>` tag; a real push is shortened to
+// an 8-char SHA. Links to that commit's run tree so you can see what the server
+// is actually running.
+const formatVersion = (commit: string): string =>
+  commit.startsWith("manual-") ? commit : commit.slice(0, 8);
+
 // Compact CPU% / RAM cell fed by the latest pushed sample.
 const ResourcesCell = ({ stats }: { stats: RunningServer["stats"] }) => {
   if (!stats) return <span className={styles.muted}>—</span>;
@@ -261,6 +268,7 @@ const ServersTable = (props: {
             <th>Repo</th>
             <th>Deploy Type</th>
             <th>Build</th>
+            <th>Version</th>
             <th>Status</th>
             <th>Resources</th>
             <th>Internal IP</th>
@@ -313,6 +321,15 @@ const ServersTable = (props: {
                 <td>
                   <Link href={`/build/${server.configuration_build_id}`}>
                     {server.package_name}
+                  </Link>
+                </td>
+                <td>
+                  <Link
+                    href={`/commit/${server.commit}`}
+                    className={styles.version}
+                    title={server.commit}
+                  >
+                    {formatVersion(server.commit)}
                   </Link>
                 </td>
                 <td

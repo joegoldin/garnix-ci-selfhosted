@@ -209,6 +209,13 @@
   white-space: nowrap;
 }
 
+/* Deployed version (commit / manual-<ts> tag), linked to the commit run tree. */
+.version {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 /* Connect cell: ssh command rows + exposed ports. */
 .connect {
   display: flex;
