@@ -1,6 +1,7 @@
 module Garnix.Build.FodCheck
   ( withFodChecker,
     fodCheck,
+    globMatch,
     -- exported for testing:
     __findAllFodsRecursively,
     __classifyFodBuilder,
@@ -93,6 +94,12 @@ withFodChecker reporter commitInfo plan action = do
 getFodChecker :: Reporter -> CommitInfo -> ProductPlan -> M (Maybe FodChecker)
 getFodChecker reporter commitInfo plan = do
   garnixConfig <- YamlConfig.getConfig (fromMinutes $ plan ^. packageEvaluationTimeout)
+  -- The per-repo allowlist of FOD names (globs) to skip instead of fail closed.
+  repoConfig <-
+    DB.getRepoConfig
+      (commitInfo ^. repoInfo . ghRepoOwner)
+      (commitInfo ^. repoInfo . ghRepoName)
+  let skipPatterns = repoConfig ^. fodCheckSkip
   if garnixConfig ^. YamlConfig.fodChecks
     then do
       run <- DB.newRun "FOD checks" commitInfo
@@ -109,20 +116,21 @@ getFodChecker reporter commitInfo plan = do
                   reportLogs runReporter' logLine
               }
       -- No billing in this fork: FOD checks are available to everyone.
-      Just <$> mkFodChecker runReporter
+      Just <$> mkFodChecker skipPatterns runReporter
     else do
       randomlyEnabled <- FeatureFlags.isFeatureOn FeatureFlags.FodChecks
       if randomlyEnabled
-        then Just <$> mkFodChecker mempty
+        then Just <$> mkFodChecker skipPatterns mempty
         else pure Nothing
   where
-    mkFodChecker :: RunReporter -> M FodChecker
-    mkFodChecker runReporter =
+    mkFodChecker :: [Text] -> RunReporter -> M FodChecker
+    mkFodChecker skipPatterns runReporter =
       FodChecker runReporter
         <$> newMVar 0
         <*> newMVar 0
         <*> newMVar (Just [])
         <*> newMVar mempty
+        <*> pure skipPatterns
 
 fodCheck :: Maybe FodChecker -> Nix.DrvPath -> M ()
 fodCheck = curry $ mockable #fodCheckMock $ \(fodChecker, drvPath) -> do
@@ -254,6 +262,43 @@ getFodBuilderDiagnosis drvPath = do
 checkFod :: FodChecker -> Nix.DrvPath -> System -> M (Either Text ())
 checkFod fodChecker drvPath system = do
   log Informational $ "checking fod: " <> cs drvPath <> ", system: " <> system ^. systemTextIso
+  let fodName = fodNameFromDrvPath drvPath
+  case find (`globMatch` fodName) (fodChecker ^. #fodCheckSkipPatterns) of
+    -- An admin has allowlisted this FOD via repo_config.fod_check_skip: treat
+    -- it as skipped rather than rebuilding it or failing closed. It is NOT
+    -- recorded as verified (a later config change re-checks it).
+    Just pat -> do
+      let skipMessage =
+            "skipping FOD " <> fodName <> ": matched repo fod-check-skip pattern " <> pat
+      log Informational skipMessage
+      reportLogs (fodChecker ^. #runReporter)
+        $ LogLine (Just $ PackageName $ fodName <> " (skipped)") Nothing skipMessage
+      modifyMVar_ (fodChecker ^. #totalSkipped) $ pure . (+ 1)
+      pure $ Right ()
+    Nothing -> checkFodByRebuild fodChecker drvPath system
+
+-- | Name matched against a repo's FOD-check-skip globs: the @\<name\>@ from a
+-- @/nix/store/\<hash\>-\<name\>.drv@ path with the trailing @.drv@ stripped
+-- (e.g. @stage0-posix-1.9.1-source@).
+fodNameFromDrvPath :: Nix.DrvPath -> Text
+fodNameFromDrvPath drvPath =
+  let name = Nix.getName (Nix.getDrvPath drvPath)
+   in fromMaybe name (Text.stripSuffix ".drv" name)
+
+-- | Glob match where @*@ matches any (possibly empty) run of characters and
+-- every other character matches literally. No @?@ or character classes.
+globMatch :: Text -> Text -> Bool
+globMatch pat str = go (Text.unpack pat) (Text.unpack str)
+  where
+    go :: String -> String -> Bool
+    go [] ys = null ys
+    go ('*' : ps) [] = go ps []
+    go ('*' : ps) ys@(_ : ys') = go ps ys || go ('*' : ps) ys'
+    go (_ : _) [] = False
+    go (p : ps) (y : ys) = p == y && go ps ys
+
+checkFodByRebuild :: FodChecker -> Nix.DrvPath -> System -> M (Either Text ())
+checkFodByRebuild fodChecker drvPath system = do
   result <- rebuildFod system drvPath
   case result of
     Left stderr -> do

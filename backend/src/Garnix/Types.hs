@@ -1949,12 +1949,17 @@ data RepoConfig = RepoConfig
     -- | Per-repo build/eval timeout override, in minutes. 'Nothing' means fall
     -- back to the global default (or, absent that, the plan's timeout). Only
     -- consulted in self-host mode via the Configure page.
-    _repoConfigBuildTimeoutMinutes :: Maybe Int32
+    _repoConfigBuildTimeoutMinutes :: Maybe Int32,
+    -- | Per-repo allowlist of glob patterns (matched against a fixed-output
+    -- derivation's @\<name\>@) whose matching FODs are SKIPPED by the FOD check
+    -- instead of failing closed. Set from the Configure page. Empty by default.
+    -- See 'Garnix.Build.FodCheck'.
+    _repoConfigFodCheckSkip :: [Text]
   }
   deriving stock (Show)
 
 defaultRepoConfig :: RepoConfig
-defaultRepoConfig = RepoConfig False (fromGigabytes 16) False False Nothing
+defaultRepoConfig = RepoConfig False (fromGigabytes 16) False False Nothing []
 
 newtype Memory = Memory Int64
   deriving stock (Show, Eq, Generic, Ord)

@@ -28,6 +28,12 @@ const settingsSchema = z
           .boolean()
           .nullish()
           .transform((v) => v ?? false),
+        // Glob patterns whose matching fixed-output derivations skip fodChecks.
+        // Older backends omit it; tolerate absent/null as an empty list.
+        fod_check_skip: z
+          .array(z.string())
+          .nullish()
+          .transform((v) => v ?? []),
       }),
     ),
     // Artifact settings; tolerate a backend that predates artifacts (absent
@@ -93,6 +99,7 @@ const settingsSchema = z
       buildTimeoutMinutes: o.build_timeout_minutes,
       maxEvalMemoryGib: o.max_eval_memory_gib,
       defaultAuthentikApproved: o.default_authentik_approved,
+      fodCheckSkip: o.fod_check_skip,
     })),
     artifactRetentionDays: s.artifact_retention_days,
     artifactKeepLatest: s.artifact_keep_latest,
@@ -186,6 +193,21 @@ export const setRepoDefaultAuthentik = async (
     "PUT",
     `configure/repo/${owner}/${repo}/default-authentik`,
     { body: JSON.stringify({ approved }) },
+  );
+
+// Replace the repo's FOD-check skip glob patterns (e.g. "stage0-posix-*-source").
+// The backend skips fodChecks for fixed-output derivations whose name matches
+// any pattern instead of failing the build. Mirrors the evaluation-memory setter.
+export const putRepoFodCheckSkip = async (
+  owner: string,
+  repo: string,
+  patterns: string[],
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "PUT",
+    `configure/repo/${owner}/${repo}/fod-check-skip`,
+    { body: JSON.stringify({ patterns }) },
   );
 
 export const setDefaultArtifactSettings = async (

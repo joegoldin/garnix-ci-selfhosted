@@ -14,6 +14,7 @@ module Garnix.API.Configure
     SetTimeoutDto (..),
     SetEvaluationMemoryDto (..),
     SetDefaultAuthentikDto (..),
+    SetFodCheckSkipDto (..),
     ArtifactRepoOverrideDto (..),
     ArtifactUsageDto (..),
     LockedArtifactBuildDto (..),
@@ -81,6 +82,14 @@ data ConfigureAPI route = ConfigureAPI
         :> Capture "repo" GhRepoName
         :> "default-authentik"
         :> ReqBody '[JSON] SetDefaultAuthentikDto
+        :> Put '[JSON] NoContent,
+    _configureAPISetRepoFodCheckSkip ::
+      route
+        :- "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> "fod-check-skip"
+        :> ReqBody '[JSON] SetFodCheckSkipDto
         :> Put '[JSON] NoContent,
     _configureAPISetArtifactDefaults ::
       route
@@ -151,7 +160,10 @@ data RepoRuntimeOverrideDto = RepoRuntimeOverrideDto
     _repoRuntimeOverrideDtoMaxEvalMemoryGib :: Maybe Int64,
     -- | Whether this repo is admin-approved for @authentik: default@ hosting
     -- (sharing garnix's own OIDC client credentials with the deployed guest).
-    _repoRuntimeOverrideDtoDefaultAuthentikApproved :: Bool
+    _repoRuntimeOverrideDtoDefaultAuthentikApproved :: Bool,
+    -- | Glob patterns (on a FOD's @\<name\>@) whose matching fixed-output
+    -- derivations the FOD check skips instead of failing closed.
+    _repoRuntimeOverrideDtoFodCheckSkip :: [Text]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -200,6 +212,22 @@ instance ToJSON SetDefaultAuthentikDto where
   toJSON = ourToJSON
 
 instance FromJSON SetDefaultAuthentikDto where
+  parseJSON = ourParseJSON
+
+-- | Body of @PUT configure\/repo\/\<owner\>\/\<repo\>\/fod-check-skip@: the
+-- full set of glob patterns (on a FOD's @\<name\>@) whose matching fixed-output
+-- derivations the FOD check skips instead of failing closed. Replaces the
+-- repo's existing list; an empty list clears it.
+newtype SetFodCheckSkipDto = SetFodCheckSkipDto
+  { _setFodCheckSkipDtoPatterns :: [Text]
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetFodCheckSkipDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetFodCheckSkipDto where
   parseJSON = ourParseJSON
 
 -- | A repo's artifact retention override. 'Nothing' fields inherit the
@@ -333,13 +361,14 @@ configureAPI auth =
                 toGigabytes minimumEvalMemory,
               _configureSettingsDtoRepoOverrides =
                 map
-                  ( \(o, r, timeout, memory, authentikApproved) ->
+                  ( \(o, r, timeout, memory, authentikApproved, fodCheckSkip) ->
                       RepoRuntimeOverrideDto
                         o
                         r
                         timeout
                         (toGigabytes . max minimumEvalMemory <$> memory)
                         authentikApproved
+                        fodCheckSkip
                   )
                   overrides,
               _configureSettingsDtoArtifactRetentionDays = artifactRetentionDays,
@@ -388,6 +417,10 @@ configureAPI auth =
       _configureAPISetRepoDefaultAuthentik = \owner repo dto -> do
         requireSelfHostConfig auth
         DB.setDefaultAuthentikApproved owner repo (_setDefaultAuthentikDtoApproved dto)
+        pure NoContent,
+      _configureAPISetRepoFodCheckSkip = \owner repo dto -> do
+        requireSelfHostConfig auth
+        DB.setRepoFodCheckSkip owner repo (_setFodCheckSkipDtoPatterns dto)
         pure NoContent,
       _configureAPISetArtifactDefaults = \dto -> do
         requireSelfHostConfig auth

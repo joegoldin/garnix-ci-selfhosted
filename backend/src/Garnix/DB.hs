@@ -101,13 +101,17 @@ getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
     map
-      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout) ->
+      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout, fodCheckSkip) ->
           RepoConfig
             skipInputChecks
             (max (defaultRepoConfig ^. maxEvalMemory) (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory))
             privateCache
             defaultAuthentikApproved
             buildTimeout
+            -- `text[]` decodes as `[Maybe Text]`; drop any (impossible) NULL
+            -- elements. The column is NOT NULL DEFAULT '{}', so absent rows
+            -- fall through to 'defaultRepoConfig' with an empty list.
+            (catMaybes fodCheckSkip)
       )
       <$> pgQuery
         [pgSQL|
@@ -116,7 +120,8 @@ getRepoConfig repoOwner repoName = do
             max_eval_memory,
             private_cache,
             default_authentik_approved,
-            build_timeout_minutes
+            build_timeout_minutes,
+            fod_check_skip
           FROM repo_config
           WHERE repo_user = ${repoOwner}
             AND repo_name = ${repoName}
@@ -149,20 +154,37 @@ setDefaultBuildTimeout mMinutes =
           DO UPDATE SET default_build_timeout_minutes = ${mMinutes}
       |]
 
--- | Every repo with a build-timeout or evaluation-memory override, or that has
--- been approved for @authentik: default@ hosting (so an approved repo with no
--- other override still surfaces on the Configure page).
-getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool)]
+-- | Every repo with a build-timeout or evaluation-memory override, that has
+-- been approved for @authentik: default@ hosting, or that has any FOD-check
+-- skip patterns (so a repo with only that set still surfaces on the Configure
+-- page).
+getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool, [Text])]
 getRepoRuntimeOverrides =
-  pgQuery
-    [pgSQL|
-      SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved
-      FROM repo_config
-      WHERE build_timeout_minutes IS NOT NULL
-         OR max_eval_memory IS NOT NULL
-         OR default_authentik_approved = true
-      ORDER BY repo_user, repo_name
-    |]
+  map (\(o, r, timeout, memory, authentikApproved, fodCheckSkip) -> (o, r, timeout, memory, authentikApproved, catMaybes fodCheckSkip))
+    <$> pgQuery
+      [pgSQL|
+        SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved, fod_check_skip
+        FROM repo_config
+        WHERE build_timeout_minutes IS NOT NULL
+           OR max_eval_memory IS NOT NULL
+           OR default_authentik_approved = true
+           OR fod_check_skip <> '{}'
+        ORDER BY repo_user, repo_name
+      |]
+
+-- | Replace a repo's FOD-check skip patterns (globs on the FOD's @\<name\>@).
+-- An empty list clears them. Admin-only, driven from the Configure page; see
+-- 'Garnix.Build.FodCheck'.
+setRepoFodCheckSkip :: GhRepoOwner -> GhRepoName -> [Text] -> M ()
+setRepoFodCheckSkip repoOwner repoName patterns =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config (repo_user, repo_name, fod_check_skip)
+          VALUES (${repoOwner}, ${repoName}, ${patterns}::text[])
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET fod_check_skip = ${patterns}::text[]
+      |]
 
 -- | Approve or revoke a repo for @authentik: default@ hosting. When approved,
 -- the repo's deployed servers receive garnix's own OIDC client credentials

@@ -113,6 +113,7 @@ describe("build runtime settings", () => {
           buildTimeoutMinutes: 120,
           maxEvalMemoryGib: 32,
           defaultAuthentikApproved: false,
+          fodCheckSkip: [],
         },
       ],
       artifactRetentionDays: 30,

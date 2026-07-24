@@ -25,6 +25,7 @@ import {
   getBuiltRepos,
   getConfigureSettings,
   getConnectedDomains,
+  putRepoFodCheckSkip,
   setDefaultArtifactSettings,
   setDefaultBuildTimeout,
   setRepoArtifactSettings,
@@ -405,43 +406,123 @@ export const BuildRuntimeSettings = ({
           {settings.repoOverrides.map((o) => (
             <li
               key={`${o.repoUser}/${o.repoName}`}
-              className={styles.overrideRow}
+              className={styles.overrideRowStack}
             >
-              <span className={styles.overrideRepo}>
-                {o.repoUser}/{o.repoName}
-              </span>
-              <span className={styles.overrideDetails}>
-                <span className={styles.overrideValue}>
-                  {o.buildTimeoutMinutes == null
-                    ? "default time"
-                    : `${minutesToHours(o.buildTimeoutMinutes)}h`}
+              <div className={styles.overrideSummary}>
+                <span className={styles.overrideRepo}>
+                  {o.repoUser}/{o.repoName}
                 </span>
-                <span className={styles.overrideValue}>
-                  {o.maxEvalMemoryGib == null
-                    ? `default (${settings.defaultMaxEvalMemoryGib} GiB)`
-                    : `${o.maxEvalMemoryGib} GiB`}
+                <span className={styles.overrideDetails}>
+                  <span className={styles.overrideValue}>
+                    {o.buildTimeoutMinutes == null
+                      ? "default time"
+                      : `${minutesToHours(o.buildTimeoutMinutes)}h`}
+                  </span>
+                  <span className={styles.overrideValue}>
+                    {o.maxEvalMemoryGib == null
+                      ? `default (${settings.defaultMaxEvalMemoryGib} GiB)`
+                      : `${o.maxEvalMemoryGib} GiB`}
+                  </span>
+                  <span className={styles.overrideValue}>
+                    default-OIDC:{" "}
+                    {o.defaultAuthentikApproved ? "allowed" : "off"}
+                  </span>
                 </span>
-                <span className={styles.overrideValue}>
-                  default-OIDC:{" "}
-                  {o.defaultAuthentikApproved ? "allowed" : "off"}
+                <span className={styles.overrideActions}>
+                  <Button style="secondary" onClick={() => editOverride(o)}>
+                    Edit
+                  </Button>
+                  <Button
+                    style="warning"
+                    onClick={() => removeOverride(o)}
+                    loading={busy}
+                  >
+                    Delete
+                  </Button>
                 </span>
-              </span>
-              <span className={styles.overrideActions}>
-                <Button style="secondary" onClick={() => editOverride(o)}>
-                  Edit
-                </Button>
-                <Button
-                  style="warning"
-                  onClick={() => removeOverride(o)}
-                  loading={busy}
-                >
-                  Delete
-                </Button>
-              </span>
+              </div>
+              <FodCheckSkipEditor
+                patterns={o.fodCheckSkip}
+                busy={busy}
+                onChange={(patterns) => {
+                  void run(() =>
+                    putRepoFodCheckSkip(o.repoUser, o.repoName, patterns),
+                  );
+                }}
+              />
             </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+};
+
+// Per-repo editable list of FOD-check skip glob patterns. Renders the current
+// patterns as removable chips plus an add input; every add/remove persists the
+// full new list via the parent's onChange (which saves + reloads settings).
+const FodCheckSkipEditor = ({
+  patterns,
+  busy,
+  onChange,
+}: {
+  patterns: string[];
+  busy: boolean;
+  onChange: (patterns: string[]) => void;
+}) => {
+  const [draft, setDraft] = React.useState("");
+  const add = () => {
+    const pattern = draft.trim();
+    if (pattern === "" || patterns.includes(pattern)) return;
+    onChange([...patterns, pattern]);
+    setDraft("");
+  };
+  const remove = (pattern: string) =>
+    onChange(patterns.filter((p) => p !== pattern));
+
+  return (
+    <div className={styles.fodSkip}>
+      <div className={styles.fodSkipLabel}>FOD-check skip patterns</div>
+      {patterns.length === 0 ? (
+        <span className={styles.fodSkipEmpty}>None</span>
+      ) : (
+        <div className={styles.fodSkipList}>
+          {patterns.map((p) => (
+            <span key={p} className={styles.fodSkipChip}>
+              <code className={styles.code}>{p}</code>
+              <button
+                type="button"
+                className={styles.fodSkipRemove}
+                title={`Remove ${p}`}
+                aria-label={`Remove ${p}`}
+                disabled={busy}
+                onClick={() => remove(p)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className={styles.addRow}>
+        <input
+          className={styles.fodSkipInput}
+          type="text"
+          aria-label="Add FOD-check skip pattern"
+          placeholder="stage0-posix-*-source"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <Button onClick={add} loading={busy}>
+          Add
+        </Button>
+      </div>
     </div>
   );
 };

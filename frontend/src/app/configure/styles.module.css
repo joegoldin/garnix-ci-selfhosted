@@ -143,6 +143,94 @@
   border-bottom: none;
 }
 
+/* A per-repo override entry that stacks its summary row above the
+   FOD-check skip pattern editor. */
+.overrideRowStack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-stone-200);
+}
+
+.overrideRowStack:last-child {
+  border-bottom: none;
+}
+
+.overrideSummary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fodSkip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fodSkipLabel {
+  color: var(--color-stone-600);
+  font-size: 13px;
+}
+
+.fodSkipEmpty {
+  color: var(--color-stone-500);
+  font-size: 13px;
+}
+
+.fodSkipList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fodSkipChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 8px;
+  background: var(--color-stone-100);
+  border: 1px solid var(--color-stone-300);
+  border-radius: 99px;
+}
+
+.fodSkipRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--color-stone-500);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fodSkipRemove:hover {
+  background: var(--color-stone-200);
+  color: var(--color-stone-800);
+}
+
+.fodSkipRemove:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.fodSkipInput {
+  flex: 1;
+  min-width: 200px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--color-stone-300);
+  background-color: var(--color-white);
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+
 .overrideRepo {
   flex: 1;
   font-weight: 500;
@@ -329,7 +417,8 @@
     flex-wrap: wrap;
   }
 
-  .overrideRow {
+  .overrideRow,
+  .overrideSummary {
     align-items: flex-start;
     flex-direction: column;
   }

@@ -37,7 +37,7 @@ spec = do
       repoConfig ^. maxEvalMemory `shouldBeM` fromGigabytes 16
       configured <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides configured
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16) False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16) False []]
 
     it "approves, surfaces, and revokes default-authentik hosting per repo" $ asAdmin $ \api -> do
       _configureAPISetRepoDefaultAuthentik api "some-owner" "some-repo" (SetDefaultAuthentikDto True)
@@ -46,7 +46,7 @@ spec = do
       -- An approved repo with no timeout/memory override still surfaces.
       approvedDto <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides approvedDto
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing Nothing True]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing Nothing True []]
       _configureAPISetRepoDefaultAuthentik api "some-owner" "some-repo" (SetDefaultAuthentikDto False)
         `shouldReturnM` NoContent
       DB.isDefaultAuthentikApproved "some-owner" "some-repo" `shouldReturnM` False
@@ -66,13 +66,13 @@ spec = do
       configured <- _configureAPIGet api
       _configureSettingsDtoDefaultMaxEvalMemoryGib configured `shouldBeM` 16
       _configureSettingsDtoRepoOverrides configured
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32) False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32) False []]
 
       _configureAPIDeleteRepoEvaluationMemory api "some-owner" "some-repo"
         `shouldReturnM` NoContent
       memoryCleared <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides memoryCleared
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing False []]
       inherited <- DB.getRepoConfig "some-owner" "some-repo"
       inherited ^. maxEvalMemory `shouldBeM` fromGigabytes 16
       inherited ^. buildTimeoutMinutes `shouldBeM` Just 120
@@ -232,7 +232,8 @@ spec = do
                         repo_name: "some-repo",
                         build_timeout_minutes: 120,
                         max_eval_memory_gib: 32,
-                        default_authentik_approved: false
+                        default_authentik_approved: false,
+                        fod_check_skip: []
                       } |]
                     ]
       map toJSON (_configureSettingsDtoArtifactRepoOverrides dto)

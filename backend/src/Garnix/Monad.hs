@@ -425,7 +425,10 @@ data FodChecker = FodChecker
     totalSkipped :: MVar Int,
     totalVerified :: MVar Int,
     promises :: MVar (Maybe [Promise (Either [(Nix.DrvPath, Text)] ())]),
-    startedOrDone :: MVar (Set Nix.DrvPath)
+    startedOrDone :: MVar (Set Nix.DrvPath),
+    -- | Per-repo glob patterns (repo_config.fod_check_skip) whose matching FODs
+    -- are skipped instead of rebuilt/failed. See 'Garnix.Build.FodCheck'.
+    fodCheckSkipPatterns :: [Text]
   }
   deriving (Generic)
 

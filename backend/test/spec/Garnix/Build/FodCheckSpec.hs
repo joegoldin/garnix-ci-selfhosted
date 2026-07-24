@@ -245,6 +245,19 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
       __fodBuildArgs drvPath True
         `shouldBeM` ["build", "/nix/store/00000000000000000000000000000000-source.drv^*", "--no-link", "--json", "--builders", "", "--rebuild"]
 
+  describe "globMatch" $ do
+    it "matches a bootstrap-seed glob against a concrete FOD name" $ do
+      globMatch "stage0-posix-*-source" "stage0-posix-1.9.1-source" `shouldBeM` True
+    it "matches a bare literal and a leading/trailing star" $ do
+      globMatch "source" "source" `shouldBeM` True
+      globMatch "*-source" "stage0-posix-1.9.1-source" `shouldBeM` True
+      globMatch "stage0-*" "stage0-posix-1.9.1-source" `shouldBeM` True
+      globMatch "*" "anything-at-all" `shouldBeM` True
+    it "does not match a different name" $ do
+      globMatch "stage0-posix-*-source" "gcc-13.2.0" `shouldBeM` False
+      globMatch "stage0-posix-*-source" "stage0-posix-1.9.1" `shouldBeM` False
+      globMatch "source" "not-source-exactly" `shouldBeM` False
+
   describe "fodCheck" $ aroundM_ (withMock #rebuildFodMock rebuildFodTestImpl) $ do
     let test :: Nix.DrvPath -> M TestReport
         test drvPath = do
