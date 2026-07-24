@@ -649,7 +649,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -679,7 +679,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -699,7 +699,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -723,7 +723,7 @@ servers:
           commit <-
             Deprecated.writeMockRemote "test-branch"
               $ def
-              & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+              & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
           let prEvent =
                 mkPullRequestEvent commit "test-branch" "other-owner/repo-fork" "owner/repo" testInstallationId
                   & number .~ 42
@@ -741,7 +741,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "foo/bar" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "foo/bar" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         _ <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -755,7 +755,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "sh/some-feature"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         let prEvent =
               mkPullRequestEvent commit "sh/some-feature" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -773,7 +773,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "pkg-a" (OnPullRequest def) Nothing False False [] [] [] Nothing, ServerSection "pkg-b" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "pkg-a" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing, ServerSection "pkg-b" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         let prEvent =
               mkPullRequestEvent commit "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -796,7 +796,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -812,7 +812,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         _build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
@@ -828,7 +828,7 @@ servers:
         commitA <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         let prEvent =
               mkPullRequestEvent commitA "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                 & number .~ 42
@@ -864,7 +864,7 @@ servers:
         commit <-
           Deprecated.writeMockRemote "test-branch"
             $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing]
+            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
         build <- testBuild $ \build ->
           build
             & fromPrEvent (mkPrEvent commit)
