@@ -20,11 +20,18 @@ import Garnix.Monad.SubProcess.Deprecated qualified as Deprecated
 import Garnix.Prelude
 import Garnix.Types
 
-createServer :: RepoInfo -> DeploymentType -> ServerToSpinUp -> M ServerInfo
-createServer repoInfo deployType serverToSpinUp = do
+-- | @report@ surfaces the live phase (provisioning / evicting / queuing) to the
+-- deployment run so the UI shows what a deploy is actually waiting on, instead
+-- of an opaque Pending. It is deduped against the previous phase so the 5s
+-- budget-queue poll doesn't spam the log.
+createServer :: (Text -> M ()) -> RepoInfo -> DeploymentType -> ServerToSpinUp -> M ServerInfo
+createServer report repoInfo deployType serverToSpinUp = do
   budget <- hostingBudget
   let tier = serverToSpinUp ^. #serverTier
-      pollForServer = do
+      reportPhase lastReport msg
+        | lastReport == Just msg = pure lastReport
+        | otherwise = report msg >> pure (Just msg)
+      pollForServer lastReport = do
         res <- DB.claimServerDB serverToSpinUp (ghPrDeployment deployType)
         case res of
           Just r -> pure r
@@ -40,25 +47,28 @@ createServer repoInfo deployType serverToSpinUp = do
                   -- own readiness timeouts, failing the deploy — it does not
                   -- hang here.)
                   log Informational $ "createServer: no ready " <> show tier <> ", provisioning one on demand"
+                  lr <- reportPhase lastReport $ "No warm " <> serverTierToText tier <> " guest ready — provisioning one on demand (a fresh boot can take a couple of minutes)…"
                   provisionOne tier
-                  pollForServer
+                  pollForServer lr
                 else
                   DB.claimIdleReadyPoolVMForEviction >>= \case
                     Just (victimId, victimTier) -> do
                       -- At the budget but an idle warm VM of some tier exists:
                       -- reclaim it for the tier this deploy actually needs.
                       log Informational $ "createServer: evicting idle pooled " <> show victimTier <> " to free budget for " <> show tier
+                      lr <- reportPhase lastReport $ "At the hosting budget — freeing an idle " <> serverTierToText victimTier <> " guest to make room for a " <> serverTierToText tier <> "…"
                       bestEffortDeleteGuest victimId
-                      pollForServer
+                      pollForServer lr
                     Nothing -> do
                       -- Budget full and nothing idle to evict: queue. The
                       -- deploy stays Pending (no hard timeout — this is the
                       -- intended back-pressure) until a running server frees
                       -- resources.
                       log Informational $ "createServer: at hosting budget for " <> show tier <> " (committed=" <> show committed <> " cap=" <> show budget <> "); queuing until resources free"
+                      lr <- reportPhase lastReport "At the hosting RAM/CPU budget — queuing until running servers free resources…"
                       threadDelay pollForServerDuration
-                      pollForServer
-  server <- pollForServer
+                      pollForServer lr
+  server <- pollForServer Nothing
   log Informational $ "createServer: got server" <> show (server ^. id)
   (ip, sshArgs) <- sshArgsFor server
   void

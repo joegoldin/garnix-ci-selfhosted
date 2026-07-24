@@ -332,7 +332,14 @@ startServer = curry4
     withRunReporter reporter (ReportRun run) $ \runReporter -> do
       domain <- view #hostingDomain
       let publicHost = publicHostFor domain commitInfo deploymentType (serverToSpinUp ^. #build)
-      serverInfo <- ServerPool.createServer (commitInfo ^. repoInfo) deploymentType serverToSpinUp
+          -- Surface live deploy progress to the run so the UI shows what it is
+          -- waiting on (provisioning / booting a guest) instead of a bare
+          -- Pending; the first line also flips the run pending -> running.
+          reportProgress msg = reportLogs runReporter (mkLogLine msg)
+          tierName = serverTierToText (serverToSpinUp ^. #serverTier)
+      reportProgress $ "Provisioning " <> getPackageName (serverToSpinUp ^. #build . package) <> " on a " <> tierName <> " guest…"
+      serverInfo <- ServerPool.createServer reportProgress (commitInfo ^. repoInfo) deploymentType serverToSpinUp
+      reportProgress $ "Guest " <> serverInfo ^. ipv4Addr <> " ready — activating configuration…"
       when (serverToSpinUp ^. #useDefaultAuthentik)
         $ requireDefaultAuthentikAllowed commitInfo
       if serverToSpinUp ^. #useDefaultAuthentik
