@@ -720,9 +720,19 @@ copyDefaultAuthentikEnv (SshUser user) server publicHost = do
         ( (cs <$> sshArgs)
             <> [ cs user <> "@" <> cs ip,
                  remoteAsRoot user
+                   -- Write to a temp file and rename into place: `cat > file`
+                   -- creates (and truncates) the target before any bytes land,
+                   -- so a guest reader polling for the file can observe it empty
+                   -- or half-written and start oauth2-proxy with no client id /
+                   -- issuer, which exits immediately. rename(2) is atomic within
+                   -- the directory, so readers see old-or-complete, never partial.
                    $ "umask 077 && mkdir -p /var/garnix/keys && cat > "
                    <> envLocation
-                   <> " && chmod 400 "
+                   <> ".tmp && chmod 400 "
+                   <> envLocation
+                   <> ".tmp && mv -f "
+                   <> envLocation
+                   <> ".tmp "
                    <> envLocation
                ]
         )
@@ -751,9 +761,15 @@ copyAuthorizedKeys (SshUser user) forge' server mDeployer extraKeys = do
             ( (cs <$> sshArgs)
                 <> [ cs user <> "@" <> cs ip,
                      remoteAsRoot user
+                       -- Atomic for the same reason as the authentik env above:
+                       -- sshd may read authorized_keys while it is being written.
                        $ "mkdir -p /var/garnix/keys && cat > "
                        <> keyFile
-                       <> " && chmod 444 "
+                       <> ".tmp && chmod 444 "
+                       <> keyFile
+                       <> ".tmp && mv -f "
+                       <> keyFile
+                       <> ".tmp "
                        <> keyFile
                    ]
             )

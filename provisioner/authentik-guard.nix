@@ -51,18 +51,46 @@ let
   # error rather than blocking forever. In default mode the issuer is in the
   # delivered env (EnvironmentFile); otherwise it's the configured issuerUrl.
   fallbackIssuer = if cfg.mode == "default" then "" else cfg.issuerUrl;
-  waitForOidcIssuer = pkgs.writeShellScript "oauth2-wait-for-issuer" ''
+  # Runs as ExecStartPre. systemd loads EnvironmentFile as root before dropping
+  # to User=oauth2-proxy, so this sees the delivered credentials as env vars even
+  # though it cannot read the 0600 root-owned file itself.
+  oauth2Preflight = pkgs.writeShellScript "oauth2-preflight" ''
     set -u
+
+    # 1. Credentials must actually have been delivered. Without this oauth2-proxy
+    #    exits within ~2s with a bare "exit-code" and no usable message, which is
+    #    indistinguishable from a network fault and sends you chasing DNS ghosts.
+    missing=""
+    [ -n "''${OAUTH2_PROXY_CLIENT_SECRET:-}" ] || missing="$missing OAUTH2_PROXY_CLIENT_SECRET"
+    ${lib.optionalString (cfg.mode == "default") ''
+      [ -n "''${OAUTH2_PROXY_CLIENT_ID:-}" ] || missing="$missing OAUTH2_PROXY_CLIENT_ID"
+      [ -n "''${OAUTH2_PROXY_OIDC_ISSUER_URL:-}" ] || missing="$missing OAUTH2_PROXY_OIDC_ISSUER_URL"
+    ''}
+    if [ -n "$missing" ]; then
+      echo "garnix-authentik: refusing to start oauth2-proxy, credentials missing from ${envFile}:$missing (garnix-authentik-secrets.service should have written them)" >&2
+      exit 1
+    fi
+
+    # 2. Best-effort wait for the issuer. Bounded by wall clock and kept well
+    #    under TimeoutStartSec (set on the unit) — the previous version needed a
+    #    minimum of 120s to reach its own `exit 0` while the unit's start timeout
+    #    was 90s, so it could only ever be killed, never fall through.
     issuer="''${OAUTH2_PROXY_OIDC_ISSUER_URL:-}"
     [ -n "$issuer" ] || issuer=${lib.escapeShellArg fallbackIssuer}
     [ -n "$issuer" ] || exit 0
     disc="''${issuer%/}/.well-known/openid-configuration"
-    for _ in $(seq 1 60); do
+    deadline=$(( SECONDS + ${toString issuerWaitSeconds} ))
+    while [ "$SECONDS" -lt "$deadline" ]; do
       ${pkgs.curl}/bin/curl -fsS --max-time 5 "$disc" >/dev/null 2>&1 && exit 0
       sleep 2
     done
+    # Fall through: let oauth2-proxy surface its own discovery error.
     exit 0
   '';
+  # Wait budget for the issuer, and the start timeout that must comfortably
+  # exceed it (see oauth2Preflight step 2).
+  issuerWaitSeconds = 60;
+  startTimeoutSeconds = 180;
 in
 {
   options.garnix.authentik = {
@@ -237,21 +265,37 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # The script polls for up to 240s for garnix to deliver the credentials.
+        # Type=oneshot disables the start timeout by default, so give it an
+        # explicit bound that exceeds that poll: a delivery that never arrives
+        # should fail the deploy with the script's error, not hang it forever.
+        TimeoutStartSec = "300s";
         RuntimeDirectory = "garnix-authentik";
         StateDirectory = "garnix-authentik";
       };
-      path = [ pkgs.age pkgs.coreutils ];
+      path = [ pkgs.age pkgs.coreutils pkgs.gnugrep ];
       script =
         if cfg.mode == "default" then ''
           set -euo pipefail
           # garnix drops its own OIDC credentials (+ this deployment's redirect
-          # URL) shortly after boot; wait for them.
+          # URL) shortly after boot; wait for them. Wait for the file to be
+          # COMPLETE, not merely present: a plain `[ -f ]` goes true the instant
+          # the writer creates the file, so we could copy an empty or truncated
+          # env and start oauth2-proxy with no client id / issuer — it then exits
+          # immediately and fails the deploy. Newer backends rename the file into
+          # place atomically; this keeps older ones safe too.
+          creds_complete() {
+            [ -s "$1" ] \
+              && grep -q '^OAUTH2_PROXY_OIDC_ISSUER_URL=.' "$1" \
+              && grep -q '^OAUTH2_PROXY_CLIENT_ID=.' "$1" \
+              && grep -q '^OAUTH2_PROXY_CLIENT_SECRET=.' "$1"
+          }
           for _ in $(seq 1 120); do
-            [ -f ${defaultCredsFile} ] && break
+            creds_complete ${defaultCredsFile} && break
             sleep 2
           done
-          if [ ! -f ${defaultCredsFile} ]; then
-            echo "garnix-authentik: ${defaultCredsFile} never appeared; was this server deployed with authentik: default in garnix.yaml (and defaultAuthentik configured on the garnix host)?" >&2
+          if ! creds_complete ${defaultCredsFile}; then
+            echo "garnix-authentik: ${defaultCredsFile} never appeared complete (need OAUTH2_PROXY_OIDC_ISSUER_URL, OAUTH2_PROXY_CLIENT_ID and OAUTH2_PROXY_CLIENT_SECRET); was this server deployed with authentik: default in garnix.yaml (and defaultAuthentik configured on the garnix host)?" >&2
             exit 1
           fi
           # Cookie secret: generate once, persist across restarts within this guest.
@@ -262,17 +306,24 @@ in
           {
             cat ${defaultCredsFile}
             printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(cat ${stateDir}/cookie-secret)"
-          } > ${envFile}
-          chmod 600 ${envFile}
+          } > ${envFile}.tmp
+          chmod 600 ${envFile}.tmp
+          mv -f ${envFile}.tmp ${envFile}
         '' else ''
           set -euo pipefail
           # The repo key is copied in by garnix shortly after boot; wait for it.
+          # Wait until it actually DECRYPTS rather than until it merely exists:
+          # the key is streamed in over ssh, so a bare `[ -f ]` can fire while the
+          # file is still partial, and the decrypt below would then fail under
+          # `set -e` and take the whole deploy down.
           for _ in $(seq 1 120); do
-            [ -f ${repoKey} ] && break
+            [ -s ${repoKey} ] \
+              && age --decrypt -i ${repoKey} < ${cfg.clientSecretFile} >/dev/null 2>&1 \
+              && break
             sleep 2
           done
-          if [ ! -f ${repoKey} ]; then
-            echo "garnix-authentik: ${repoKey} never appeared; cannot decrypt client secret" >&2
+          if ! { [ -s ${repoKey} ] && age --decrypt -i ${repoKey} < ${cfg.clientSecretFile} >/dev/null 2>&1; }; then
+            echo "garnix-authentik: ${repoKey} never appeared (or cannot decrypt ${cfg.clientSecretFile}); cannot obtain the client secret" >&2
             exit 1
           fi
           client_secret="$(age --decrypt -i ${repoKey} < ${cfg.clientSecretFile})"
@@ -284,10 +335,11 @@ in
           {
             printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$client_secret"
             printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(cat ${stateDir}/cookie-secret)"
-          } > ${envFile}
+          } > ${envFile}.tmp
           # oauth2-proxy's keyFile is read by systemd as an EnvironmentFile (as
           # root, before dropping privileges), so root-only 0600 is enough.
-          chmod 600 ${envFile}
+          chmod 600 ${envFile}.tmp
+          mv -f ${envFile}.tmp ${envFile}
         '';
     };
 
@@ -340,10 +392,13 @@ in
         "network-online.target"
       ];
       serviceConfig = {
-        # Block the real start until OIDC discovery will succeed (see
-        # waitForOidcIssuer), so startup can't lose the race with
-        # networkd/resolved restarting during the guest's first activation.
-        ExecStartPre = waitForOidcIssuer;
+        # Verify the delivered credentials, then (best-effort) wait for the
+        # issuer. See oauth2Preflight.
+        ExecStartPre = oauth2Preflight;
+        # Must exceed oauth2Preflight's issuer wait, or systemd kills the unit
+        # mid-wait and the "give up and let oauth2-proxy report it" path is dead
+        # code.
+        TimeoutStartSec = "${toString startTimeoutSeconds}s";
         # If discovery still flakes transiently after that, recover instead of
         # leaving the gate — and the deploy — wedged in a failed state.
         Restart = lib.mkForce "on-failure";
@@ -351,17 +406,20 @@ in
       };
     };
 
-    # The real fix for the intermittent oauth2-proxy activation failure. The
-    # 2026-07 nixpkgs / switch-to-configuration-ng restarts systemd-networkd and
-    # systemd-resolved on the guest's FIRST activation (visible in the deploy
-    # stderr), and on some guests that restart leaves DNS broken for the rest of
-    # the switch — so oauth2-proxy's startup OIDC discovery can't resolve the
-    # issuer (and neither can the ExecStartPre curl above; the outage is not
-    # transient), and the deploy fails. Their config does not change across this
-    # switch and the network is already working (garnix just SSH'd in over it to
-    # deploy), so pin them: leave the running, working instances in place. Same
-    # class of switch-to-configuration-ng restart flake that the @slow tests hit
-    # with the udev sockets.
+    # Avoid needless network churn mid-switch: switch-to-configuration-ng would
+    # otherwise restart systemd-networkd and systemd-resolved on the guest's
+    # FIRST activation (visible in the deploy stderr), even though their config
+    # does not change across it and the network is demonstrably working (garnix
+    # just SSH'd in over it to deploy). Pinning them leaves the running, working
+    # instances in place.
+    #
+    # NB: this was originally added as "the fix" for the intermittent
+    # oauth2-proxy activation failure, on the theory that the restart blacked out
+    # DNS. That theory is disproven — a deploy carrying this pin still failed
+    # (the stderr shows "NOT restarting ... systemd-networkd.service,
+    # systemd-resolved.service" and oauth2-proxy failed anyway), and guests reach
+    # the issuer in ~0.3s throughout. The actual cause was the unsynchronized
+    # credential delivery handled above. Keep this as cheap hygiene, not as a fix.
     systemd.services.systemd-networkd.restartIfChanged = false;
     systemd.services.systemd-resolved.restartIfChanged = false;
 
