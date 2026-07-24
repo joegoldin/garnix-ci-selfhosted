@@ -197,7 +197,7 @@ spec = do
                           branch: master
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing]
         roundtripTest actual
 
       it "parses and serializes 'on-pull-request' deployment type of the 'servers'" $ do
@@ -212,7 +212,7 @@ spec = do
                           type: on-pull-request
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x2) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x2) Nothing False False [] [] [] Nothing Nothing]
         roundtripTest actual
 
       it "parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -229,7 +229,7 @@ spec = do
                           machine: i4x8
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing False False [] [] [] Nothing Nothing]
         roundtripTest actual
 
       it "return a nice error message when failing to parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -262,7 +262,7 @@ spec = do
                           isPrimary: true
                   |]
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 True) Nothing False False [] [] [] Nothing]
+        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 True) Nothing False False [] [] [] Nothing Nothing]
         roundtripTest actual
 
       it "accepts a custom absolute application log path" $ do
@@ -283,7 +283,7 @@ spec = do
         let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
         actual
           `shouldBe` Right
-            [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log"))]
+            [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log")) Nothing]
         roundtripTest actual
 
       it "enables the default application log path explicitly" $ do
@@ -326,6 +326,111 @@ spec = do
           `shouldSatisfy` \case
             Left err -> "applicationLog.path must be an absolute path" `isInfixOf` err
             Right _ -> False
+
+    describe "servers[].backups" $ do
+      it "parses a full backups section" $ do
+        let config :: ByteString
+            config =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: fridge
+                        deployment:
+                          type: on-branch
+                          branch: main
+                        backups:
+                          paths: [ /var/lib/app ]
+                          schedule: daily
+                          preBackupCommand: "echo pre"
+                          postRestoreCommand: "echo post"
+                  |]
+            Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
+        _backupSectionPaths section `shouldBe` ["/var/lib/app"]
+        _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 24
+        _backupSectionPreBackupCommand section `shouldBe` Just "echo pre"
+        _backupSectionPostBackupCommand section `shouldBe` Nothing
+
+      it "defaults schedule to daily" $ do
+        let config :: ByteString
+            config =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: fridge
+                        deployment:
+                          type: on-branch
+                          branch: main
+                        backups:
+                          paths: [ /var/lib/app ]
+                  |]
+            Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
+        _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 24
+
+      it "parses interval schedules" $ do
+        let hoursFor :: String -> Either String Int
+            hoursFor raw = do
+              cfg <-
+                decodeConfig
+                  $ cs
+                  $ unindent
+                    [i|
+                      servers:
+                        - configuration: fridge
+                          deployment:
+                            type: on-branch
+                            branch: main
+                          backups:
+                            paths: [ /var/lib/app ]
+                            schedule: #{raw}
+                    |]
+              case cfg ^. serverSection . to fromSingleton . backups of
+                Just section -> Right $ _backupScheduleHours (_backupSectionSchedule section)
+                Nothing -> Left "expected a backups section"
+        hoursFor "6h" `shouldBe` Right 6
+        hoursFor "hourly" `shouldBe` Right 1
+        hoursFor "weekly" `shouldBe` Right 168
+
+      it "rejects bad schedules" $ do
+        let scheduleConfig :: String -> ByteString
+            scheduleConfig raw =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: fridge
+                        deployment:
+                          type: on-branch
+                          branch: main
+                        backups:
+                          paths: [ /var/lib/app ]
+                          schedule: "#{raw}"
+                  |]
+            isBadScheduleError = \case
+              Left err -> "backups.schedule" `isInfixOf` err
+              Right _ -> False
+        decodeConfig (scheduleConfig "0h") `shouldSatisfy` isBadScheduleError
+        decodeConfig (scheduleConfig "sometimes") `shouldSatisfy` isBadScheduleError
+
+      it "rejects bad paths" $ do
+        let pathsConfig :: String -> ByteString
+            pathsConfig pathsYaml =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: fridge
+                        deployment:
+                          type: on-branch
+                          branch: main
+                        backups:
+                          paths: #{pathsYaml}
+                  |]
+        decodeConfig (pathsConfig "[ relative/path ]") `shouldSatisfy` isLeft
+        decodeConfig (pathsConfig "[ / ]") `shouldSatisfy` isLeft
+        decodeConfig (pathsConfig "[ /nix/store/foo ]") `shouldSatisfy` isLeft
+        decodeConfig (pathsConfig "[]") `shouldSatisfy` isLeft
 
     context "artifacts section" $ do
       it "parses the artifacts section" $ do
@@ -505,7 +610,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing]
 
       it "ignores the garnix.yaml file if there is a flake.nix garnix.config" $ GH.withFakeGithubInterface $ \ghState -> do
         let flake =
@@ -537,7 +642,7 @@ spec = do
                 |]
         config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake $ Just yaml) $ \commitInfo ->
           runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing]
+        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing]
 
     context "modules section" $ do
       it "sets the publish field for the default section to false" $ do

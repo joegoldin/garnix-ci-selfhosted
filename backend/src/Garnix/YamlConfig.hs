@@ -16,6 +16,10 @@ module Garnix.YamlConfig
     artifactDisplayName,
     artifacts,
     AttributeMatcher (..),
+    BackupSchedule (..),
+    BackupSection (..),
+    parseBackupSchedule,
+    validateBackupPaths,
     BuildSection (..),
     DeploySection (OnBranch, OnPullRequest),
     ExcludeBranches (..),
@@ -30,9 +34,18 @@ module Garnix.YamlConfig
     exposeSSH,
     authorizeDeployerGithubKeys,
     authorizedSSHKeys,
+    backups,
     ports,
     domains,
     logFile,
+    paths,
+    schedule,
+    hours,
+    raw,
+    preBackupCommand,
+    postBackupCommand,
+    preRestoreCommand,
+    postRestoreCommand,
     _garnixConfigActions,
     actions,
     asAttributeMatcher,
@@ -63,6 +76,7 @@ where
 
 import Autodocodec
 import Cradle qualified
+import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HashMap
@@ -85,6 +99,7 @@ import Garnix.Sandbox
 import Garnix.Types hiding (authorizeDeployerGithubKeys, authorizedSSHKeys, domains, exposeSSH, logFile)
 import System.Directory (doesFileExist)
 import System.FilePath (isAbsolute, splitDirectories)
+import Text.Read (readMaybe)
 
 getConfigFromFlake :: (HasCallStack) => Duration -> M (Maybe GarnixConfig)
 getConfigFromFlake evalTimeout = do
@@ -298,6 +313,81 @@ instance HasCodec ServerLogFile where
         | T.any (`elem` ['\NUL', '\n', '\r']) path = Left "applicationLog.path must not contain NUL or newline characters"
         | otherwise = Right (ServerLogFile path)
 
+-- | How often a server is backed up. Keeps the raw text the user wrote (for
+-- faithful re-encoding) plus the resolved interval in hours.
+data BackupSchedule = BackupSchedule
+  { _backupScheduleRaw :: Text,
+    _backupScheduleHours :: Int
+  }
+  deriving stock (Eq, Show, Generic)
+
+parseBackupSchedule :: Text -> Either String BackupSchedule
+parseBackupSchedule raw = case raw of
+  "hourly" -> Right $ BackupSchedule raw 1
+  "daily" -> Right $ BackupSchedule raw 24
+  "weekly" -> Right $ BackupSchedule raw (24 * 7)
+  _ -> case T.stripSuffix "h" raw of
+    Just n | Just hours <- readMaybe (cs n), hours >= 1 -> Right $ BackupSchedule raw hours
+    _ -> Left $ "backups.schedule must be hourly|daily|weekly or \"<N>h\" (N >= 1), got: " <> cs raw
+
+instance HasCodec BackupSchedule where
+  codec = bimapCodec parseBackupSchedule _backupScheduleRaw textCodec
+
+validateBackupPath :: Text -> Either String Text
+validateBackupPath path
+  | not (isAbsolute (cs path)) = Left $ "backups.paths entries must be absolute paths, got: " <> cs path
+  | path == "/" = Left "backups.paths must not contain /"
+  | "/nix/store" `T.isPrefixOf` path = Left "backups.paths must not contain /nix/store paths"
+  | ".." `elem` splitDirectories (cs path) = Left "backups.paths must not contain '..' components"
+  | T.any (`elem` ['\NUL', '\n', '\r', '\'']) path = Left "backups.paths must not contain NUL, newline, or single-quote characters"
+  | otherwise = Right path
+
+validateBackupPaths :: [Text] -> Either String [Text]
+validateBackupPaths [] = Left "backups.paths must not be empty"
+validateBackupPaths paths = traverse validateBackupPath paths
+
+data BackupSection = BackupSection
+  { _backupSectionPaths :: [Text],
+    _backupSectionSchedule :: BackupSchedule,
+    _backupSectionPreBackupCommand :: Maybe Text,
+    _backupSectionPostBackupCommand :: Maybe Text,
+    _backupSectionPreRestoreCommand :: Maybe Text,
+    _backupSectionPostRestoreCommand :: Maybe Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving (Aeson.FromJSON, Aeson.ToJSON) via (Autodocodec BackupSection)
+
+instance HasCodec BackupSection where
+  codec =
+    object "backups"
+      $ BackupSection
+      <$> requiredFieldWith
+        "paths"
+        (bimapCodec validateBackupPaths identity codec)
+        "Absolute paths inside the server to back up. Must not be empty, /, or under /nix/store."
+      .= _backupSectionPaths
+      <*> optionalFieldWithDefault
+        "schedule"
+        (BackupSchedule "daily" 24)
+        "How often to back up: hourly | daily (default) | weekly | \"<N>h\"."
+      .= _backupSectionSchedule
+      <*> optionalField
+        "preBackupCommand"
+        "Command run on the server (as root, via sh -c) before the backup tar is taken. A non-zero exit aborts the backup."
+      .= _backupSectionPreBackupCommand
+      <*> optionalField
+        "postBackupCommand"
+        "Command run on the server after the tar is taken (cleanup). Always attempted, even if the tar failed."
+      .= _backupSectionPostBackupCommand
+      <*> optionalField
+        "preRestoreCommand"
+        "Command run on the server before a restore untars (e.g. stop your service)."
+      .= _backupSectionPreRestoreCommand
+      <*> optionalField
+        "postRestoreCommand"
+        "Command run on the server after a restore untars (e.g. start your service). Always attempted, even if the untar failed."
+      .= _backupSectionPostRestoreCommand
+
 data ServerApplicationLog = ServerApplicationLog
   { _serverApplicationLogEnable :: Bool,
     _serverApplicationLogPath :: ServerLogFile
@@ -341,7 +431,8 @@ data ServerSection = ServerSection
     _serverSectionAuthorizedSSHKeys :: [Text],
     _serverSectionPorts :: [ServerPort],
     _serverSectionDomains :: [Text],
-    _serverSectionLogFile :: Maybe ServerLogFile
+    _serverSectionLogFile :: Maybe ServerLogFile,
+    _serverSectionBackups :: Maybe BackupSection
   }
   deriving stock (Eq, Show, Generic)
 
@@ -396,6 +487,10 @@ instance HasCodec ServerSection where
         Nothing
         "Optional application-log stream. Disabled by default; enable it to follow the configured absolute guest path over Garnix's private deploy SSH channel with bounded in-memory scrollback."
       .= _serverSectionLogFile
+      <*> optionalField
+        "backups"
+        "Scheduled backups of paths on this server: garnix SSHes in on the schedule, tars the paths, and stores the snapshot in the operator's backup bucket. See also preBackupCommand/preRestoreCommand hooks."
+      .= _serverSectionBackups
 
 data DeploySection
   = OnPullRequest {tier :: ServerTier}
@@ -760,5 +855,7 @@ makeFields ''GarnixConfig
 makeFields ''AttributeMatcher
 makeFields ''BuildSection
 makeFields ''ServerSection
+makeFields ''BackupSection
+makeFields ''BackupSchedule
 makeFields ''Action
 makeFields ''ArtifactSection
