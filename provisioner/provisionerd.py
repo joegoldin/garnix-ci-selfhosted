@@ -71,6 +71,17 @@ PORT_RANGE_END = int(os.environ.get("PROVISIONER_PORT_RANGE_END", "41999"))
 # Env-tunable via PROVISIONER_SSH_WAIT_SECONDS.
 SSH_WAIT_SECONDS = int(os.environ.get("PROVISIONER_SSH_WAIT_SECONDS", "300"))
 
+# DHCP lease time for guest reservations. Deliberately NOT "infinite": vm_ip()
+# wraps the /24 every 240 ids, so a long-dead guest's reservation lease used to
+# squat on its IP forever and block the new guest that reuses that IP — dnsmasq
+# logs "not using configured address X because it is leased to <old MAC>" and
+# hands the new guest a wrong (range) IP the backend can't reach. A finite lease
+# lets a dead guest's lease expire on its own, so the IP frees up with no
+# provisioner state to reconcile — robust across daemon crashes and host reboots
+# (dnsmasq drops expired leases when it reloads the leases file). Running guests
+# renew via systemd-networkd and keep their reserved IP. Env-tunable.
+DHCP_LEASE_TIME = os.environ.get("PROVISIONER_DHCP_LEASE_TIME", "1h")
+
 # create/destroy mutate shared state (dnsmasq hosts file, microvm state dirs)
 # and are slow; serialize them. status stays lock-free so the backend's
 # 1s-interval polls aren't blocked behind a multi-minute create.
@@ -173,7 +184,7 @@ def write_spec(name: str, vm_id: int, vcpu: int, mem: int) -> str:
 def dnsmasq_reserve(name: str, mac: str, ip: str):
     dnsmasq_drop(name)
     with open(DNSMASQ_HOSTS, "a") as f:
-        f.write(f"{mac},{ip},{name},infinite\n")
+        f.write(f"{mac},{ip},{name},{DHCP_LEASE_TIME}\n")
     run(["systemctl", "reload-or-restart", "dnsmasq.service"], check=False)
 
 

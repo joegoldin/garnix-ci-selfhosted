@@ -408,6 +408,14 @@ in
         port = 0; # DHCP only, no DNS
         interface = cfg.bridge;
         bind-interfaces = true;
+        # dnsmasq is the ONLY DHCP server on this host-only bridge, so let it be
+        # authoritative: when a guest requests its reserved (dhcp-hostsfile) IP
+        # that is still leased to a long-dead guest — vm_ip() reuses IPs every
+        # 240 ids — an authoritative server reclaims the address for the reserved
+        # host instead of handing out a different range IP. Paired with the finite
+        # reservation lease (provisionerd.py DHCP_LEASE_TIME) so stale leases also
+        # expire on their own; together this is self-healing across restarts.
+        dhcp-authoritative = true;
         dhcp-range = "${subnetPrefix}.10,${subnetPrefix}.250,12h";
         dhcp-hostsfile = "${stateDir}/dnsmasq-hosts";
         dhcp-option = [
