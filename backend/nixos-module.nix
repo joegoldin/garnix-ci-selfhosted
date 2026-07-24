@@ -369,6 +369,25 @@ in
             Feature is off when null.
           '';
         };
+        s3Backups = lib.mkOption {
+          type = lib.types.nullOr (lib.types.submodule {
+            options = {
+              bucket = lib.mkOption { type = lib.types.str; };
+            };
+          });
+          default = null;
+          description = ''
+            Server-backup bucket (garnix.yaml `servers[].backups:`). Single private
+            bucket; its key pair is read from
+            /run/secrets/s3-backups-{access-key-id,secret-access-key}.
+            Feature is off when null.
+          '';
+        };
+        maxBackupSize = lib.mkOption {
+          type = lib.types.int;
+          default = 4294967296;
+          description = "Size cap in bytes for one compressed server-backup snapshot (default 4 GiB).";
+        };
         provisionerSocket = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -757,6 +776,7 @@ in
         coreutils
         util-linux
         bzip2
+        zstd
         openssh
         age
         flakeInputs.comment.packages.${stdenv.hostPlatform.system}.default
@@ -844,6 +864,10 @@ in
           "S3_ARTIFACTS_PUBLIC_BUCKET=${config.services.garnixServer.s3Artifacts.publicBucket}"
           "S3_ARTIFACTS_PRIVATE_BUCKET=${config.services.garnixServer.s3Artifacts.privateBucket}"
           "S3_ARTIFACTS_PUBLIC_BASE_URL=${config.services.garnixServer.s3Artifacts.publicBaseUrl}"
+        ]
+        ++ lib.optionals (config.services.garnixServer.s3Backups != null) [
+          "S3_BACKUPS_BUCKET=${config.services.garnixServer.s3Backups.bucket}"
+          "GARNIX_MAX_BACKUP_SIZE=${toString config.services.garnixServer.maxBackupSize}"
         ]
         ++ lib.optionals (config.services.garnixServer.metricsScrapeUrl != null) [
           "GARNIX_METRICS_SCRAPE_URL=${config.services.garnixServer.metricsScrapeUrl}"
