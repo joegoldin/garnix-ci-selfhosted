@@ -94,19 +94,32 @@
   white-space: nowrap;
 }
 
-.label,
+/* Run/action/deployment names: keep on one line and ellipsize if long, rather
+   than breaking char-by-char (which collapsed to one letter per line when a
+   long phase detail stole the row width). */
+.label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Derivation paths are meant to wrap (there's room in the child rows). */
 .derivation {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.derivation {
   font-family: var(--font-mono, monospace);
   font-size: 13px;
 }
 
 .detail {
   margin-left: auto;
+  /* The detail can be a long live phase (e.g. a nix compile line). Cap it and
+     ellipsize so it never eats the row width and squishes the label. */
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--color-stone-500);
   font-size: 12px;
   white-space: nowrap;
@@ -119,5 +132,7 @@
 
   .detail {
     white-space: normal;
+    max-width: none;
+    overflow: visible;
   }
 }
