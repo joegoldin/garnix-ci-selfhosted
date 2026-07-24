@@ -58,6 +58,7 @@ library
       Garnix.Artifacts.Store
       Garnix.Async
       Garnix.Attribute
+      Garnix.Backups.Store
       Garnix.Build
       Garnix.Build.Action
       Garnix.Build.Checkout
@@ -193,6 +194,7 @@ library
     , base64-bytestring
     , bytestring
     , casing
+    , conduit
     , containers
     , cookie
     , cradle
@@ -863,6 +865,7 @@ test-suite spec
       Garnix.Artifacts.Store
       Garnix.Async
       Garnix.Attribute
+      Garnix.Backups.Store
       Garnix.Build
       Garnix.Build.Action
       Garnix.Build.Checkout
@@ -1001,6 +1004,7 @@ test-suite spec
     , binary
     , bytestring
     , casing
+    , conduit
     , containers
     , cookie
     , cradle
