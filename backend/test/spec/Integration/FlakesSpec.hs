@@ -77,8 +77,55 @@ garbageCollectStorePath path = do
     outputs <- lines <$> runProcess "nix-store" ["--query", "--outputs", path]
     forM_ outputs garbageCollectStorePath
   deriverPath <- getDeriver path
-  void $ runProcess "nix-store" $ ["--delete", path] ++ maybe [] pure deriverPath
+  -- Best effort, and deliberately a separate command: nix records a deriver even
+  -- after the .drv itself has been garbage collected, so asking to delete both
+  -- at once can fail wholesale on the stale .drv and leave the source path (the
+  -- one this hook actually has to remove) in the store.
+  forM_ deriverPath $ \drv ->
+    void $ runProcessMaybe "nix-store" ["--delete", drv]
+  deleteStorePath path
   where
+    -- The roots check above is only valid at the instant it runs: GCing the
+    -- referrers takes a while, and a concurrent nix process (the backend's own
+    -- in-flight builds — this is the @slow integration suite) can take a
+    -- temporary root on the path in the meantime, so the delete then fails with
+    -- "since it is still alive". That is the same transient-root situation
+    -- assertNoGcRoots already waits out for /proc roots, just surfacing one step
+    -- later, so wait it out here too instead of failing the suite.
+    deleteStorePath :: FilePath -> IO ()
+    deleteStorePath toDelete =
+      let go (n :: Int) = do
+            (exitCode, _, stderr') <-
+              readProcessWithExitCode "nix-store" ["--delete", toDelete] ""
+            case exitCode of
+              ExitSuccess -> pure ()
+              ExitFailure _
+                -- Someone else won the race and removed it: that is the outcome
+                -- we wanted anyway.
+                | "is not valid" `isInfixOf` stderr' -> pure ()
+                | "still alive" `isInfixOf` stderr' && n > 0 -> do
+                    hPutStrLn
+                      System.IO.stderr
+                      "path is still alive (concurrent nix run?), waiting and retrying delete..."
+                    Control.Concurrent.threadDelay 50000
+                    -- Re-query the roots: besides reporting them, this prunes
+                    -- stale auto-gcroots (the /tmp/garnix-runs-* result symlinks
+                    -- removed above leave some behind), which is often what is
+                    -- keeping the path alive.
+                    void $ runProcessMaybe "nix-store" ["--query", "--roots", toDelete]
+                    go (n - 1)
+                | otherwise -> do
+                    hPutStrLn System.IO.stderr stderr'
+                    -- Follow nix's own advice from the "still alive" message, so
+                    -- a repeat failure in CI records WHICH root held the path
+                    -- rather than just that something did.
+                    roots <- runProcessMaybe "nix-store" ["--query", "--roots", toDelete]
+                    referrers' <- runProcessMaybe "nix-store" ["--query", "--referrers", toDelete]
+                    hPutStrLn System.IO.stderr $ "roots of " <> toDelete <> ":\n" <> maybe "(query failed)" (\s -> s) roots
+                    hPutStrLn System.IO.stderr $ "referrers of " <> toDelete <> ":\n" <> maybe "(query failed)" (\s -> s) referrers'
+                    error . cs $ "command failed: nix-store --delete " <> toDelete
+       in go 1000
+
     assertNoGcRoots =
       let go (n :: Int) = do
             gcRoots <- lines <$> runProcess "nix-store" ["--query", "--roots", path]
