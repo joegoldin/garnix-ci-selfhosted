@@ -65,8 +65,11 @@ TCP_PORTS_PER_VM = 20
 # Inclusive top of the host DNAT port range (exposePortRange.to on the host).
 PORT_RANGE_END = int(os.environ.get("PROVISIONER_PORT_RANGE_END", "41999"))
 
-# How long to wait for a freshly-booted guest to open tcp/22. Env-tunable.
-SSH_WAIT_SECONDS = int(os.environ.get("PROVISIONER_SSH_WAIT_SECONDS", "120"))
+# How long to wait for a freshly-booted guest to open tcp/22. A fresh on-demand
+# boot (cold guest, virtio-fs paging in the store closure) genuinely takes ~2min
+# and lands right on a 120s deadline under load, so give it real headroom.
+# Env-tunable via PROVISIONER_SSH_WAIT_SECONDS.
+SSH_WAIT_SECONDS = int(os.environ.get("PROVISIONER_SSH_WAIT_SECONDS", "300"))
 
 # create/destroy mutate shared state (dnsmasq hosts file, microvm state dirs)
 # and are slow; serialize them. status stays lock-free so the backend's
