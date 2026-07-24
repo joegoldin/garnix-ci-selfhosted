@@ -76,6 +76,7 @@ library
       Garnix.BuildLogs.Types
       Garnix.DB
       Garnix.DB.Artifacts
+      Garnix.DB.Backups
       Garnix.DB.FeatureFlags
       Garnix.DB.FeatureFlags.Types
       Garnix.DB.ModuleValues
@@ -784,6 +785,7 @@ test-suite spec
       Garnix.Build.ModuleSpec
       Garnix.BuildSpec
       Garnix.DB.ArtifactsSpec
+      Garnix.DB.BackupsSpec
       Garnix.DB.FeatureFlagsSpec
       Garnix.DBSpec
       Garnix.DeploySpec
@@ -883,6 +885,7 @@ test-suite spec
       Garnix.BuildLogs.Types
       Garnix.DB
       Garnix.DB.Artifacts
+      Garnix.DB.Backups
       Garnix.DB.FeatureFlags
       Garnix.DB.FeatureFlags.Types
       Garnix.DB.ModuleValues
