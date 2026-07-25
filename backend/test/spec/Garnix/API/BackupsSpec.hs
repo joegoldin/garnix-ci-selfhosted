@@ -260,7 +260,7 @@ testBackupStore =
   BackupStore
     { _backupStorePutFile = \_ _ -> notNeeded,
       _backupStoreGetFile = \_ _ -> notNeeded,
-      _backupStoreDeleteObject = \_ -> notNeeded,
+      _backupStoreDeleteObject = const notNeeded,
       _backupStorePresignGet = \key -> pure $ "presigned://" <> key,
       _backupStoreMaxSize = 4294967296
     }

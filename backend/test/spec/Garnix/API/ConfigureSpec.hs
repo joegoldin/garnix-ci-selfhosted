@@ -348,7 +348,7 @@ spec = do
                       } |]
                     ]
       -- started_at is the row's server-side now(), so check the key set only.
-      map jsonKeys (map toJSON (_configureSettingsDtoLockedBackups dto))
+      map (jsonKeys . toJSON) (_configureSettingsDtoLockedBackups dto)
         `shouldBeM` [["configuration", "id", "repo_name", "repo_user", "size", "started_at"]]
 
     it "rejects non-admin callers on the backup routes" $ asUser FreeSubscription $ \api -> do

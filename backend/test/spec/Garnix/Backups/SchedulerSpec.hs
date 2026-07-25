@@ -38,7 +38,7 @@ spec = do
 
     it "is due when the last success is older than the schedule" $ do
       now <- getCurrentTime
-      isDue now testBackupSection (Just (addUTCTime (-25 * 3600) now)) `shouldBe` True
+      isDue now testBackupSection (Just (addUTCTime (-(25 * 3600)) now)) `shouldBe` True
 
     it "is not due when the last success is fresh" $ do
       now <- getCurrentTime

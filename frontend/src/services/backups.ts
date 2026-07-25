@@ -73,12 +73,6 @@ export const getServerRestores = async (
     `backups/server/${serverId}/restores`,
   );
 
-export const getRepoBackups = async (
-  owner: string,
-  repo: string,
-): Promise<APIResult<Array<Backup>>> =>
-  await fetchFromAPI(z.array(backupSchema), "GET", `backups/repo/${owner}/${repo}`);
-
 export const backupNow = async (serverId: string): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "POST", `backups/server/${serverId}/backup-now`);
 
@@ -91,16 +85,6 @@ export const lockBackup = async (backupId: number): Promise<APIResult<unknown>> 
 export const unlockBackup = async (backupId: number): Promise<APIResult<unknown>> =>
   await fetchFromAPI(z.any(), "DELETE", `backups/${backupId}/lock`);
 
-export const deleteBackup = async (backupId: number): Promise<APIResult<unknown>> =>
-  await fetchFromAPI(z.any(), "DELETE", `backups/${backupId}`);
-
 // Downloads are 302s to presigned URLs — plain hrefs, not fetches.
 export const backupDownloadUrl = (backupId: number): string =>
   `/api/backups/${backupId}/download`;
-
-export const latestBackupUrl = (
-  owner: string,
-  repo: string,
-  configuration: string,
-): string =>
-  `/api/backups/repo/${owner}/${repo}/${encodeURIComponent(configuration)}/latest.tar.zst`;

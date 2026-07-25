@@ -571,7 +571,7 @@ servers:
           -- than the local one.
           sshServer serverInfo remoteCommand = do
             (ip, sshArgs) <- sshArgsFor serverInfo
-            StdoutRaw stdout <- run $ cmd "ssh" & addArgs (sshArgs <> [("garnix@" <> ip), remoteCommand])
+            StdoutRaw stdout <- run $ cmd "ssh" & addArgs (sshArgs <> ["garnix@" <> ip, remoteCommand])
             pure (cs stdout :: Text)
           section =
             BackupSection

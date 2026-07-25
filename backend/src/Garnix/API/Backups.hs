@@ -211,8 +211,8 @@ backupsAPI auth authHeader =
             >>= maybe (throw $ BadRequest "No live server to restore onto — deploy it first") pure
         void $ fork $ runServerRestore store row server (getGhLogin (user ^. githubLogin))
         pure NoContent,
-      _backupsAPILock = \backupId -> setLocked backupId True,
-      _backupsAPIUnlock = \backupId -> setLocked backupId False,
+      _backupsAPILock = (`setLocked` True),
+      _backupsAPIUnlock = (`setLocked` False),
       _backupsAPIDelete = \backupId -> do
         void requireBackupStore
         requireAdmin auth

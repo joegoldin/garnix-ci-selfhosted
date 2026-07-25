@@ -121,8 +121,8 @@ garbageCollectStorePath path = do
                     -- rather than just that something did.
                     roots <- runProcessMaybe "nix-store" ["--query", "--roots", toDelete]
                     referrers' <- runProcessMaybe "nix-store" ["--query", "--referrers", toDelete]
-                    hPutStrLn System.IO.stderr $ "roots of " <> toDelete <> ":\n" <> maybe "(query failed)" (\s -> s) roots
-                    hPutStrLn System.IO.stderr $ "referrers of " <> toDelete <> ":\n" <> maybe "(query failed)" (\s -> s) referrers'
+                    hPutStrLn System.IO.stderr $ "roots of " <> toDelete <> ":\n" <> fromMaybe "(query failed)" roots
+                    hPutStrLn System.IO.stderr $ "referrers of " <> toDelete <> ":\n" <> fromMaybe "(query failed)" referrers'
                     error . cs $ "command failed: nix-store --delete " <> toDelete
        in go 1000
 
