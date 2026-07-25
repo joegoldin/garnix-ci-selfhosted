@@ -14,14 +14,17 @@ import Data.Text.IO qualified as T
 import Data.Tuple.Extra ((&&&))
 import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.API.GhWebhooks (ghWebhookPullRequest)
+import Garnix.Backups (BackupTarget (..), runServerBackup, runServerRestore)
 import Garnix.Build (buildFlake)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withPrivateNixXdgCache)
 import Garnix.DB qualified as DB
+import Garnix.DB.Backups qualified as Backups
 import Garnix.Hosting.Deploy
 import Garnix.Hosting.ServerPool (sshArgsFor)
 import Garnix.Monad
 import Garnix.Monad.Async (emptyPromise, resolve)
+import Garnix.Monad.SubProcess (runSubProcess_)
 import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude hiding (head)
 import Garnix.TestHelpers hiding (shouldReturn)
@@ -32,7 +35,7 @@ import Garnix.TestHelpers.ProvisionerMock (Thread (..), provisionerMockState, _g
 import Garnix.TestHelpers.Reporter (withTestReporter_)
 import Garnix.TestHelpers.ServerPool
 import Garnix.Types hiding (context)
-import Garnix.YamlConfig (DeploySection (OnPullRequest), GarnixConfig, ServerSection (ServerSection), serverSection)
+import Garnix.YamlConfig (BackupSchedule (..), BackupSection (..), DeploySection (OnPullRequest), GarnixConfig, ServerSection (ServerSection), serverSection)
 import GitHub.Data.Id qualified as Github.Data
 import GitHub.Data.Webhooks.Events (CheckSuiteEvent (..), EventHasRepo (..), PullRequestEvent, senderOfEvent)
 import GitHub.Data.Webhooks.Payload (HookCheckSuite (..), HookRepository (..), whUserLogin)
@@ -542,6 +545,96 @@ servers:
           firstGenServer ^. ipv4Addr `shouldBe` secondGen ^. ipv4Addr
           stdout `shouldBe` "/hello\n"
           Text.strip (cs terminalCa) `shouldBe` expectedTerminalCa
+
+      result `shouldBe` Right ()
+
+  -- Lives here rather than in Garnix.Backups.SchedulerSpec because the real-guest
+  -- fixture (withServerPool + withMockRepo + buildFlake) is defined in this module
+  -- and not exported; the scheduler spec covers the pure and DB-only paths.
+  describe "server backup round-trip @slow"
+    $ before truncateDB
+    $ after_ stopActiveServers
+    $ around_ Deprecated.quietWhenPassing
+    $ aroundAll_ withServerPool
+    $ it "captures a guest's paths, uploads, and restores them"
+    $ Deprecated.addTestSecrets
+    $ do
+      let mkCommitInfo c = do
+            iAuth <- getInstallation $ Github.Data.Id 42
+            pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
+          -- flakeWithPersistence (not simpleFlake): its guest authorizes the
+          -- garnix user, which is the identity the backup pipeline SSHes as.
+          flake = flakeWithPersistence True "db" "db" "local"
+          yaml = Just $ getMultiConfig "branch" [PackageName "db"]
+          branch = "branch"
+          -- One argv element, so the guest's shell parses the redirect rather
+          -- than the local one.
+          sshServer serverInfo remoteCommand = do
+            (ip, sshArgs) <- sshArgsFor serverInfo
+            StdoutRaw stdout <- run $ cmd "ssh" & addArgs (sshArgs <> [("garnix@" <> ip), remoteCommand])
+            pure (cs stdout :: Text)
+          section =
+            BackupSection
+              { _backupSectionPaths = ["/var/lib/testdata"],
+                _backupSectionSchedule = BackupSchedule "daily" 24,
+                _backupSectionPreBackupCommand = Just "touch /var/lib/testdata/pre-ran",
+                _backupSectionPostBackupCommand = Nothing,
+                _backupSectionPreRestoreCommand = Nothing,
+                _backupSectionPostRestoreCommand = Nothing
+              }
+      result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
+        resolve =<< buildFlake mempty =<< mkCommitInfo commit
+        server <- fromSingleton <$> getAllDbServers
+        void
+          $ sshServer server "sudo mkdir -p /var/lib/testdata && sudo sh -c 'echo hello-backup > /var/lib/testdata/hello.txt'"
+        Backups.setServerBackups (server ^. id) (Just section)
+
+        withSystemTempDirectory "garnix-backup-store" $ \storeDir -> do
+          let target =
+                BackupTarget
+                  { _backupTargetServerId = server ^. id,
+                    _backupTargetIpv4 = server ^. ipv4Addr,
+                    _backupTargetRepoUser = "owner",
+                    _backupTargetRepoName = "repo",
+                    _backupTargetBranch = Just "branch",
+                    _backupTargetConfiguration = "db",
+                    _backupTargetPersistenceName = Just "db",
+                    _backupTargetSection = section
+                  }
+              -- A local-directory BackupStore: keys are flattened into filenames.
+              objectPath key = storeDir </> cs (Text.replace "/" "_" key)
+              store =
+                BackupStore
+                  { _backupStorePutFile = \key path ->
+                      runSubProcess_ $ cmd "cp" & addArgs [cs path, cs (objectPath key) :: Text],
+                    _backupStoreGetFile = \key path ->
+                      runSubProcess_ $ cmd "cp" & addArgs [cs (objectPath key), cs path :: Text],
+                    _backupStoreDeleteObject = \_ -> pure (),
+                    _backupStorePresignGet = pure,
+                    _backupStoreMaxSize = 4294967296
+                  }
+
+          runServerBackup store target "manual"
+
+          rows <- Backups.getBackupsForRepo "owner" "repo"
+          row <- case rows of
+            [row] -> pure row
+            _ -> liftIO $ assertFailure "expected exactly one backup row"
+          liftIO $ Backups._backupRowStatus row `shouldBe` "success"
+          objectHash <- case Backups._backupRowObjectHash row of
+            Just h -> pure h
+            Nothing -> liftIO $ assertFailure "successful backup should record an object hash"
+          Backups.backupObjectExists objectHash >>= \exists ->
+            liftIO $ exists `shouldBe` True
+          -- The pre-backup hook ran on the guest, inside the captured path.
+          preRan <- sshServer server "ls /var/lib/testdata/pre-ran"
+          liftIO $ Text.strip preRan `shouldBe` "/var/lib/testdata/pre-ran"
+
+          -- Destroy the data, then restore it from the snapshot.
+          void $ sshServer server "sudo rm -rf /var/lib/testdata"
+          runServerRestore store row server "test-user"
+          restored <- sshServer server "cat /var/lib/testdata/hello.txt"
+          liftIO $ Text.strip restored `shouldBe` "hello-backup"
 
       result `shouldBe` Right ()
 
