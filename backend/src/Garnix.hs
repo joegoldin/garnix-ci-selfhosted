@@ -24,6 +24,7 @@ import Database.PostgreSQL.Typed (pgDisconnect)
 import GHC.Conc (getNumProcessors)
 import Garnix.API
 import Garnix.Artifacts.Reaper qualified as ArtifactReaper
+import Garnix.Backups.Scheduler qualified as BackupScheduler
 import Garnix.Artifacts.Store (s3ArtifactStore)
 import Garnix.Backups.Store (s3BackupStore)
 import Garnix.BuildLogs qualified as BuildLogs
@@ -630,6 +631,9 @@ runWith opts = do
       when (isJust (env ^. #artifactStore))
         $ void
         $ runM env ArtifactReaper.initializeArtifactReaper
+      when (isJust (env ^. #backupStore))
+        $ void
+        $ runM env BackupScheduler.initializeBackupScheduler
       let settings =
             Warp.defaultSettings
               & Warp.setPort (port opts)

@@ -58,6 +58,8 @@ library
       Garnix.Artifacts.Store
       Garnix.Async
       Garnix.Attribute
+      Garnix.Backups
+      Garnix.Backups.Scheduler
       Garnix.Backups.Store
       Garnix.Build
       Garnix.Build.Action
@@ -779,6 +781,7 @@ test-suite spec
       Garnix.ArtifactsSpec
       Garnix.AsyncSpec
       Garnix.AttributeSpec
+      Garnix.Backups.SchedulerSpec
       Garnix.Build.CheckoutSpec
       Garnix.Build.FodCheckSpec
       Garnix.Build.HelpersSpec
@@ -867,6 +870,8 @@ test-suite spec
       Garnix.Artifacts.Store
       Garnix.Async
       Garnix.Attribute
+      Garnix.Backups
+      Garnix.Backups.Scheduler
       Garnix.Backups.Store
       Garnix.Build
       Garnix.Build.Action

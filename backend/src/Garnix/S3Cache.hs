@@ -1,4 +1,4 @@
-module Garnix.S3Cache (upload, toNarFilePath) where
+module Garnix.S3Cache (upload, toNarFilePath, getFileHash) where
 
 import Amazonka qualified
 import Amazonka.S3 qualified as Amazonka
