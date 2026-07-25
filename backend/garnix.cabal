@@ -33,6 +33,7 @@ library
       Garnix.API.Admin
       Garnix.API.Artifacts
       Garnix.API.Auth
+      Garnix.API.Backups
       Garnix.API.Badges
       Garnix.API.Builds
       Garnix.API.Builds.Types
@@ -763,6 +764,7 @@ test-suite spec
       Garnix.API.AdminSpec
       Garnix.API.ArtifactsSpec
       Garnix.API.AuthSpec
+      Garnix.API.BackupsSpec
       Garnix.API.BadgesSpec
       Garnix.API.BuildSpec
       Garnix.API.Cache.PermissionsSpec
@@ -846,6 +848,7 @@ test-suite spec
       Garnix.API.Admin
       Garnix.API.Artifacts
       Garnix.API.Auth
+      Garnix.API.Backups
       Garnix.API.Badges
       Garnix.API.Builds
       Garnix.API.Builds.Types

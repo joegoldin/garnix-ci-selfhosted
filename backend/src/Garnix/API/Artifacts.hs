@@ -14,6 +14,8 @@ module Garnix.API.Artifacts
     ArtifactCommitCount (..),
     Get302,
     authorizeArtifact,
+    resolveDownloadUser,
+    accessTokenUser,
     artifactZipKey,
     artifactManifestKey,
     artifactFileKey,

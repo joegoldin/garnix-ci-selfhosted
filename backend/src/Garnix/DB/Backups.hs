@@ -24,6 +24,9 @@ module Garnix.DB.Backups
     pruneFailedBackupRows,
     failStaleRunningBackups,
     getLiveBackupTargets,
+    getServerRepoAndConfig,
+    getBackupTargetForServer,
+    getLiveServerForConfig,
     getBackupSettings,
     setDefaultBackupSettings,
     setRepoBackupSettings,
@@ -357,6 +360,85 @@ getLiveBackupTargets =
         AND s.backups IS NOT NULL
       ORDER BY s.id
     |]
+
+-- | The repo and configuration a server was deployed from, for authorizing
+-- server-scoped API calls. Independent of whether backups are configured
+-- (an unconfigured server still has a repo whose access gates its listing).
+getServerRepoAndConfig :: ServerId -> M (Maybe (GhRepoOwner, GhRepoName, Text))
+getServerRepoAndConfig serverId = do
+  rows <-
+    DB.pgQuery
+      [pgSQL|
+        SELECT b.repo_user, b.repo_name, b.package
+        FROM servers s
+        JOIN builds b ON b.id = s.configuration_build_id
+        WHERE s.id = ${serverId}
+      |]
+  pure $ case rows of
+    [] -> Nothing
+    (row : _) -> Just row
+
+-- | One live server's backup target row — the same shape as
+-- 'getLiveBackupTargets' minus the last-success column — for a manual
+-- \"backup now\". 'Nothing' when the server isn't live or its deploy
+-- captured no @backups:@ config.
+getBackupTargetForServer ::
+  ServerId ->
+  M (Maybe (ServerId, Text, GhRepoOwner, GhRepoName, Maybe Branch, Text, Maybe Text, Text))
+getBackupTargetForServer serverId = do
+  rows <-
+    DB.pgQuery
+      -- `!` for the same reason as 'getLiveBackupTargets': the
+      -- `s.backups::text` cast's nullability isn't inferred from the WHERE.
+      [pgSQL|!
+        SELECT s.id, s.ipv4, b.repo_user, b.repo_name, b.branch, b.package,
+               b.persistence_name, s.backups::text
+        FROM servers s
+        JOIN builds b ON b.id = s.configuration_build_id
+        WHERE s.id = ${serverId}
+          AND s.ready_at IS NOT NULL
+          AND s.ended_at IS NULL
+          AND s.backups IS NOT NULL
+      |]
+  pure $ case rows of
+    [] -> Nothing
+    (row : _) -> Just row
+
+-- | The server currently live for a repo's configuration — the restore
+-- target. Restores always land on the CURRENT incarnation, never on the
+-- (possibly long-deleted) server the snapshot was taken from.
+getLiveServerForConfig :: GhRepoOwner -> GhRepoName -> Text -> M (Maybe ServerInfo)
+getLiveServerForConfig repoOwner repoName' configuration = do
+  servers <-
+    DB.pgQueryPrism
+      _ServerInfo
+      [pgSQL|
+        SELECT
+          servers.id,
+          servers.provisioner_id,
+          servers.ipv4,
+          servers.ipv6,
+          servers.created_at,
+          servers.ended_at,
+          servers.configuration_build_id,
+          servers.pull_request,
+          servers.ready_at,
+          builds.persistence_name,
+          servers.server_tier,
+          servers.is_primary
+        FROM servers
+        INNER JOIN builds ON servers.configuration_build_id = builds.id
+        WHERE builds.repo_user = ${repoOwner}
+          AND builds.repo_name = ${repoName'}
+          AND builds.package = ${configuration}
+          AND servers.ready_at IS NOT NULL
+          AND servers.ended_at IS NULL
+        ORDER BY servers.created_at DESC, servers.id DESC
+        LIMIT 1
+      |]
+  pure $ case servers of
+    [] -> Nothing
+    (server : _) -> Just server
 
 -- * Retention settings
 

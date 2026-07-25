@@ -3,8 +3,9 @@ import { APIResult, fetchFromAPI } from ".";
 
 const backupSchema = z.object({
   id: z.number(),
+  // Hashid string, like every other server id in the API — not a number.
   server_id: z
-    .number()
+    .string()
     .nullish()
     .transform((v) => v ?? null),
   repo_user: z.string(),

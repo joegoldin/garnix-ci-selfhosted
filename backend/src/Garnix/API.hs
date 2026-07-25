@@ -5,6 +5,7 @@ import Data.Text qualified as T
 import Garnix.API.Account
 import Garnix.API.Admin (AdminAPI, adminAPI)
 import Garnix.API.Artifacts (ArtifactsAPI, artifactsAPI)
+import Garnix.API.Backups (BackupsAPI, backupsAPI)
 import Garnix.API.Auth
 import Garnix.API.Badges
 import Garnix.API.Builds
@@ -46,6 +47,7 @@ data WholeAPI r = WholeAPI
     account :: r :- "api" :> "account" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AccountAPI,
     admin :: r :- "api" :> "admin" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi AdminAPI,
     artifacts :: r :- "api" :> "artifacts" :> Auth '[JWT, Cookie] AuthJwtPayload :> Header "authorization" Text :> ToServantApi ArtifactsAPI,
+    backups :: r :- "api" :> "backups" :> Auth '[JWT, Cookie] AuthJwtPayload :> Header "authorization" Text :> ToServantApi BackupsAPI,
     configure :: r :- "api" :> "configure" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi ConfigureAPI,
     monitoring :: r :- "api" :> "monitoring" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi MonitoringAPI,
     build :: r :- "api" :> "build" :> Auth '[JWT, Cookie] AuthJwtPayload :> ToServantApi BuildAPI,
@@ -100,6 +102,7 @@ wholeAPI =
       account = toServant . accountAPI,
       admin = toServant . adminAPI,
       artifacts = \auth authHeader -> toServant $ artifactsAPI auth authHeader,
+      backups = \auth authHeader -> toServant $ backupsAPI auth authHeader,
       configure = toServant . configureAPI,
       monitoring = toServant . monitoringAPI,
       dev = devAPI,
