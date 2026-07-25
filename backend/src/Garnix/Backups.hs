@@ -5,6 +5,7 @@
 module Garnix.Backups
   ( BackupTarget (..),
     runServerBackup,
+    runServerRestore,
     backupObjectKey,
     decodeBackupTargets,
     isDue,
@@ -25,7 +26,7 @@ import Garnix.S3Cache (getFileHash)
 import Garnix.Types
 import Garnix.YamlConfig (BackupSchedule (..), BackupSection (..))
 import System.Directory (getFileSize)
-import System.IO (IOMode (WriteMode), hGetContents, withFile)
+import System.IO (IOMode (ReadMode, WriteMode), hGetContents, withFile)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process qualified as Proc
 
@@ -144,6 +145,67 @@ runServerBackup store target kind = do
       DB.finalizeBackupSuccess backupId hash (fromIntegral size)
       log Informational
         $ "backup " <> show backupId <> " done: " <> backupObjectKey hash <> " (" <> show size <> " bytes)"
+
+-- | Restore a snapshot onto a live server: download, verify hash, pre-hook,
+-- decompress backend-side (no zstd needed on the guest), stream plain tar
+-- into the guest over SSH stdin, post-hook (always attempted). Audit-logged
+-- to backup_restores; failures finalize the row and rethrow so the API
+-- caller's fork logs it. Hooks come from the TARGET server's CURRENT config
+-- (not the snapshot's) — 'DB.getServerBackups'; Nothing -> no hooks.
+runServerRestore :: BackupStore -> DB.BackupRow -> ServerInfo -> Text -> M ()
+runServerRestore store row server initiatedBy = do
+  objectHash <- case DB._backupRowObjectHash row of
+    Nothing -> throw $ OtherError "backup has no stored object (not a successful snapshot)"
+    Just h -> pure h
+  restoreId <- DB.insertRunningRestore (DB._backupRowId row) (server ^. id) initiatedBy
+  restore objectHash `catchEither` \e -> do
+    let msg = either show show e
+    DB.finalizeRestoreFailure restoreId msg
+    throw $ OtherError $ "restore failed: " <> msg
+  DB.finalizeRestoreSuccess restoreId
+  where
+    restore objectHash = withSystemTempDirectory "garnix-restore" $ \tmpDir -> do
+      let compressed = tmpDir <> "/restore.tar.zst"
+      _backupStoreGetFile store (backupObjectKey objectHash) compressed
+      actualHash <- getFileHash compressed
+      unless (actualHash == objectHash)
+        $ throw
+        $ OtherError
+        $ "downloaded object hash mismatch: " <> actualHash
+      runSubProcess_ $ cmd "zstd" & addArgs ["-dq", "--rm", cs compressed :: Text]
+      let plainTar = tmpDir <> "/restore.tar"
+      (ip, sshArgs) <- ServerPool.sshArgsForAddress (server ^. ipv4Addr)
+      mSection <- DB.getServerBackups (server ^. id)
+      forM_ (mSection >>= _backupSectionPreRestoreCommand) $ \hook ->
+        runHook sshArgs ip "preRestoreCommand" hook
+      untarResult <- liftIO $ withFile plainTar ReadMode $ \h -> do
+        (_, _, mErr, ph) <-
+          Proc.createProcess
+            ( Proc.proc
+                "timeout"
+                ( ["1800", "ssh"]
+                    <> map cs sshArgs
+                    <> [cs ("garnix@" <> ip), "sudo -n tar -xf - -C /"]
+                )
+            )
+              { Proc.std_in = Proc.UseHandle h,
+                Proc.std_err = Proc.CreatePipe
+              }
+        errOut <- maybe (pure "") hGetContents mErr
+        _ <- evaluate (length errOut)
+        code <- Proc.waitForProcess ph
+        pure (code, errOut)
+      postHookResult <-
+        tryEither
+          $ forM_ (mSection >>= _backupSectionPostRestoreCommand)
+          $ \hook -> runHook sshArgs ip "postRestoreCommand" hook
+      case fst untarResult of
+        ExitFailure code ->
+          throw $ OtherError $ "restore untar failed (exit " <> show code <> "): " <> cs (snd untarResult)
+        ExitSuccess -> pure ()
+      case postHookResult of
+        Left e -> throw $ OtherError $ "postRestoreCommand failed: " <> either show show e
+        Right () -> pure ()
 
 -- | Run a hook command on the guest as root, capped at 10 minutes with the
 -- guest's coreutils timeout. ssh joins its argv into one remote command

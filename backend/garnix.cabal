@@ -59,6 +59,7 @@ library
       Garnix.Async
       Garnix.Attribute
       Garnix.Backups
+      Garnix.Backups.Reaper
       Garnix.Backups.Scheduler
       Garnix.Backups.Store
       Garnix.Build
@@ -871,6 +872,7 @@ test-suite spec
       Garnix.Async
       Garnix.Attribute
       Garnix.Backups
+      Garnix.Backups.Reaper
       Garnix.Backups.Scheduler
       Garnix.Backups.Store
       Garnix.Build
