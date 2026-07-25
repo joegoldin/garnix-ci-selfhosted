@@ -1,8 +1,9 @@
 -- | Self-host operator configuration exposed to the web UI's Configure page.
 --
 -- Currently: the global default build/eval timeout and per-repo overrides,
--- plus artifact retention (global default + per-repo overrides), per-repo
--- artifact storage usage, and the locked-artifact-builds list. All endpoints
+-- plus artifact and server-backup retention (global defaults + per-repo
+-- overrides), per-repo storage usage for both, and the locked-artifact-builds
+-- and locked-snapshots lists. All endpoints
 -- are gated on self-host mode plus admin (the operator), matching the admin
 -- API's auth. In cloud garnix these values come from billing plans, so the
 -- endpoints refuse outside self-host mode.
@@ -20,6 +21,11 @@ module Garnix.API.Configure
     LockedArtifactBuildDto (..),
     SetArtifactDefaultsDto (..),
     SetArtifactRepoDto (..),
+    BackupRepoOverrideDto (..),
+    BackupUsageDto (..),
+    LockedBackupDto (..),
+    SetBackupDefaultsDto (..),
+    SetBackupRepoDto (..),
     ConnectedDomainDto (..),
     AddDomainDto (..),
     RepoRefDto (..),
@@ -31,6 +37,7 @@ import Control.Lens
 import Garnix.API.Admin (requireAdmin)
 import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts qualified as Artifacts
+import Garnix.DB.Backups qualified as Backups
 import Garnix.Dns (resolvesToHostingIp)
 import Garnix.Entitlements (defaultBuildTimeoutMinutes)
 import Garnix.Monad
@@ -112,6 +119,27 @@ data ConfigureAPI route = ConfigureAPI
         :> Capture "owner" GhRepoOwner
         :> Capture "repo" GhRepoName
         :> Delete '[JSON] NoContent,
+    _configureAPISetBackupDefaults ::
+      route
+        :- "backups"
+        :> "default"
+        :> ReqBody '[JSON] SetBackupDefaultsDto
+        :> Put '[JSON] NoContent,
+    _configureAPISetBackupRepo ::
+      route
+        :- "backups"
+        :> "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> ReqBody '[JSON] SetBackupRepoDto
+        :> Put '[JSON] NoContent,
+    _configureAPIDeleteBackupRepo ::
+      route
+        :- "backups"
+        :> "repo"
+        :> Capture "owner" GhRepoOwner
+        :> Capture "repo" GhRepoName
+        :> Delete '[JSON] NoContent,
     _configureAPIListDomains ::
       route :- "domains" :> Get '[JSON] [ConnectedDomainDto],
     _configureAPIAddDomain ::
@@ -142,7 +170,12 @@ data ConfigureSettingsDto = ConfigureSettingsDto
     _configureSettingsDtoArtifactKeepLatest :: Bool,
     _configureSettingsDtoArtifactRepoOverrides :: [ArtifactRepoOverrideDto],
     _configureSettingsDtoArtifactUsage :: [ArtifactUsageDto],
-    _configureSettingsDtoLockedArtifactBuilds :: [LockedArtifactBuildDto]
+    _configureSettingsDtoLockedArtifactBuilds :: [LockedArtifactBuildDto],
+    _configureSettingsDtoBackupRetentionDays :: Int32,
+    _configureSettingsDtoBackupKeepLatest :: Bool,
+    _configureSettingsDtoBackupRepoOverrides :: [BackupRepoOverrideDto],
+    _configureSettingsDtoBackupUsage :: [BackupUsageDto],
+    _configureSettingsDtoLockedBackups :: [LockedBackupDto]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -281,6 +314,86 @@ instance ToJSON LockedArtifactBuildDto where
 instance FromJSON LockedArtifactBuildDto where
   parseJSON = ourParseJSON
 
+-- | A repo's server-backup retention override. 'Nothing' fields inherit the
+-- global default.
+data BackupRepoOverrideDto = BackupRepoOverrideDto
+  { _backupRepoOverrideDtoRepoUser :: GhRepoOwner,
+    _backupRepoOverrideDtoRepoName :: GhRepoName,
+    _backupRepoOverrideDtoRetentionDays :: Maybe Int32,
+    _backupRepoOverrideDtoKeepLatest :: Maybe Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON BackupRepoOverrideDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON BackupRepoOverrideDto where
+  parseJSON = ourParseJSON
+
+-- | A repo's server-backup storage usage in bytes (dedupe-aware: shared
+-- content-addressed objects are counted once per repo).
+data BackupUsageDto = BackupUsageDto
+  { _backupUsageDtoRepoUser :: GhRepoOwner,
+    _backupUsageDtoRepoName :: GhRepoName,
+    _backupUsageDtoTotalSize :: Int64
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON BackupUsageDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON BackupUsageDto where
+  parseJSON = ourParseJSON
+
+-- | One locked snapshot: rows the reaper never deletes.
+data LockedBackupDto = LockedBackupDto
+  { _lockedBackupDtoId :: Int64,
+    _lockedBackupDtoRepoUser :: GhRepoOwner,
+    _lockedBackupDtoRepoName :: GhRepoName,
+    _lockedBackupDtoConfiguration :: Text,
+    _lockedBackupDtoStartedAt :: UTCTime,
+    _lockedBackupDtoSize :: Maybe Int64
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON LockedBackupDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON LockedBackupDto where
+  parseJSON = ourParseJSON
+
+-- | Body of @PUT configure\/backups\/default@.
+data SetBackupDefaultsDto = SetBackupDefaultsDto
+  { _setBackupDefaultsDtoRetentionDays :: Int32,
+    _setBackupDefaultsDtoKeepLatest :: Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetBackupDefaultsDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetBackupDefaultsDto where
+  parseJSON = ourParseJSON
+
+-- | Body of @PUT configure\/backups\/repo\/\<owner\>\/\<repo\>@. Absent and
+-- null fields mean \"inherit the global setting\".
+data SetBackupRepoDto = SetBackupRepoDto
+  { _setBackupRepoDtoRetentionDays :: Maybe Int32,
+    _setBackupRepoDtoKeepLatest :: Maybe Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON SetBackupRepoDto where
+  toEncoding = ourToEncoding
+  toJSON = ourToJSON
+
+instance FromJSON SetBackupRepoDto where
+  parseJSON = ourParseJSON
+
 -- | Body of @PUT configure\/artifacts\/default@.
 data SetArtifactDefaultsDto = SetArtifactDefaultsDto
   { _setArtifactDefaultsDtoRetentionDays :: Int32,
@@ -353,6 +466,10 @@ configureAPI auth =
         artifactOverrides <- Artifacts.getArtifactRepoOverrides
         artifactUsage <- Artifacts.getArtifactStorageUsage
         lockedBuilds <- Artifacts.getLockedArtifactBuilds
+        (backupRetentionDays, backupKeepLatest) <- Backups.getBackupSettings
+        backupOverrides <- Backups.getBackupRepoOverrides
+        backupUsage <- Backups.getBackupStorageUsage
+        lockedBackups <- Backups.getLockedBackups
         let minimumEvalMemory = defaultRepoConfig ^. maxEvalMemory
         pure
           $ ConfigureSettingsDto
@@ -378,7 +495,15 @@ configureAPI auth =
               _configureSettingsDtoArtifactUsage =
                 map (\(o, r, s) -> ArtifactUsageDto o r s) artifactUsage,
               _configureSettingsDtoLockedArtifactBuilds =
-                map toLockedArtifactBuildDto lockedBuilds
+                map toLockedArtifactBuildDto lockedBuilds,
+              _configureSettingsDtoBackupRetentionDays = backupRetentionDays,
+              _configureSettingsDtoBackupKeepLatest = backupKeepLatest,
+              _configureSettingsDtoBackupRepoOverrides =
+                map (\(o, r, d, k) -> BackupRepoOverrideDto o r d k) backupOverrides,
+              _configureSettingsDtoBackupUsage =
+                map (\(o, r, s) -> BackupUsageDto o r s) backupUsage,
+              _configureSettingsDtoLockedBackups =
+                map toLockedBackupDto lockedBackups
             },
       _configureAPISetDefault = \dto -> do
         requireSelfHostConfig auth
@@ -439,6 +564,24 @@ configureAPI auth =
       _configureAPIDeleteArtifactRepo = \owner repo -> do
         requireSelfHostConfig auth
         Artifacts.deleteRepoArtifactSettings owner repo
+        pure NoContent,
+      _configureAPISetBackupDefaults = \dto -> do
+        requireSelfHostConfig auth
+        Backups.setDefaultBackupSettings
+          (max 0 $ _setBackupDefaultsDtoRetentionDays dto)
+          (_setBackupDefaultsDtoKeepLatest dto)
+        pure NoContent,
+      _configureAPISetBackupRepo = \owner repo dto -> do
+        requireSelfHostConfig auth
+        Backups.setRepoBackupSettings
+          owner
+          repo
+          (max 0 <$> _setBackupRepoDtoRetentionDays dto)
+          (_setBackupRepoDtoKeepLatest dto)
+        pure NoContent,
+      _configureAPIDeleteBackupRepo = \owner repo -> do
+        requireSelfHostConfig auth
+        Backups.deleteRepoBackupSettings owner repo
         pure NoContent,
       _configureAPIListDomains = do
         requireSelfHostConfig auth
@@ -513,6 +656,17 @@ __verifyConfiguredDomain resolver domain = do
   ok <- resolver ("garnix-verify." <> domain)
   when ok $ DB.markConfiguredDomainVerified domain
   pure $ ConnectedDomainDto Nothing domain True (ok || isJust prior) True
+
+toLockedBackupDto :: Backups.BackupRow -> LockedBackupDto
+toLockedBackupDto row =
+  LockedBackupDto
+    { _lockedBackupDtoId = Backups._backupRowId row,
+      _lockedBackupDtoRepoUser = Backups._backupRowRepoUser row,
+      _lockedBackupDtoRepoName = Backups._backupRowRepoName row,
+      _lockedBackupDtoConfiguration = Backups._backupRowConfiguration row,
+      _lockedBackupDtoStartedAt = Backups._backupRowStartedAt row,
+      _lockedBackupDtoSize = Backups._backupRowSize row
+    }
 
 toLockedArtifactBuildDto :: Artifacts.ArtifactRow -> LockedArtifactBuildDto
 toLockedArtifactBuildDto row =

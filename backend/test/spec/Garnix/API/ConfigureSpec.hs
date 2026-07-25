@@ -7,9 +7,10 @@ import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.API.Configure
 import Garnix.DB qualified as DB
 import Garnix.DB.Artifacts qualified as Artifacts
+import Garnix.DB.Backups qualified as Backups
 import Garnix.Monad (ArtifactBucket (..), M, throw)
 import Garnix.Prelude
-import Garnix.TestHelpers (testBuild, truncateDBM)
+import Garnix.TestHelpers (addTestServer, testBuild, truncateDBM)
 import Garnix.TestHelpers.Monad
   ( beforeM_,
     inM,
@@ -266,6 +267,110 @@ spec = do
         `shouldThrowM` Unauthorized
       _configureAPIDeleteArtifactRepo api "o" "r"
         `shouldThrowM` Unauthorized
+
+  describe "Garnix.API.Configure (backups)" $ inM $ beforeM_ truncateDBM $ do
+    it "roundtrips the default backup settings through the handlers" $ asAdmin $ \api -> do
+      _configureAPISetBackupDefaults api (SetBackupDefaultsDto 7 False)
+        `shouldReturnM` NoContent
+      dto <- _configureAPIGet api
+      _configureSettingsDtoBackupRetentionDays dto `shouldBeM` 7
+      _configureSettingsDtoBackupKeepLatest dto `shouldBeM` False
+      -- server_settings isn't truncated between tests: restore the defaults
+      -- (keep-latest defaults ON for backups, unlike artifacts).
+      _configureAPISetBackupDefaults api (SetBackupDefaultsDto 30 True)
+        `shouldReturnM` NoContent
+      restored <- _configureAPIGet api
+      _configureSettingsDtoBackupRetentionDays restored `shouldBeM` 30
+      _configureSettingsDtoBackupKeepLatest restored `shouldBeM` True
+
+    it "sets, lists, and clears per-repo backup overrides" $ asAdmin $ \api -> do
+      _configureAPISetBackupRepo api "some-owner" "some-repo" (SetBackupRepoDto (Just 90) Nothing)
+        `shouldReturnM` NoContent
+      dto <- _configureAPIGet api
+      _configureSettingsDtoBackupRepoOverrides dto
+        `shouldBeM` [ BackupRepoOverrideDto
+                        { _backupRepoOverrideDtoRepoUser = "some-owner",
+                          _backupRepoOverrideDtoRepoName = "some-repo",
+                          _backupRepoOverrideDtoRetentionDays = Just 90,
+                          _backupRepoOverrideDtoKeepLatest = Nothing
+                        }
+                    ]
+      _configureAPIDeleteBackupRepo api "some-owner" "some-repo"
+        `shouldReturnM` NoContent
+      cleared <- _configureAPIGet api
+      _configureSettingsDtoBackupRepoOverrides cleared `shouldBeM` []
+
+    it "reflects seeded usage and locked snapshots in the settings dto" $ asAdmin $ \api -> do
+      backupId <- seedLockedBackup
+      dto <- _configureAPIGet api
+      _configureSettingsDtoBackupUsage dto
+        `shouldBeM` [BackupUsageDto "test-owner" "test-repo" 100]
+      map
+        ( \locked ->
+            ( _lockedBackupDtoId locked,
+              _lockedBackupDtoRepoUser locked,
+              _lockedBackupDtoRepoName locked,
+              _lockedBackupDtoConfiguration locked,
+              _lockedBackupDtoSize locked
+            )
+        )
+        (_configureSettingsDtoLockedBackups dto)
+        `shouldBeM` [(backupId, "test-owner", "test-repo", "test-package", Just 100)]
+
+    it "emits the JSON contract the frontend expects" $ asAdmin $ \api -> do
+      void seedLockedBackup
+      Backups.setRepoBackupSettings "some-owner" "some-repo" (Just 90) (Just True)
+      dto <- _configureAPIGet api
+      let topKeys = jsonKeys (toJSON dto)
+      forM_
+        ( [ "backup_retention_days",
+            "backup_keep_latest",
+            "backup_repo_overrides",
+            "backup_usage",
+            "locked_backups"
+          ] ::
+            [Aeson.Key]
+        )
+        $ \k -> topKeys `shouldContainM` [k]
+      map toJSON (_configureSettingsDtoBackupRepoOverrides dto)
+        `shouldBeM` [ [aesonQQ| {
+                        repo_user: "some-owner",
+                        repo_name: "some-repo",
+                        retention_days: 90,
+                        keep_latest: true
+                      } |]
+                    ]
+      map toJSON (_configureSettingsDtoBackupUsage dto)
+        `shouldBeM` [ [aesonQQ| {
+                        repo_user: "test-owner",
+                        repo_name: "test-repo",
+                        total_size: 100
+                      } |]
+                    ]
+      -- started_at is the row's server-side now(), so check the key set only.
+      map jsonKeys (map toJSON (_configureSettingsDtoLockedBackups dto))
+        `shouldBeM` [["configuration", "id", "repo_name", "repo_user", "size", "started_at"]]
+
+    it "rejects non-admin callers on the backup routes" $ asUser FreeSubscription $ \api -> do
+      _configureAPISetBackupDefaults api (SetBackupDefaultsDto 7 True)
+        `shouldThrowM` Unauthorized
+      _configureAPISetBackupRepo api "o" "r" (SetBackupRepoDto (Just 1) Nothing)
+        `shouldThrowM` Unauthorized
+      _configureAPIDeleteBackupRepo api "o" "r"
+        `shouldThrowM` Unauthorized
+
+-- | A locked, successful snapshot of a live test server, sized 100 bytes.
+seedLockedBackup :: M Int64
+seedLockedBackup = do
+  now <- liftIO getCurrentTime
+  build <- testBuild identity
+  server <- addTestServer $ \s -> s & configurationBuildId .~ (build ^. id) & readyAt ?~ now
+  backupId <-
+    Backups.insertRunningBackup (server ^. id) "test-owner" "test-repo" (Just "test-branch") "test-package" Nothing "scheduled"
+  Backups.upsertBackupObject "shared-hash" 100
+  Backups.finalizeBackupSuccess backupId "shared-hash" 100
+  Backups.setBackupLocked backupId True
+  pure backupId
 
 -- | The configure handlers demand self-host mode plus an admin caller; run
 -- the inner action against a handler record built for an admin.
