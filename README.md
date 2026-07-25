@@ -1315,6 +1315,82 @@ The cookie secret is generated on the guest and persisted. `oauth2-proxy` only
 trusts forwarded headers from the loopback nginx gate. This module doubles as a
 worked example when writing your own custom garnix server modules.
 
+## Server backups
+
+Scheduled snapshots of a **deployed server's** data — not to be confused with
+[Step 12](#step-12--backups), which backs up the garnix instance itself.
+Declare the paths in `garnix.yaml` and the backend pulls a tar over SSH,
+compresses it, content-addresses it, and uploads it to a private bucket:
+
+```yaml
+servers:
+  - configuration: db
+    deployment: { type: on-branch, branch: main }
+    backups:
+      paths: [/var/lib/postgresql] # required, non-empty; no / or /nix/store
+      schedule: daily # hourly | daily (default) | weekly | "<N>h"
+      preBackupCommand: systemctl stop myapp # optional; non-zero exit aborts
+      postBackupCommand: systemctl start myapp # optional; ALWAYS attempted
+      preRestoreCommand: systemctl stop myapp # optional
+      postRestoreCommand: systemctl start myapp # optional
+```
+
+A scheduler pass runs every 5 minutes and captures whatever is due (one guest
+at a time). **The backend is the only credential holder** — guests never see
+bucket keys. Snapshots are capped at `maxBackupSize` (4 GiB default) and
+deduplicated by content hash, so an unchanged server uploads nothing.
+
+**Backup rows deliberately outlive their server.** Restoring after an
+accidental server deletion is the point, so the repo, branch, configuration and
+persistence name are denormalized onto each row; deleting a server nulls its
+`server_id` but keeps the snapshots.
+
+**Restores** always target the server **currently live** for that
+configuration, never the (possibly long-gone) one the snapshot came from, and
+run that server's **current** hooks. The backend downloads, verifies the hash,
+decompresses locally, and streams a plain tar into the guest — no zstd needed
+on the guest side. Every restore is audit-logged with the user who triggered it.
+
+**In the web UI.** The Servers page gets a **Backups** modal per server: the
+snapshot list with sizes and status, plus download / restore / lock /
+"Back up now". The Configure page carries retention: a global default (30 days)
+with per-repo overrides, a keep-latest exemption that **defaults ON** for
+backups (unlike artifacts), per-repo storage usage, and the locked-snapshot
+list. Locked snapshots are never reaped and refuse deletion. An hourly reaper
+applies retention, prunes stale failed rows, fails backups orphaned by a
+backend restart, and GCs unreferenced objects.
+
+**Setup:**
+
+1. One more **private** S3/B2 bucket, with its own key pair (B2 keys can't
+   scope to two buckets).
+2. Two secrets, readable by the garnix user (mode 0440; see the step-3 table):
+   `s3-backups-access-key-id`, `s3-backups-secret-access-key`.
+3. Point the backend at the bucket (the feature is off when unset):
+   ```nix
+   services.garnixServer.s3Backups = { bucket = "example-garnix-server-backups"; };
+   services.garnixServer.maxBackupSize = 4294967296; # optional, 4 GiB default
+   ```
+   Host/region reuse the `s3Cache` values (same S3 account).
+4. Bypass the SSO gate for `/api/backups/*` on the app vhost, next to the
+   `/api/artifacts/*` bypass — downloads authenticate with garnix access tokens
+   the proxy knows nothing about:
+   ```caddyfile
+   @backups path /api/backups/*
+   handle @backups { reverse_proxy 127.0.0.1:8321 }
+   ```
+   Unlike artifacts, `/api/backups` is **never anonymous**: every route needs a
+   session user or an `api`-scoped access token with access to the repo, and
+   refusals are 404-shaped. The backend enforces this itself.
+
+Stable download URL for the newest snapshot of a configuration:
+
+```
+GET /api/backups/repo/<owner>/<repo>/<configuration>/latest.tar.zst
+```
+
+(302s to a 10-minute presigned URL; `curl -L -u user:<token>` works.)
+
 ## Step 10 — Remote builders (optional)
 
 ```nix

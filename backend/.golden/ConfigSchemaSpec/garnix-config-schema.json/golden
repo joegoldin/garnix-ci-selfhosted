@@ -244,6 +244,42 @@
                                 },
                                 "type": "array"
                             },
+                            "backups": {
+                                "$comment": "Scheduled backups of paths on this server: garnix SSHes in on the schedule, tars the paths, and stores the snapshot in the operator's backup bucket. See also preBackupCommand/preRestoreCommand hooks.\nbackups",
+                                "properties": {
+                                    "paths": {
+                                        "$comment": "Absolute paths inside the server to back up. Must not be empty, /, or under /nix/store.",
+                                        "items": {
+                                            "type": "string"
+                                        },
+                                        "type": "array"
+                                    },
+                                    "postBackupCommand": {
+                                        "$comment": "Command run on the server after the tar is taken (cleanup). Always attempted, even if the tar failed.",
+                                        "type": "string"
+                                    },
+                                    "postRestoreCommand": {
+                                        "$comment": "Command run on the server after a restore untars (e.g. start your service). Always attempted, even if the untar failed.",
+                                        "type": "string"
+                                    },
+                                    "preBackupCommand": {
+                                        "$comment": "Command run on the server (as root, via sh -c) before the backup tar is taken. A non-zero exit aborts the backup.",
+                                        "type": "string"
+                                    },
+                                    "preRestoreCommand": {
+                                        "$comment": "Command run on the server before a restore untars (e.g. stop your service).",
+                                        "type": "string"
+                                    },
+                                    "schedule": {
+                                        "$comment": "How often to back up: hourly | daily (default) | weekly | \"<N>h\".",
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "paths"
+                                ],
+                                "type": "object"
+                            },
                             "configuration": {
                                 "$comment": "What attribute to deploy (e.g.: 'myServer' for 'nixosConfigurations.myServer')",
                                 "type": "string"
