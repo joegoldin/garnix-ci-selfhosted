@@ -722,12 +722,14 @@ const BackupsModal = (props: { server: RunningServer; close: () => void }) => {
                   <td>
                     <div className={styles.backupActions}>
                       {backup.status === "success" ? (
-                        <Link href={backupDownloadUrl(backup.id)} target="_blank">
+                        <Button
+                          href={backupDownloadUrl(backup.id)}
+                          target="_blank"
+                        >
                           Download
-                        </Link>
+                        </Button>
                       ) : null}
                       <Button
-                        style="secondary"
                         onClick={() => void toggleLock(backup)}
                         loading={busyBackupId === backup.id}
                       >
