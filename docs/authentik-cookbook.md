@@ -309,5 +309,23 @@ agenix secret readable by your user:
   you enforce email verification in Authentik you can drop it.
 - Cookie sessions reset when a guest is recreated (redeploys provision a fresh
   microVM) — expected for ephemeral hosting.
+- **The cookie secret must be URL-safe, unpadded base64** (43 chars → 32 bytes).
+  oauth2-proxy decodes it with Go's `base64.RawURLEncoding` and falls back to the
+  literal string on failure, so standard `base64` output becomes a 44-byte key
+  and the process exits with `cookie_secret must be 16, 24, or 32 bytes to
+  create an AES cipher, but is 44 bytes`. The module handles this; only relevant
+  if you write your own generator. Because ~74% of random secrets contain a `+`
+  or `/`, getting it wrong presents as *intermittent* deploy failures.
+- **Debugging a gated deploy that fails activation**: the failure surfaces as
+  `exit 4` from `switch-to-configuration`, and the whole generation rolls back,
+  so the guest is gone before you can inspect it. The deploy log on the Servers
+  page carries `systemctl status` plus each failed unit's full journal — read
+  that rather than trying to catch the guest. Verify a fix with one request: a
+  working gate 302s to `/oauth2/start` and follows through to the Authentik
+  login flow.
+  ```bash
+  curl -sSL -o /dev/null -w '%{http_code} %{url_effective}\n' \
+    https://<pkg>.<branch>.<repo>.<owner>.<appsDomain>/oauth2/start
+  ```
 - See [`examples/hello-server/flake.nix`](../examples/hello-server/flake.nix)
   for the `hello-locked` configuration using this module end-to-end.

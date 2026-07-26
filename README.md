@@ -1311,9 +1311,27 @@ public key (`GET /api/keys/<owner>/<repo>/repo-key.public`, or via `age -r`),
 paste the ciphertext into `clientSecretAge`, and the guest decrypts it at
 runtime with the repo private key garnix drops at `/var/garnix/keys/repo-key`
 (root-only). No plaintext secret ever lands in the world-readable nix store.
-The cookie secret is generated on the guest and persisted. `oauth2-proxy` only
-trusts forwarded headers from the loopback nginx gate. This module doubles as a
-worked example when writing your own custom garnix server modules.
+`oauth2-proxy` only trusts forwarded headers from the loopback nginx gate. This
+module doubles as a worked example when writing your own custom garnix server
+modules.
+
+The cookie secret is generated once per guest and persisted at
+`/var/lib/garnix-authentik/cookie-secret`. It must be **URL-safe, unpadded
+base64** — 43 characters decoding to 32 bytes. oauth2-proxy decodes the secret
+with Go's `base64.RawURLEncoding` and silently falls back to using the literal
+string when that fails, so plain `base64` output (standard alphabet, padded) is
+taken verbatim as a 44-byte key and startup dies with:
+
+```
+cookie_secret must be 16, 24, or 32 bytes to create an AES cipher, but is 44 bytes
+```
+
+Since roughly 74% of random 32-byte secrets contain a `+` or `/`, getting this
+wrong fails most deploys but not all — which reads as flakiness rather than a
+bug. The module generates it as `head -c 32 /dev/urandom | base64 -w0 | tr '+/'
+'-_' | tr -d '='`, and validates the persisted value rather than merely checking
+that the file is non-empty, so a guest that stored a bad secret repairs itself
+on the next activation (at the cost of invalidating existing sessions).
 
 ## Server backups
 
