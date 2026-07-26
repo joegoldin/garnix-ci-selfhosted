@@ -8,6 +8,7 @@ module Garnix.Hosting.Deploy
     checkDeployPlan,
     statsEnvContents,
     parseLoginUsers,
+    failedUnitsFromActivation,
   )
 where
 
@@ -421,7 +422,7 @@ startServer = curry4
           -- If the guest booted but failed to activate, it is still reachable
           -- (teardown runs later), so capture WHY the switch failed.
           case err error of
-            ActivationError {} -> captureGuestFailureDiagnostics serverInfo
+            ActivationError {stdErr} -> captureGuestFailureDiagnostics serverInfo stdErr
             _ -> pure ()
       let logs =
             T.unlines
@@ -485,7 +486,7 @@ redeployServer reporter commitInfo deploymentType serverInfo wanted = do
         deploymentLogs <-
           (switchToConfiguration sshUser serverInfo storePath <?> "Switching to redeployment configuration")
             `whenError` \error -> case err error of
-              ActivationError {} -> captureGuestFailureDiagnostics serverInfo
+              ActivationError {stdErr} -> captureGuestFailureDiagnostics serverInfo stdErr
               _ -> pure ()
         now <- liftIO getCurrentTime
         let serverInfo' =
@@ -932,8 +933,8 @@ captureAndStoreSshUsers server =
 -- only reports "the following units failed: <unit>", never WHY; this surfaces the
 -- actual cause (e.g. a service that couldn't start) in the run's deploy logs.
 -- Never fails the deploy: any ssh/journal error is logged and swallowed.
-captureGuestFailureDiagnostics :: ServerInfo -> M ()
-captureGuestFailureDiagnostics server =
+captureGuestFailureDiagnostics :: ServerInfo -> Text -> M ()
+captureGuestFailureDiagnostics server activationStderr =
   capture `catchEither` \e ->
     log Informational
       $ "captureGuestFailureDiagnostics: best-effort guest diagnostics failed for server "
@@ -952,11 +953,54 @@ captureGuestFailureDiagnostics server =
         <> ip
         <> ") ===\n"
         <> cs output
+
+    -- Units switch-to-configuration named in its stderr, unioned on the guest
+    -- with whatever `systemctl --failed` reports. Both are needed: a unit that
+    -- failed during activation may already have been reset by the time we look,
+    -- and a unit that failed for an unrelated reason won't be in the stderr.
+    reportedUnits = failedUnitsFromActivation activationStderr
+
     diagCmd =
-      "echo '--- failed units ---'; "
+      "reported=\""
+        <> T.intercalate " " reportedUnits
+        <> "\"; "
+        <> "echo '--- failed units ---'; "
         <> "systemctl --failed --no-legend --plain 2>/dev/null; "
-        <> "echo; echo '--- journal since boot (warning and above), tail ---'; "
-        <> "journalctl -b --no-pager -p warning -o short-precise 2>/dev/null | tail -150"
+        <> "units=$(printf '%s\\n' $reported $(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}') | sort -u); "
+        <> "echo; echo '--- per-unit status and full logs ---'; "
+        <> "for u in $units; do "
+        <> "echo \"=== $u ===\"; "
+        <> "systemctl status \"$u\" --no-pager --full 2>&1 | head -40; "
+        -- No -p filter here: systemd records a daemon's stdout/stderr at info
+        -- priority, so the actual fatal message (e.g. oauth2-proxy's config
+        -- error) is exactly what a warning-and-above filter throws away.
+        <> "echo \"--- journal: $u ---\"; "
+        <> "journalctl -b -u \"$u\" --no-pager -o short-precise 2>/dev/null | tail -200; "
+        <> "echo; "
+        <> "done; "
+        <> "echo '--- journal since boot (all priorities), tail ---'; "
+        <> "journalctl -b --no-pager -o short-precise 2>/dev/null | tail -200"
+
+-- | The units @switch-to-configuration@ reports as failed, read out of its
+-- stderr (@warning: the following units failed: a.service, b.service@). Only
+-- that exact phrasing counts — activation also prints a "NOT restarting the
+-- following changed units:" line on every healthy deploy, which must not be
+-- mistaken for a failure. Deduplicated and capped, since the guest controls
+-- this text.
+failedUnitsFromActivation :: Text -> [Text]
+failedUnitsFromActivation raw =
+  take maxReportedUnits $ nubOrd $ concatMap unitsOnLine (T.lines raw)
+  where
+    maxReportedUnits = 25 :: Int
+    marker = "the following units failed:"
+    unitsOnLine line = case T.breakOn marker line of
+      (_, rest)
+        | T.null rest -> []
+        | otherwise ->
+            filter (not . T.null)
+              $ map T.strip
+              $ T.splitOn ","
+              $ T.drop (T.length marker) rest
 
 -- | Parse @getent passwd@ output (@name:passwd:uid:gid:gecos:home:shell@ per
 -- line) into login usernames, dropping service/system accounts whose shell
