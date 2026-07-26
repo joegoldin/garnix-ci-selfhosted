@@ -40,6 +40,26 @@ let
   # Credentials garnix drops at deploy time for mode = "default"
   # (servers[].authentik = "default" in garnix.yaml).
   defaultCredsFile = "/var/garnix/keys/default-authentik.env";
+  # Cookie secret: generated once per guest and persisted across restarts.
+  #
+  # It MUST be URL-safe, unpadded base64. oauth2-proxy decodes the secret with
+  # Go's base64.RawURLEncoding and falls back to the literal string when that
+  # fails — so plain `base64` output (standard alphabet, padded) is taken
+  # verbatim as a 44-byte key and startup dies with "cookie_secret must be 16,
+  # 24, or 32 bytes to create an AES cipher, but is 44 bytes". Roughly 74% of
+  # random 32-byte secrets contain a `+` or `/`, which is why authed deploys
+  # failed intermittently rather than always.
+  #
+  # The guard also rewrites a previously-persisted bad secret, since a
+  # persistent guest would otherwise keep a broken one forever. Regenerating
+  # invalidates existing sessions on that guest, which is unavoidable — the old
+  # value cannot be used as a key at all.
+  mkCookieSecret = ''
+    if ! grep -Eq '^[A-Za-z0-9_-]{43}$' ${stateDir}/cookie-secret 2>/dev/null; then
+      head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d '=' \
+        > ${stateDir}/cookie-secret
+    fi
+  '';
   # oauth2-proxy performs OIDC discovery against the issuer at startup and exits
   # if it can't reach it. On a guest's first activation switch-to-configuration
   # restarts systemd-networkd + systemd-resolved, and network-online.target does
@@ -298,10 +318,7 @@ in
             echo "garnix-authentik: ${defaultCredsFile} never appeared complete (need OAUTH2_PROXY_OIDC_ISSUER_URL, OAUTH2_PROXY_CLIENT_ID and OAUTH2_PROXY_CLIENT_SECRET); was this server deployed with authentik: default in garnix.yaml (and defaultAuthentik configured on the garnix host)?" >&2
             exit 1
           fi
-          # Cookie secret: generate once, persist across restarts within this guest.
-          if [ ! -s ${stateDir}/cookie-secret ]; then
-            head -c 32 /dev/urandom | base64 -w0 > ${stateDir}/cookie-secret
-          fi
+          ${mkCookieSecret}
           umask 077
           {
             cat ${defaultCredsFile}
@@ -327,10 +344,7 @@ in
             exit 1
           fi
           client_secret="$(age --decrypt -i ${repoKey} < ${cfg.clientSecretFile})"
-          # Cookie secret: generate once, persist across restarts within this guest.
-          if [ ! -s ${stateDir}/cookie-secret ]; then
-            head -c 32 /dev/urandom | base64 -w0 > ${stateDir}/cookie-secret
-          fi
+          ${mkCookieSecret}
           umask 077
           {
             printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$client_secret"
