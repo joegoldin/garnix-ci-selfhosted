@@ -2,11 +2,19 @@ import { match } from "ts-pattern";
 import { Build } from "@/services/build";
 import { Run } from "@/services/run";
 
+// A manually triggered build ("Trigger Builds" / server "Redeploy") carries a
+// synthetic `manual-<timestamp>` id instead of a real SHA — see
+// Garnix.Orchestrator.triggerBranchBuild. It is not a ref on the forge, so it
+// must never be truncated (`manual-2` is meaningless) or linked there (404).
+export const isManualCommit = (gitCommit: string): boolean =>
+  gitCommit.startsWith("manual-");
+
 export const formatCommitSha = ({
   gitCommit,
 }: {
   gitCommit: string;
 }): string => {
+  if (isManualCommit(gitCommit)) return gitCommit;
   return gitCommit.substring(0, 8);
 };
 

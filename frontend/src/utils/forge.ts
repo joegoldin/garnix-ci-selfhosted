@@ -3,6 +3,8 @@
 // configured (non-empty `giteaUrl`, no trailing slash), links point at the
 // self-hosted Gitea instead.
 
+import { isManualCommit } from "@/utils/format";
+
 const GITHUB_BASE = "https://github.com";
 
 const isGitea = (forge: string, giteaUrl: string): boolean =>
@@ -29,16 +31,21 @@ export const forgeBranchUrl = (
     ? `${giteaUrl}/${owner}/${repo}/src/branch/${branch}`
     : `${GITHUB_BASE}/${owner}/${repo}/tree/${branch}`;
 
+// `undefined` for a manually triggered build: its `manual-<timestamp>` id is
+// synthetic and has no commit page on the forge, so callers render the id as
+// plain text rather than a link that would 404.
 export const forgeCommitUrl = (
   forge: string,
   giteaUrl: string,
   owner: string,
   repo: string,
   sha: string,
-): string =>
-  isGitea(forge, giteaUrl)
+): string | undefined => {
+  if (isManualCommit(sha)) return undefined;
+  return isGitea(forge, giteaUrl)
     ? `${giteaUrl}/${owner}/${repo}/commit/${sha}`
     : `${GITHUB_BASE}/${owner}/${repo}/commit/${sha}`;
+};
 
 export const forgeUserUrl = (
   forge: string,

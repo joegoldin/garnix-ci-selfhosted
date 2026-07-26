@@ -25,6 +25,7 @@ import { Table } from "@/components/table";
 import { ToggleSwitch } from "@/components/toggleSwitch";
 import { Link } from "@/components/link";
 import { diffTime, formatDurationLong, fromSecs } from "@/utils/duration";
+import { formatCommitSha } from "@/utils/format";
 import { Text } from "@/components/text";
 import { FloatingModal, ModalSection } from "@/components/modal";
 import { useForm } from "@/hooks/useForm";
@@ -129,7 +130,7 @@ const kbToGiB = (kb: number): string => (kb / 1024 / 1024).toFixed(1);
 // an 8-char SHA. Links to that commit's run tree so you can see what the server
 // is actually running.
 const formatVersion = (commit: string): string =>
-  commit.startsWith("manual-") ? commit : commit.slice(0, 8);
+  formatCommitSha({ gitCommit: commit });
 
 // Compact CPU% / RAM cell fed by the latest pushed sample.
 const ResourcesCell = ({ stats }: { stats: RunningServer["stats"] }) => {
