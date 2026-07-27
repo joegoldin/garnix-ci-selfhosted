@@ -16,7 +16,6 @@ module Garnix.API.Configure
     SetEvaluationMemoryDto (..),
     SetDefaultAuthentikDto (..),
     SetFodCheckSkipDto (..),
-    SetAutoCancelSupersededDto (..),
     ArtifactRepoOverrideDto (..),
     ArtifactUsageDto (..),
     LockedArtifactBuildDto (..),
@@ -98,14 +97,6 @@ data ConfigureAPI route = ConfigureAPI
         :> Capture "repo" GhRepoName
         :> "fod-check-skip"
         :> ReqBody '[JSON] SetFodCheckSkipDto
-        :> Put '[JSON] NoContent,
-    _configureAPISetRepoAutoCancelSuperseded ::
-      route
-        :- "repo"
-        :> Capture "owner" GhRepoOwner
-        :> Capture "repo" GhRepoName
-        :> "auto-cancel-superseded"
-        :> ReqBody '[JSON] SetAutoCancelSupersededDto
         :> Put '[JSON] NoContent,
     _configureAPISetArtifactDefaults ::
       route
@@ -205,11 +196,7 @@ data RepoRuntimeOverrideDto = RepoRuntimeOverrideDto
     _repoRuntimeOverrideDtoDefaultAuthentikApproved :: Bool,
     -- | Glob patterns (on a FOD's @\<name\>@) whose matching fixed-output
     -- derivations the FOD check skips instead of failing closed.
-    _repoRuntimeOverrideDtoFodCheckSkip :: [Text],
-    -- | Whether a new deployable push for this repo cancels older
-    -- not-yet-finished builds/deploy work for the same branch (or fork PR)
-    -- instead of racing it.
-    _repoRuntimeOverrideDtoAutoCancelSuperseded :: Bool
+    _repoRuntimeOverrideDtoFodCheckSkip :: [Text]
   }
   deriving stock (Eq, Show, Generic)
 
@@ -274,21 +261,6 @@ instance ToJSON SetFodCheckSkipDto where
   toJSON = ourToJSON
 
 instance FromJSON SetFodCheckSkipDto where
-  parseJSON = ourParseJSON
-
--- | Body of @PUT configure\/repo\/\<owner\>\/\<repo\>\/auto-cancel-superseded@:
--- whether a new deployable push for this repo cancels older not-yet-finished
--- builds/deploy work for the same branch (or fork PR) instead of racing it.
-newtype SetAutoCancelSupersededDto = SetAutoCancelSupersededDto
-  { _setAutoCancelSupersededDtoEnabled :: Bool
-  }
-  deriving stock (Eq, Show, Generic)
-
-instance ToJSON SetAutoCancelSupersededDto where
-  toEncoding = ourToEncoding
-  toJSON = ourToJSON
-
-instance FromJSON SetAutoCancelSupersededDto where
   parseJSON = ourParseJSON
 
 -- | A repo's artifact retention override. 'Nothing' fields inherit the
@@ -506,7 +478,7 @@ configureAPI auth =
                 toGigabytes minimumEvalMemory,
               _configureSettingsDtoRepoOverrides =
                 map
-                  ( \(o, r, timeout, memory, authentikApproved, fodCheckSkip, autoCancelSuperseded) ->
+                  ( \(o, r, timeout, memory, authentikApproved, fodCheckSkip) ->
                       RepoRuntimeOverrideDto
                         o
                         r
@@ -514,7 +486,6 @@ configureAPI auth =
                         (toGigabytes . max minimumEvalMemory <$> memory)
                         authentikApproved
                         fodCheckSkip
-                        autoCancelSuperseded
                   )
                   overrides,
               _configureSettingsDtoArtifactRetentionDays = artifactRetentionDays,
@@ -575,10 +546,6 @@ configureAPI auth =
       _configureAPISetRepoFodCheckSkip = \owner repo dto -> do
         requireSelfHostConfig auth
         DB.setRepoFodCheckSkip owner repo (_setFodCheckSkipDtoPatterns dto)
-        pure NoContent,
-      _configureAPISetRepoAutoCancelSuperseded = \owner repo dto -> do
-        requireSelfHostConfig auth
-        DB.setRepoAutoCancelSuperseded owner repo (_setAutoCancelSupersededDtoEnabled dto)
         pure NoContent,
       _configureAPISetArtifactDefaults = \dto -> do
         requireSelfHostConfig auth

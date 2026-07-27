@@ -33,7 +33,6 @@ import {
   setDefaultBackupSettings,
   setDefaultBuildTimeout,
   setRepoArtifactSettings,
-  setRepoAutoCancelSuperseded,
   setRepoBackupSettings,
   setRepoBuildTimeout,
   setRepoDefaultAuthentik,
@@ -337,16 +336,6 @@ export const BuildRuntimeSettings = ({
     settings.repoOverrides.find(
       (o) => o.repoUser === repoUser && o.repoName === repoName,
     )?.defaultAuthentikApproved ?? false;
-  // Same immediate-apply pattern as the default-OIDC toggle above.
-  const toggleAutoCancel = (repoUser: string, repoName: string, enabled: boolean) =>
-    run(() => setRepoAutoCancelSuperseded(repoUser, repoName, enabled));
-  const autoCancelSupersededFor = (
-    repoUser: string,
-    repoName: string,
-  ): boolean =>
-    settings.repoOverrides.find(
-      (o) => o.repoUser === repoUser && o.repoName === repoName,
-    )?.autoCancelSuperseded ?? false;
 
   return (
     <div className={styles.timeout}>
@@ -435,23 +424,6 @@ export const BuildRuntimeSettings = ({
               hands them garnix&apos;s own login/OIDC client credentials. Only
               enable for repositories you fully trust.
             </Text>
-            <label className={styles.toggleField}>
-              <span>Auto-cancel superseded builds/deploys</span>
-              <ToggleSwitch
-                value={autoCancelSupersededFor(repo.repoUser, repo.repoName)}
-                onChange={(v) => {
-                  void toggleAutoCancel(repo.repoUser, repo.repoName, v);
-                }}
-              />
-            </label>
-            <Text className={styles.help}>
-              When on, a new push to the same branch (or fork PR) cancels this
-              repo&apos;s older not-yet-finished builds and deploys instead of
-              letting them race the new push. Deployment/redeployment
-              execution is always serialized per repo regardless of this
-              setting — this only controls whether the OLDER work is actively
-              cancelled or left to finish first.
-            </Text>
           </div>
         ) : null}
       </div>
@@ -483,10 +455,6 @@ export const BuildRuntimeSettings = ({
                   <span className={styles.overrideValue}>
                     default-OIDC:{" "}
                     {o.defaultAuthentikApproved ? "allowed" : "off"}
-                  </span>
-                  <span className={styles.overrideValue}>
-                    auto-cancel superseded:{" "}
-                    {o.autoCancelSuperseded ? "on" : "off"}
                   </span>
                 </span>
                 <span className={styles.overrideActions}>

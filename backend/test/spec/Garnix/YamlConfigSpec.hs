@@ -720,3 +720,17 @@ spec = do
                 |]
         let actual = (^. fodChecks) <$> decodeConfig config
         actual `shouldBe` Right True
+
+    describe "autoCancelSuperseded section" $ do
+      it "defaults to false" $ do
+        let actual = (^. autoCancelSuperseded) <$> decodeConfig ""
+        actual `shouldBe` Right False
+
+      it "parses an explicit true" $ do
+        let config =
+              cs
+                [i|
+                  autoCancelSuperseded: true
+                |]
+        let actual = (^. autoCancelSuperseded) <$> decodeConfig config
+        actual `shouldBe` Right True

@@ -101,7 +101,7 @@ getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
     map
-      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout, fodCheckSkip, autoCancelSuperseded) ->
+      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout, fodCheckSkip) ->
           RepoConfig
             skipInputChecks
             (max (defaultRepoConfig ^. maxEvalMemory) (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory))
@@ -112,7 +112,6 @@ getRepoConfig repoOwner repoName = do
             -- elements. The column is NOT NULL DEFAULT '{}', so absent rows
             -- fall through to 'defaultRepoConfig' with an empty list.
             (catMaybes fodCheckSkip)
-            autoCancelSuperseded
       )
       <$> pgQuery
         [pgSQL|
@@ -122,8 +121,7 @@ getRepoConfig repoOwner repoName = do
             private_cache,
             default_authentik_approved,
             build_timeout_minutes,
-            fod_check_skip,
-            auto_cancel_superseded
+            fod_check_skip
           FROM repo_config
           WHERE repo_user = ${repoOwner}
             AND repo_name = ${repoName}
@@ -157,24 +155,20 @@ setDefaultBuildTimeout mMinutes =
       |]
 
 -- | Every repo with a build-timeout or evaluation-memory override, that has
--- been approved for @authentik: default@ hosting, that has any FOD-check skip
--- patterns, or that has auto-cancel-superseded turned on (so a repo with only
--- that set still surfaces on the Configure page).
-getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool, [Text], Bool)]
+-- been approved for @authentik: default@ hosting, or that has any FOD-check
+-- skip patterns (so a repo with only that set still surfaces on the Configure
+-- page).
+getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool, [Text])]
 getRepoRuntimeOverrides =
-  map
-    ( \(o, r, timeout, memory, authentikApproved, fodCheckSkip, autoCancelSuperseded) ->
-        (o, r, timeout, memory, authentikApproved, catMaybes fodCheckSkip, autoCancelSuperseded)
-    )
+  map (\(o, r, timeout, memory, authentikApproved, fodCheckSkip) -> (o, r, timeout, memory, authentikApproved, catMaybes fodCheckSkip))
     <$> pgQuery
       [pgSQL|
-        SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved, fod_check_skip, auto_cancel_superseded
+        SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved, fod_check_skip
         FROM repo_config
         WHERE build_timeout_minutes IS NOT NULL
            OR max_eval_memory IS NOT NULL
            OR default_authentik_approved = true
            OR fod_check_skip <> '{}'
-           OR auto_cancel_superseded = true
         ORDER BY repo_user, repo_name
       |]
 
@@ -190,19 +184,6 @@ setRepoFodCheckSkip repoOwner repoName patterns =
           VALUES (${repoOwner}, ${repoName}, ${patterns}::text[])
           ON CONFLICT (repo_user, repo_name)
           DO UPDATE SET fod_check_skip = ${patterns}::text[]
-      |]
-
--- | Turn a repo's auto-cancel-superseded flag on or off (Configure page,
--- admin-only). See 'RepoConfig' and 'cancelSupersededWork'.
-setRepoAutoCancelSuperseded :: GhRepoOwner -> GhRepoName -> Bool -> M ()
-setRepoAutoCancelSuperseded repoOwner repoName enabled =
-  void
-    $ pgExec
-      [pgSQL|
-        INSERT INTO repo_config (repo_user, repo_name, auto_cancel_superseded)
-          VALUES (${repoOwner}, ${repoName}, ${enabled})
-          ON CONFLICT (repo_user, repo_name)
-          DO UPDATE SET auto_cancel_superseded = ${enabled}
       |]
 
 -- | Set (with 'Just') or clear (with 'Nothing') the single-package target for a
@@ -886,9 +867,9 @@ data SupersededScope
 
 -- | Cancel every still-unfinished build AND run (action/deploy/FOD-check/etc.)
 -- of *older* pushes within the same scope (same repo, different commit; see
--- 'SupersededScope'). Used when a repo has auto-cancel-superseded turned on
--- ('RepoConfig.autoCancelSuperseded', Configure page) or sets garnix.yaml's
--- own @cancelSupersededBuilds@ (see 'Garnix.Build.Flake.runBuildFlake');
+-- 'SupersededScope'). Used when a repo's garnix.yaml sets @cancelSupersededBuilds@
+-- or the broader @autoCancelSuperseded@ (either flag enables it; see
+-- 'Garnix.Build.Flake.supersededCancellationScope' and 'runBuildFlake');
 -- in-flight builds notice via 'Garnix.Build.Package.abortOnCancellation',
 -- actions via 'Garnix.Build.Action.abortOnRunCancellation'. This reuses
 -- EXACTLY the same DB-level cancellation the "Cancel build" button uses (see

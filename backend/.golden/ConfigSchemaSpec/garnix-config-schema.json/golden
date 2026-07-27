@@ -108,6 +108,10 @@
                     },
                     "type": "array"
                 },
+                "autoCancelSuperseded": {
+                    "$comment": "Whether a new push (to the same branch, or for a fork PR, the same fork) cancels this repo's older not-yet-finished builds and runs (deploys/actions/etc.) instead of letting them race the new push. Equivalent in effect to cancelSupersededBuilds, but also covers fork PRs and cancels in-flight runs, not just branch-scoped builds; either flag being true is enough to enable cancellation.",
+                    "type": "boolean"
+                },
                 "builds": {
                     "$comment": "Specifies what should be built. Everything in the `include` section, minus everything in the `exclude` section, is built.",
                     "oneOf": [

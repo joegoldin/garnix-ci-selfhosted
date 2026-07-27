@@ -50,6 +50,7 @@ module Garnix.YamlConfig
     actions,
     asAttributeMatcher,
     authentikSection,
+    autoCancelSuperseded,
     branchSection,
     buildSections,
     cancelSupersededBuilds,
@@ -754,12 +755,23 @@ data GarnixConfig = GarnixConfig
     _garnixConfigModuleSection :: ModuleSection,
     _garnixConfigFodChecks :: Bool,
     _garnixConfigCancelSupersededBuilds :: Bool,
+    -- | Repo-declared (garnix.yaml), top-level: whether a new push (to the
+    -- same branch, or for a fork PR, the same fork) cancels this repo's
+    -- older not-yet-finished builds AND runs (deploys/actions/etc.) instead
+    -- of letting them race the new push. Functionally the broader sibling of
+    -- 'cancelSupersededBuilds' — it also covers fork PRs and cancels runs,
+    -- not just branch-scoped builds — and shares its decision path: either
+    -- flag being true is enough to enable cancellation (see
+    -- 'Garnix.Build.Flake.supersededCancellationScope'). Previously this was
+    -- an admin-only Configure-page toggle; it now lives here so the repo
+    -- itself declares the behavior instead of the operator.
+    _garnixConfigAutoCancelSuperseded :: Bool,
     _garnixConfigFlakeDir :: FlakeDir
   }
   deriving stock (Eq, Show, Generic)
 
 instance Default GarnixConfig where
-  def = GarnixConfig [def] def [] [] [] def False False (FlakeDir ".")
+  def = GarnixConfig [def] def [] [] [] def False False False (FlakeDir ".")
 
 instance FromJSON GarnixConfig where
   parseJSON = parseJSONViaCodec
@@ -839,6 +851,20 @@ instance HasCodec GarnixConfig where
                       <> "Useful when only the latest commit matters."
                   )
                   .= _garnixConfigCancelSupersededBuilds
+              )
+          <*> ( optionalFieldWithDefault
+                  "autoCancelSuperseded"
+                  False
+                  ( "Whether a new push (to the same branch, or for a fork "
+                      <> "PR, the same fork) cancels this repo's older "
+                      <> "not-yet-finished builds and runs (deploys/actions/"
+                      <> "etc.) instead of letting them race the new push. "
+                      <> "Equivalent in effect to cancelSupersededBuilds, but "
+                      <> "also covers fork PRs and cancels in-flight runs, "
+                      <> "not just branch-scoped builds; either flag being "
+                      <> "true is enough to enable cancellation."
+                  )
+                  .= _garnixConfigAutoCancelSuperseded
               )
           <*> ( optionalFieldWithDefault
                   "flakeDir"

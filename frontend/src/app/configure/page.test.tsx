@@ -114,7 +114,6 @@ describe("build runtime settings", () => {
           maxEvalMemoryGib: 32,
           defaultAuthentikApproved: false,
           fodCheckSkip: [],
-          autoCancelSuperseded: false,
         },
       ],
       artifactRetentionDays: 30,

@@ -38,7 +38,7 @@ spec = do
       repoConfig ^. maxEvalMemory `shouldBeM` fromGigabytes 16
       configured <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides configured
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16) False [] False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing (Just 16) False []]
 
     it "approves, surfaces, and revokes default-authentik hosting per repo" $ asAdmin $ \api -> do
       _configureAPISetRepoDefaultAuthentik api "some-owner" "some-repo" (SetDefaultAuthentikDto True)
@@ -47,7 +47,7 @@ spec = do
       -- An approved repo with no timeout/memory override still surfaces.
       approvedDto <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides approvedDto
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing Nothing True [] False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing Nothing True []]
       _configureAPISetRepoDefaultAuthentik api "some-owner" "some-repo" (SetDefaultAuthentikDto False)
         `shouldReturnM` NoContent
       DB.isDefaultAuthentikApproved "some-owner" "some-repo" `shouldReturnM` False
@@ -56,27 +56,6 @@ spec = do
 
     it "rejects non-admin callers on the default-authentik route" $ asUser FreeSubscription $ \api ->
       _configureAPISetRepoDefaultAuthentik api "o" "r" (SetDefaultAuthentikDto True)
-        `shouldThrowM` Unauthorized
-
-    it "turns auto-cancel-superseded on and off per repo" $ asAdmin $ \api -> do
-      _configureAPISetRepoAutoCancelSuperseded api "some-owner" "some-repo" (SetAutoCancelSupersededDto True)
-        `shouldReturnM` NoContent
-      onRepoConfig <- DB.getRepoConfig "some-owner" "some-repo"
-      onRepoConfig ^. autoCancelSuperseded `shouldBeM` True
-      -- A repo with only this flag set still surfaces (no timeout/memory
-      -- override, no default-authentik approval).
-      onDto <- _configureAPIGet api
-      _configureSettingsDtoRepoOverrides onDto
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" Nothing Nothing False [] True]
-      _configureAPISetRepoAutoCancelSuperseded api "some-owner" "some-repo" (SetAutoCancelSupersededDto False)
-        `shouldReturnM` NoContent
-      offRepoConfig <- DB.getRepoConfig "some-owner" "some-repo"
-      offRepoConfig ^. autoCancelSuperseded `shouldBeM` False
-      offDto <- _configureAPIGet api
-      _configureSettingsDtoRepoOverrides offDto `shouldBeM` []
-
-    it "rejects non-admin callers on the auto-cancel-superseded route" $ asUser FreeSubscription $ \api ->
-      _configureAPISetRepoAutoCancelSuperseded api "o" "r" (SetAutoCancelSupersededDto True)
         `shouldThrowM` Unauthorized
 
     it "sets, lists, and clears memory independently of the timeout" $ asAdmin $ \api -> do
@@ -88,13 +67,13 @@ spec = do
       configured <- _configureAPIGet api
       _configureSettingsDtoDefaultMaxEvalMemoryGib configured `shouldBeM` 16
       _configureSettingsDtoRepoOverrides configured
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32) False [] False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) (Just 32) False []]
 
       _configureAPIDeleteRepoEvaluationMemory api "some-owner" "some-repo"
         `shouldReturnM` NoContent
       memoryCleared <- _configureAPIGet api
       _configureSettingsDtoRepoOverrides memoryCleared
-        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing False [] False]
+        `shouldBeM` [RepoRuntimeOverrideDto "some-owner" "some-repo" (Just 120) Nothing False []]
       inherited <- DB.getRepoConfig "some-owner" "some-repo"
       inherited ^. maxEvalMemory `shouldBeM` fromGigabytes 16
       inherited ^. buildTimeoutMinutes `shouldBeM` Just 120
@@ -255,8 +234,7 @@ spec = do
                         build_timeout_minutes: 120,
                         max_eval_memory_gib: 32,
                         default_authentik_approved: false,
-                        fod_check_skip: [],
-                        auto_cancel_superseded: false
+                        fod_check_skip: []
                       } |]
                     ]
       map toJSON (_configureSettingsDtoArtifactRepoOverrides dto)
