@@ -1,15 +1,26 @@
 {
-  outputs = { nixpkgs, ... }:
+  # PR-deployment watchdog fixture (Garnix.Watchdog.Checks.prDeploymentCheck):
+  # pushed hourly to a test-forge branch, deployed as an `on-pull-request`
+  # server, and polled over http — the response body must match ./date. See
+  # examples/hello-server/flake.nix for the annotated version of this same
+  # nix-native `garnix.server` shape.
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    garnix-ci.url = "github:joegoldin/garnix-ci-selfhosted";
+  };
+  outputs =
+    { nixpkgs, garnix-ci, ... }:
     {
       nixosConfigurations.watchdog-pr-deployment-server =
         nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
+            garnix-ci.nixosModules.garnix-guest
             ({ pkgs, ... }:
               {
-                system.stateVersion = "24.11";
-                fileSystems."/" = { device = "/dev/sda1"; fsType = "ext4"; };
-                boot.loader.grub.device = "/dev/sda";
+                garnix.server.deployment = {
+                  type = "on-pull-request";
+                };
                 services.nginx =
                   let
                     root = pkgs.writeTextFile {
@@ -24,8 +35,6 @@
                       root = "${root}";
                     };
                   };
-                networking.firewall.allowedTCPPorts = [ 80 ];
-                virtualisation.vmVariant.services.getty.autologinUser = "root";
               })
           ];
         };
