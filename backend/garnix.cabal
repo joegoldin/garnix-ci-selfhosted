@@ -787,6 +787,7 @@ test-suite spec
       Garnix.AttributeSpec
       Garnix.Backups.SchedulerSpec
       Garnix.Build.CheckoutSpec
+      Garnix.Build.FlakeSpec
       Garnix.Build.FodCheckSpec
       Garnix.Build.HelpersSpec
       Garnix.Build.ModuleSpec

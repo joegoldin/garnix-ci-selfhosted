@@ -101,7 +101,7 @@ getRepoConfig :: GhRepoOwner -> GhRepoName -> M RepoConfig
 getRepoConfig repoOwner repoName = do
   repoConfig <-
     map
-      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout, fodCheckSkip) ->
+      ( \(skipInputChecks, evalMemory, privateCache, defaultAuthentikApproved, buildTimeout, fodCheckSkip, autoCancelSuperseded) ->
           RepoConfig
             skipInputChecks
             (max (defaultRepoConfig ^. maxEvalMemory) (fromMaybe (defaultRepoConfig ^. maxEvalMemory) evalMemory))
@@ -112,6 +112,7 @@ getRepoConfig repoOwner repoName = do
             -- elements. The column is NOT NULL DEFAULT '{}', so absent rows
             -- fall through to 'defaultRepoConfig' with an empty list.
             (catMaybes fodCheckSkip)
+            autoCancelSuperseded
       )
       <$> pgQuery
         [pgSQL|
@@ -121,7 +122,8 @@ getRepoConfig repoOwner repoName = do
             private_cache,
             default_authentik_approved,
             build_timeout_minutes,
-            fod_check_skip
+            fod_check_skip,
+            auto_cancel_superseded
           FROM repo_config
           WHERE repo_user = ${repoOwner}
             AND repo_name = ${repoName}
@@ -155,20 +157,24 @@ setDefaultBuildTimeout mMinutes =
       |]
 
 -- | Every repo with a build-timeout or evaluation-memory override, that has
--- been approved for @authentik: default@ hosting, or that has any FOD-check
--- skip patterns (so a repo with only that set still surfaces on the Configure
--- page).
-getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool, [Text])]
+-- been approved for @authentik: default@ hosting, that has any FOD-check skip
+-- patterns, or that has auto-cancel-superseded turned on (so a repo with only
+-- that set still surfaces on the Configure page).
+getRepoRuntimeOverrides :: M [(GhRepoOwner, GhRepoName, Maybe Int32, Maybe Memory, Bool, [Text], Bool)]
 getRepoRuntimeOverrides =
-  map (\(o, r, timeout, memory, authentikApproved, fodCheckSkip) -> (o, r, timeout, memory, authentikApproved, catMaybes fodCheckSkip))
+  map
+    ( \(o, r, timeout, memory, authentikApproved, fodCheckSkip, autoCancelSuperseded) ->
+        (o, r, timeout, memory, authentikApproved, catMaybes fodCheckSkip, autoCancelSuperseded)
+    )
     <$> pgQuery
       [pgSQL|
-        SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved, fod_check_skip
+        SELECT repo_user, repo_name, build_timeout_minutes, max_eval_memory, default_authentik_approved, fod_check_skip, auto_cancel_superseded
         FROM repo_config
         WHERE build_timeout_minutes IS NOT NULL
            OR max_eval_memory IS NOT NULL
            OR default_authentik_approved = true
            OR fod_check_skip <> '{}'
+           OR auto_cancel_superseded = true
         ORDER BY repo_user, repo_name
       |]
 
@@ -184,6 +190,19 @@ setRepoFodCheckSkip repoOwner repoName patterns =
           VALUES (${repoOwner}, ${repoName}, ${patterns}::text[])
           ON CONFLICT (repo_user, repo_name)
           DO UPDATE SET fod_check_skip = ${patterns}::text[]
+      |]
+
+-- | Turn a repo's auto-cancel-superseded flag on or off (Configure page,
+-- admin-only). See 'RepoConfig' and 'cancelSupersededWork'.
+setRepoAutoCancelSuperseded :: GhRepoOwner -> GhRepoName -> Bool -> M ()
+setRepoAutoCancelSuperseded repoOwner repoName enabled =
+  void
+    $ pgExec
+      [pgSQL|
+        INSERT INTO repo_config (repo_user, repo_name, auto_cancel_superseded)
+          VALUES (${repoOwner}, ${repoName}, ${enabled})
+          ON CONFLICT (repo_user, repo_name)
+          DO UPDATE SET auto_cancel_superseded = ${enabled}
       |]
 
 -- | Set (with 'Just') or clear (with 'Nothing') the single-package target for a
@@ -853,25 +872,98 @@ getRecentBuildDurations limit =
         LIMIT ${limit}
       |]
 
--- | Cancel every still-unfinished build of *older* pushes to the same branch
--- (same repo, different commit, not a PR from a fork). Used when garnix.yaml
--- sets cancelSupersededBuilds; running builds notice via abortOnCancellation.
-cancelSupersededBuilds :: GhRepoOwner -> GhRepoName -> Branch -> CommitHash -> UTCTime -> M ()
-cancelSupersededBuilds repoOwner repoName branch' commitHash newerThan = do
+-- | The scope a superseding push cancels older not-yet-finished work within.
+-- Ordinary pushes (and non-fork PR pushes, which are literally pushes to a
+-- real branch of the base repo) scope by branch; a fork PR push has no branch
+-- on the base repo at all (see 'Garnix.API.GhWebhooks.ghWebhookPullRequest',
+-- which always sets @CommitInfo.branch = Nothing@ for PR-triggered builds), so
+-- it scopes by fork identity instead — mirroring the existing per-fork
+-- precedent in 'recordPrivateInputForkBlock' et al.
+data SupersededScope
+  = SupersededBranch Branch
+  | SupersededFork PrFromFork
+  deriving stock (Eq, Show)
+
+-- | Cancel every still-unfinished build AND run (action/deploy/FOD-check/etc.)
+-- of *older* pushes within the same scope (same repo, different commit; see
+-- 'SupersededScope'). Used when a repo has auto-cancel-superseded turned on
+-- ('RepoConfig.autoCancelSuperseded', Configure page) or sets garnix.yaml's
+-- own @cancelSupersededBuilds@ (see 'Garnix.Build.Flake.runBuildFlake');
+-- in-flight builds notice via 'Garnix.Build.Package.abortOnCancellation',
+-- actions via 'Garnix.Build.Action.abortOnRunCancellation'. This reuses
+-- EXACTLY the same DB-level cancellation the "Cancel build" button uses (see
+-- 'Garnix.API.Commits.cancelCommit') — no new kill path.
+--
+-- 'runs' carries no branch\/fork column of its own (only 'builds' does), so
+-- its half of the update finds the in-scope OLDER commits by joining through
+-- 'builds'.
+cancelSupersededWork :: GhRepoOwner -> GhRepoName -> SupersededScope -> CommitHash -> UTCTime -> M ()
+cancelSupersededWork repoOwner repoName scope commitHash newerThan = do
   now <- liftIO getCurrentTime
-  void
-    $ pgExec
-      [pgSQL|
-        UPDATE builds
-        SET status = ${Just Cancelled}, end_time = ${now}
-        WHERE repo_user = ${repoOwner}
-          AND repo_name = ${repoName}
-          AND branch = ${branch'}
-          AND pr_from_fork IS NULL
-          AND git_commit <> ${commitHash}
-          AND status IS NULL
-          AND start_time < ${newerThan}
-      |]
+  case scope of
+    SupersededBranch branch' -> do
+      void
+        $ pgExec
+          [pgSQL|
+            UPDATE builds
+            SET status = ${Just Cancelled}, end_time = ${now}
+            WHERE repo_user = ${repoOwner}
+              AND repo_name = ${repoName}
+              AND branch = ${branch'}
+              AND pr_from_fork IS NULL
+              AND git_commit <> ${commitHash}
+              AND status IS NULL
+              AND start_time < ${newerThan}
+          |]
+      void
+        $ pgExec
+          [pgSQL|
+            UPDATE runs
+            SET status = ${Just Cancelled}, end_time = ${now}
+            WHERE repo_user = ${repoOwner}
+              AND repo_name = ${repoName}
+              AND git_commit <> ${commitHash}
+              AND status IS NULL
+              AND start_time < ${newerThan}
+              AND git_commit IN (
+                SELECT DISTINCT git_commit FROM builds
+                WHERE repo_user = ${repoOwner}
+                  AND repo_name = ${repoName}
+                  AND branch = ${branch'}
+                  AND pr_from_fork IS NULL
+              )
+          |]
+    SupersededFork fork -> do
+      let forkFullName = getPrFromForkFullName fork
+      void
+        $ pgExec
+          [pgSQL|
+            UPDATE builds
+            SET status = ${Just Cancelled}, end_time = ${now}
+            WHERE repo_user = ${repoOwner}
+              AND repo_name = ${repoName}
+              AND pr_from_fork = ${forkFullName}
+              AND git_commit <> ${commitHash}
+              AND status IS NULL
+              AND start_time < ${newerThan}
+          |]
+      void
+        $ pgExec
+          [pgSQL|
+            UPDATE runs
+            SET status = ${Just Cancelled}, end_time = ${now}
+            WHERE repo_user = ${repoOwner}
+              AND repo_name = ${repoName}
+              AND git_commit <> ${commitHash}
+              AND status IS NULL
+              AND start_time < ${newerThan}
+              AND git_commit IN (
+                SELECT DISTINCT git_commit FROM builds
+                WHERE repo_user = ${repoOwner}
+                  AND repo_name = ${repoName}
+                  AND pr_from_fork = ${forkFullName}
+              )
+          |]
 
 getLatestBuildsMatching :: RepoInfo -> CommitHash -> M [Build]
 getLatestBuildsMatching repoInfo commit = do

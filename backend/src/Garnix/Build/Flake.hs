@@ -1,6 +1,7 @@
 module Garnix.Build.Flake
   ( runBuildFlake,
     continueRecoveredBuilds,
+    supersededCancellationScope,
   )
 where
 
@@ -37,15 +38,21 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
         runWithCheckout withCheckout commitInfo $ \config -> do
           withAuthorization (config ^. flakeDir) repoConfig commitInfo $ do
             plan <- getPlan repoOwner >>= applyConfiguredTimeouts repoConfig
-            -- Opt-in via garnix.yaml: a new push supersedes older commits on
-            -- the same branch, so cancel their queued/running builds.
-            when (config ^. cancelSupersededBuilds) $ case commitInfo ^. branch of
-              Nothing -> pure ()
-              Just currentBranch ->
-                DB.cancelSupersededBuilds
+            -- Opt-in via EITHER garnix.yaml's own cancelSupersededBuilds OR the
+            -- Configure-page repo_config.auto_cancel_superseded flag (either one
+            -- turns it on): a new push supersedes older commits in the same
+            -- scope, so cancel their queued/running builds+runs.
+            forM_
+              ( supersededCancellationScope
+                  (config ^. cancelSupersededBuilds || repoConfig ^. autoCancelSuperseded)
+                  (commitInfo ^. branch)
+                  (commitInfo ^. prFromFork)
+              )
+              $ \scope ->
+                DB.cancelSupersededWork
                   (commitInfo ^. repoInfo . ghRepoOwner)
                   (commitInfo ^. repoInfo . ghRepoName)
-                  currentBranch
+                  scope
                   (commitInfo ^. commit)
                   (startingBuild ^. startTime)
             initialBuilds <- setupBuilds reporter commitInfo config plan
@@ -109,6 +116,27 @@ runBuildFlake reporter buildKind commitInfo withCheckout = do
               if allBuildsSucceeded && allDeploymentsSucceeded
                 then MetaCheck.updateSuccess commitInfo metaCheckRun
                 else MetaCheck.updateFail commitInfo metaCheckRun Nothing
+
+-- | Pure decision logic for auto-cancel-superseded: whether (and under what
+-- 'DB.SupersededScope') a push should cancel older not-yet-finished work,
+-- given whether the feature is effectively on (garnix.yaml's
+-- @cancelSupersededBuilds@ OR the repo_config @auto_cancel_superseded@ flag)
+-- and the commit's branch\/fork identity. Kept separate from 'runBuildFlake'
+-- (which threads its result straight into 'DB.cancelSupersededWork') purely so
+-- this can be unit-tested without needing a full pipeline run — see
+-- 'Garnix.Build.FlakeSpec'.
+--
+--   * Off entirely -> never cancel, regardless of branch\/fork.
+--   * A branch push (ordinary pushes AND non-fork PR pushes, which are
+--     literally pushes to a real branch on the base repo) -> scope by branch.
+--   * A fork PR push (no branch at all on the base repo — see
+--     'Garnix.API.GhWebhooks.ghWebhookPullRequest') -> scope by fork identity.
+--   * Neither present (shouldn't happen for a real commit) -> no-op.
+supersededCancellationScope :: Bool -> Maybe Branch -> Maybe PrFromFork -> Maybe DB.SupersededScope
+supersededCancellationScope False _ _ = Nothing
+supersededCancellationScope True (Just currentBranch) _ = Just (DB.SupersededBranch currentBranch)
+supersededCancellationScope True Nothing (Just fork) = Just (DB.SupersededFork fork)
+supersededCancellationScope True Nothing Nothing = Nothing
 
 -- | Continue the idempotent tail of a commit after startup recovery has
 -- finished its package rows. Action processes are deliberately not replayed:

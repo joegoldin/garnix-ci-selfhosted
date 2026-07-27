@@ -23,3 +23,4 @@ add-default-authentik-approval 2026-07-23T21:00:00Z joegoldin <joe@joegold.in> #
 add-fod-check-skip 2026-07-23T22:00:00Z joegoldin <joe@joegold.in> # Per-repo FOD-check skip patterns: glob allowlist of fixed-output derivations skipped instead of failing closed
 add-manual-deploy-target 2026-07-23T23:00:00Z joegoldin <joe@joegold.in> # Per-commit single-deployment redeploy target: restrict a redeploy to one package, leaving the repo's other deployments running
 add-backups [add-artifacts] 2026-07-24T21:30:00Z joegoldin <joe@joegold.in> # Scheduled server backups: snapshot/object/restore tables, retention settings, per-server backup config
+add-auto-cancel-superseded 2026-07-26T18:00:00Z joegoldin <joe@joegold.in> # Per-repo auto-cancel-superseded flag: cancel older not-yet-finished builds/deploy work when a newer push arrives

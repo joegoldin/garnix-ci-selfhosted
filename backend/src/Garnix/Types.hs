@@ -1964,12 +1964,19 @@ data RepoConfig = RepoConfig
     -- derivation's @\<name\>@) whose matching FODs are SKIPPED by the FOD check
     -- instead of failing closed. Set from the Configure page. Empty by default.
     -- See 'Garnix.Build.FodCheck'.
-    _repoConfigFodCheckSkip :: [Text]
+    _repoConfigFodCheckSkip :: [Text],
+    -- | When True, a new deployable push for this repo cancels older
+    -- not-yet-finished builds/deploy work for the same branch (or, for a pull
+    -- request, the same fork) instead of letting them race the new push. Set
+    -- from the Configure page; OR'd together with garnix.yaml's own
+    -- @cancelSupersededBuilds@ (either one enables it). Reuses the existing
+    -- build/run cancellation machinery — see 'Garnix.DB.cancelSupersededWork'.
+    _repoConfigAutoCancelSuperseded :: Bool
   }
   deriving stock (Show)
 
 defaultRepoConfig :: RepoConfig
-defaultRepoConfig = RepoConfig False (fromGigabytes 16) False False Nothing []
+defaultRepoConfig = RepoConfig False (fromGigabytes 16) False False Nothing [] False
 
 newtype Memory = Memory Int64
   deriving stock (Show, Eq, Generic, Ord)

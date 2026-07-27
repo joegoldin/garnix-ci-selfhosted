@@ -90,6 +90,93 @@ spec = do
       void go
       void go
 
+  describe "cancelSupersededWork" $ inM $ beforeM_ truncateDBM $ do
+    it "cancels an older branch's unfinished build and deploy run, leaving other branches alone" $ do
+      let owner = "cancel-owner"
+          repoName' = "cancel-repo"
+          olderCommit = "older-commit-sha"
+          otherBranchCommit = "other-branch-commit-sha"
+          newerCommit = "newer-commit-sha"
+      -- The older, still-unfinished build/run on the branch a newer push
+      -- supersedes.
+      olderBuild <-
+        testBuild
+          ( \b ->
+              b
+                & repoUser .~ owner
+                & repoName .~ repoName'
+                & branch ?~ "feature"
+                & gitCommit .~ olderCommit
+                & status .~ Nothing
+          )
+      -- The row's return value is unused: this only exercises the run's DB
+      -- side effect, checked later via 'DB.getRuns'.
+      void
+        $ DB.newRun "deployment test-package"
+        $ defaultCommitInfo
+        & repoInfo . ghRepoOwner .~ owner
+        & repoInfo . ghRepoName .~ repoName'
+        & Garnix.Types.branch ?~ "feature"
+        & commit .~ olderCommit
+      -- A different branch's unfinished build must NOT be touched: it is not
+      -- superseded by a push to "feature".
+      otherBranchBuild <-
+        testBuild
+          ( \b ->
+              b
+                & repoUser .~ owner
+                & repoName .~ repoName'
+                & branch ?~ "unrelated"
+                & gitCommit .~ otherBranchCommit
+                & status .~ Nothing
+          )
+      -- An already-finished build on the SAME branch must also be left alone:
+      -- only not-yet-finished (status IS NULL) work is cancelled.
+      finishedBuild <-
+        testBuild
+          ( \b ->
+              b
+                & repoUser .~ owner
+                & repoName .~ repoName'
+                & branch ?~ "feature"
+                & gitCommit .~ "finished-commit-sha"
+                & status .~ Just Success
+          )
+
+      newerThan <- liftIO getCurrentTime
+      DB.cancelSupersededWork owner repoName' (DB.SupersededBranch "feature") newerCommit newerThan
+
+      reloadedOlder <- DB.getBuild (olderBuild ^. id)
+      reloadedOlder ^. status `shouldBeM` Just Cancelled
+      reloadedOther <- DB.getBuild (otherBranchBuild ^. id)
+      reloadedOther ^. status `shouldBeM` Nothing
+      reloadedFinished <- DB.getBuild (finishedBuild ^. id)
+      reloadedFinished ^. status `shouldBeM` Just Success
+
+      olderRuns <- DB.getRuns owner repoName' olderCommit
+      map _runStatus olderRuns `shouldBeM` [Just Cancelled]
+
+    it "does not cancel newer or already-superseded-scope-mismatched work" $ do
+      let owner = "cancel-owner2"
+          repoName' = "cancel-repo2"
+          newerCommit = "the-new-push-sha"
+      -- The push's OWN commit must never cancel itself, even if (implausibly)
+      -- its build row is still unfinished when this runs.
+      selfBuild <-
+        testBuild
+          ( \b ->
+              b
+                & repoUser .~ owner
+                & repoName .~ repoName'
+                & branch ?~ "feature"
+                & gitCommit .~ newerCommit
+                & status .~ Nothing
+          )
+      newerThan <- liftIO getCurrentTime
+      DB.cancelSupersededWork owner repoName' (DB.SupersededBranch "feature") newerCommit newerThan
+      reloadedSelf <- DB.getBuild (selfBuild ^. id)
+      reloadedSelf ^. status `shouldBeM` Nothing
+
   context "pgTransaction" $ inM $ beforeM_ truncateDBM $ do
     it "rolls transactions back when throwing errors in M" $ do
       (void . try . DB.pgTransaction) $ do
