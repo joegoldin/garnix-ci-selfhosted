@@ -34,6 +34,10 @@ const settingsSchema = z
           .array(z.string())
           .nullish()
           .transform((v) => v ?? []),
+        auto_cancel_superseded: z
+          .boolean()
+          .nullish()
+          .transform((v) => v ?? false),
       }),
     ),
     // Artifact settings; tolerate a backend that predates artifacts (absent
@@ -153,6 +157,7 @@ const settingsSchema = z
       maxEvalMemoryGib: o.max_eval_memory_gib,
       defaultAuthentikApproved: o.default_authentik_approved,
       fodCheckSkip: o.fod_check_skip,
+      autoCancelSuperseded: o.auto_cancel_superseded,
     })),
     artifactRetentionDays: s.artifact_retention_days,
     artifactKeepLatest: s.artifact_keep_latest,
@@ -285,6 +290,22 @@ export const putRepoFodCheckSkip = async (
     "PUT",
     `configure/repo/${owner}/${repo}/fod-check-skip`,
     { body: JSON.stringify({ patterns }) },
+  );
+
+// Turn auto-cancel-superseded on (or off) for a repo: when on, a new
+// deployable push cancels older not-yet-finished builds/deploy work for the
+// same branch (or fork PR) instead of racing it. JSON key is `enabled` to
+// match the backend SetAutoCancelSupersededDto codec.
+export const setRepoAutoCancelSuperseded = async (
+  owner: string,
+  repo: string,
+  enabled: boolean,
+): Promise<APIResult<unknown>> =>
+  await fetchFromAPI(
+    z.any(),
+    "PUT",
+    `configure/repo/${owner}/${repo}/auto-cancel-superseded`,
+    { body: JSON.stringify({ enabled }) },
   );
 
 export const setDefaultArtifactSettings = async (
