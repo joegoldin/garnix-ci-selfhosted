@@ -94,14 +94,18 @@ on built configs. Generalize: after each successful
 `nix eval --json .#nixosConfigurations.<name>.config.garnix.server.deploySpec`
 (guarded the same way persistence handles configs that don't import the
 module — eval failure / option-missing ⇒ not a nix-declared server).
-Decoding reuses the SAME Haskell types the yaml codec produces
+Decoding produces the SAME Haskell types the yaml codec produced
 (`ServerSection`-equivalent), so everything downstream — deploy planning,
 domains validation, backups capture into `servers.backups`, exposeSSH,
 persistence — is unchanged.
 
-**Union semantics:** nix-declared servers ∪ legacy yaml `servers:`. The same
-`configuration` name declared in both is a **hard error** with a clear
-message naming both sources — no silent precedence.
+**No legacy path (amended 2026-07-27):** only four repos carry a garnix.yaml
+(jkfridge, garnix-ci, garnix-hello, dotfiles) and all migrate in this same
+change, so the yaml `servers:` section is REMOVED from the schema rather
+than kept as a legacy source. The parser rejects a present `servers:` key
+with a pointed error ("servers moved into nixosConfigurations — declare
+garnix.server in the configuration; see docs"), so an unmigrated repo fails
+loudly, not silently-undeployed. nix `deploySpec` is the only source.
 
 ## 4. garnix-lib fork: `enable` defaults true
 
@@ -123,8 +127,10 @@ that landed 2026-07-27). Assertions gated on `enable` are unchanged; setting
 
 ## 6. Compatibility, docs, tests
 
-- Legacy yaml `servers:` parsing stays indefinitely; no deprecation in this
-  change. Other repos are untouched.
+- yaml `servers:` is removed outright (see §3); the four existing
+  garnix.yaml repos migrate in this change — jkfridge and garnix-hello carry
+  servers sections; garnix-ci's and dotfiles' yamls are builds/actions-only
+  (verify and touch only if needed).
 - README + cookbook lead with the principle: *"needs to be known before nix
   runs → garnix.yaml; describes the server → the server's own module."*
 - Config-schema golden regenerated (yaml schema unchanged except doc note).
