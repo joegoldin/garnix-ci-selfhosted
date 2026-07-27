@@ -982,14 +982,21 @@ garnix.server = {
     enable = true;
     name = "jkfridge"; # PERMANENT — changing it wipes the VM and its data
   };
-  authentikDefault = true; # reuse garnix's own login — see docs/authentik-cookbook.md
+};
+garnix.authentik = {
+  enable = true;
+  mode = "default"; # reuse garnix's own login — see docs/authentik-cookbook.md
+  upstream = "127.0.0.1:8080";
 };
 ```
 
-Most of that option surface — `deployment`, `domains`, `exposeSSH`,
-`authorizeDeployerGithubKeys`, `authorizedSSHKeys`, `ports`,
-`applicationLog`, `backups`, `authentikDefault` — is documented inline in
-`provisioner/guest-profile.nix`. `persistence` is the one exception: it's
+Most of that `garnix.server` option surface — `deployment`, `domains`,
+`exposeSSH`, `authorizeDeployerGithubKeys`, `authorizedSSHKeys`, `ports`,
+`applicationLog`, `backups` — is documented inline in
+`provisioner/guest-profile.nix`. `garnix.server.deploySpec.authentikDefault`
+is also documented there, but it's read-only and *derived* from
+`garnix.authentik.enable`/`.mode` above (see the Authentik cookbook) — never
+set by hand. `persistence` is the one exception: it's
 declared by [garnix-lib](https://github.com/joegoldin/garnix-lib) (imported
 separately, alongside the guest module) and merges into the same
 `garnix.server` namespace. Every example in the rest of this section shows
@@ -1323,16 +1330,17 @@ session before it reaches your service. Point your own service at a different
 port and set `garnix.authentik.upstream` to it.
 
 **Fastest path — reuse garnix's own login (`mode = "default"`):** set
-`garnix.server.authentikDefault = true;` on the server's configuration and
-garnix drops its _own_ OIDC client credentials (plus this deployment's
-redirect URL) onto the guest at deploy time — no provider setup, no client
-id, no secret in the repo. Whoever can log into garnix can reach the app.
-Ideal for dev deployments.
+`garnix.authentik = { enable = true; mode = "default"; }` on the server's
+configuration and garnix drops its _own_ OIDC client credentials (plus this
+deployment's redirect URL) onto the guest at deploy time — no provider setup,
+no client id, no secret in the repo. Whoever can log into garnix can reach
+the app. Ideal for dev deployments. (`garnix.server.deploySpec.authentikDefault`
+is derived from this `enable`/`mode` pair automatically — it isn't a
+setting you touch.)
 
 ```nix
 garnix.server = {
   deployment = { type = "on-branch"; branch = "main"; };
-  authentikDefault = true;
 };
 ```
 

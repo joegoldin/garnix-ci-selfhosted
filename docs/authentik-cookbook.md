@@ -5,17 +5,18 @@ This walks through putting a garnix-deployed server behind Authentik login using
 **Authentik application entitlements** so you control *which users get which
 apps*.
 
-## Zero-setup: `authentikDefault` (reuse garnix's own login)
+## Zero-setup: `mode = "default"` (reuse garnix's own login)
 
 For "put this behind *my* login, now" — dev deployments, personal tools — skip
-providers entirely: set `garnix.server.authentikDefault = true;` in the
-deployed configuration and set `garnix.authentik = { enable = true; mode =
-"default"; upstream = "127.0.0.1:<port>"; }` alongside it. garnix drops its
-own OIDC client credentials (and the deployment's redirect URL) onto the
-guest at deploy time; access is exactly "whoever can log into garnix".
-Requires `services.garnixServer.defaultAuthentik` on the garnix host and a
-redirect-URI allowance for `https://*.<hostingDomain>/oauth2/callback` on
-garnix's own Authentik provider (regex redirect URI). For per-app access
+providers entirely: set `garnix.authentik = { enable = true; mode = "default";
+upstream = "127.0.0.1:<port>"; }` on the deployed configuration. garnix drops
+its own OIDC client credentials (and the deployment's redirect URL) onto the
+guest at deploy time; access is exactly "whoever can log into garnix". (The
+deploy-side `garnix.server.deploySpec.authentikDefault` flag the backend acts
+on is *derived* from this `enable`/`mode` pair — it's read-only, never set by
+hand.) Requires `services.garnixServer.defaultAuthentik` on the garnix host
+and a redirect-URI allowance for `https://*.<hostingDomain>/oauth2/callback`
+on garnix's own Authentik provider (regex redirect URI). For per-app access
 control, use the dedicated/shared modes below instead.
 
 ## Two ways to map apps onto Authentik

@@ -205,20 +205,6 @@ in
       description = "Open a public DNAT port on the garnix host forwarding to the guest's SSH (:22).";
     };
 
-    authentikDefault = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Have garnix drop its own OIDC (Authentik) credentials onto this
-        server at /var/garnix/keys/default-authentik.env, for use with the
-        garnix-authentik guest module's `mode = "default"`. The server is
-        then gated by the exact same Authentik application (and
-        entitlements) as garnix itself. Mirrors the yaml codec's
-        `servers[].authentik: default` field (a string there only because
-        "default" was its only accepted value; a plain bool here).
-      '';
-    };
-
     authorizeDeployerGithubKeys = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -330,6 +316,15 @@ in
       default =
         let
           persistenceEnabled = cfg.persistence.enable or false;
+          # Derived, not a user-settable option: true only when the
+          # garnix-authentik guest module is imported AND configured for
+          # `mode = "default"` (attrByPath so configs that don't import
+          # garnix-authentik at all still evaluate — `cfg.authentik.enable
+          # or false`-style fallback isn't available here since `authentik`
+          # itself may not exist in `config.garnix` at all).
+          authentikDefault =
+            (lib.attrByPath [ "garnix" "authentik" "enable" ] false config)
+            && (lib.attrByPath [ "garnix" "authentik" "mode" ] "dedicated" config) == "default";
         in
         {
           deployment =
@@ -349,8 +344,8 @@ in
             exposeSSH
             authorizeDeployerGithubKeys
             authorizedSSHKeys
-            authentikDefault
             ;
+          inherit authentikDefault;
           ports = map (p: { inherit (p) name port type; }) cfg.ports;
           applicationLog =
             if cfg.applicationLog == null then null else { inherit (cfg.applicationLog) enable path; };
