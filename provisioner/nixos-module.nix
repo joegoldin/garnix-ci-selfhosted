@@ -420,24 +420,14 @@ in
       # long-documented "pool autostart across host reboots" README gap —
       # this closes the deployed-guest half of it; see below for why the pool
       # half is deliberately left alone).
+      # Because this unit is wantedBy multi-user.target, the first
+      # switch-to-configuration that introduces it also starts it — so the
+      # next deploy after a reboot revives every guest with no manual step.
+      # It deliberately does NOT touch the warm pool: the pool refills itself
+      # (initializeProvisioningPool self-heals stale rows); force-starting old
+      # pool guests would fight that loop with pre-reboot disk/network state.
       services.garnix-guest-autostart = lib.mkIf cfg.autostartGuests {
-        description = ''
-          Restart every LIVE deployed guest after a host reboot (servers.ready_at
-          IS NOT NULL AND servers.ended_at IS NULL). RECOVERY PROPERTY: because
-          this unit is wantedBy multi-user.target and newly introduced, the
-          FIRST `switch-to-configuration switch` that brings it onto a host
-          starts it immediately as part of that switch — so the very next
-          deploy after a reboot (even a deploy that isn't otherwise about this
-          feature) also revives every guest, with no separate manual restart
-          needed. Deliberately does NOT touch the warm pool (server_pool
-          table): the pool refills itself (ServerPool.hs's
-          initializeProvisioningPool self-heals stale rows and reprovisions up
-          to the configured ideal size every _checkServerPoolInterval);
-          force-starting old pool guests here would hand that loop VMs whose
-          disk/network state predates the reboot instead of letting it
-          provision clean replacements, which would fight rather than help
-          the backend's own self-healing.
-        '';
+        description = "Start live deployed garnix guests after a host reboot";
         wantedBy = [ "multi-user.target" ];
         wants = [
           "postgresql.service"
