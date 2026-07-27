@@ -7,11 +7,6 @@ builds:
     - "checks.aarch64-darwin.macMini2"
   exclude: []
 
-servers:
-  - configuration: website-pr-qa
-    deployment:
-      type: on-pull-request
-
 actions:
   - on: push
     run: backend_specs
