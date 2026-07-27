@@ -42,6 +42,7 @@ import Garnix.Hosting.ServerPool.Types
 import Garnix.LocalProvisioner (localProvisionerInterface)
 import Garnix.Monad
 import Garnix.Monad.Concurrency (forkDetachedM)
+import Garnix.Monad.KeyedMutex qualified
 import Garnix.Monad.Metrics (registerMetrics, serveMetrics)
 import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig, fromNetRcFile)
@@ -449,6 +450,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
       Just s | Just n <- readMaybe s, n > 0 -> pure n
       _ -> pure 16
   buildPool <- Garnix.Monad.Pool.newPool maxConcurrentBuilds metrics #buildQueueWaitTime #buildQueueLen
+  deployMutex <- Garnix.Monad.KeyedMutex.newKeyedMutex
   Cradle.StdoutTrimmed hostname <- Cradle.run $ Cradle.cmd "hostname"
   mocks <- envMocks testFeatures
   featureFlagConfig <- getFeatureFlagConfig
@@ -524,6 +526,7 @@ withEnv testFeatures buildLogsDir buildLogsReportingPort action = do
               nixEvalPool = nixEvalPool,
               buildPool = buildPool,
               s3UploadPool = s3UploadPool,
+              deployMutex = deployMutex,
               mocks = mocks,
               spanCtx = [],
               metrics = metrics,

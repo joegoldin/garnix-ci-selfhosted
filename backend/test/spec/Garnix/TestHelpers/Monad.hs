@@ -61,6 +61,7 @@ import Garnix.DB.FeatureFlags.Types (getFeatureFlagConfig)
 import Garnix.Duration
 import Garnix.Hosting.LogStream qualified as ServerLogStream
 import Garnix.Monad
+import Garnix.Monad.KeyedMutex qualified
 import Garnix.Monad.Metrics (registerMetrics)
 import Garnix.Monad.Pool qualified
 import Garnix.NixConfig (defaultNixConfig)
@@ -261,6 +262,7 @@ withTestEnvironment tempDir action = do
       nixEvalPool <- Garnix.Monad.Pool.newPool 120 metrics #evalQueueWaitTime #evalQueueLen
       buildPool <- Garnix.Monad.Pool.newPool 120 metrics #buildQueueWaitTime #buildQueueLen
       s3UploadPool <- Garnix.Monad.Pool.newPool 80 metrics #s3QueueWaitTime #s3QueueLen
+      deployMutex <- Garnix.Monad.KeyedMutex.newKeyedMutex
       mocks <- envMocks testFeatures
       Just emptyDir' <- lookupEnv "EMPTY_DIR"
       featureFlagConfig <- getFeatureFlagConfig
@@ -322,6 +324,7 @@ withTestEnvironment tempDir action = do
                   nixEvalPool = nixEvalPool,
                   buildPool = buildPool,
                   s3UploadPool = s3UploadPool,
+                  deployMutex = deployMutex,
                   mocks,
                   spanCtx = [],
                   metrics = metrics,

@@ -39,6 +39,7 @@ import Garnix.Hosting.LogStream.Types (ServerLogStreams)
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Log
 import Garnix.Monad.ForkT
+import Garnix.Monad.KeyedMutex (KeyedMutex)
 import Garnix.Monad.Memoization (MemoTable)
 import Garnix.Monad.Metrics (Metrics, incrementEvent)
 import Garnix.Monad.Pool (Pool)
@@ -169,6 +170,15 @@ data Env = Env
     -- one). Env-tunable via GARNIX_MAX_CONCURRENT_BUILDS.
     buildPool :: Garnix.Monad.Pool.Pool (GhRepoOwner, GhRepoName),
     s3UploadPool :: Garnix.Monad.Pool.Pool (GhRepoOwner, GhRepoName),
+    -- | Serializes deployment/redeployment execution per (owner, repo): never
+    -- two concurrent 'Garnix.Hosting.Deploy.rolloutNewServerVersion' runs for
+    -- the same repo, oldest-arrival-first. Unlike the pools above (which cap
+    -- GLOBAL concurrency with round-robin fairness ACROSS keys), this gives
+    -- true per-key mutual exclusion with no cap on how many DIFFERENT repos
+    -- deploy at once. Fixes redeploy races where an older push's in-place
+    -- redeploy is still running when a newer push's redeploy starts and steals
+    -- the server out from under it.
+    deployMutex :: Garnix.Monad.KeyedMutex.KeyedMutex (GhRepoOwner, GhRepoName),
     mocks :: Maybe EnvMocks,
     emptyDir :: FilePath,
     spanCtx :: [(Text, Text)],

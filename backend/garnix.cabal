@@ -111,6 +111,7 @@ library
       Garnix.Monad.Bubbling
       Garnix.Monad.Concurrency
       Garnix.Monad.ForkT
+      Garnix.Monad.KeyedMutex
       Garnix.Monad.Memoization
       Garnix.Monad.Metrics
       Garnix.Monad.NoThrow
@@ -808,6 +809,7 @@ test-suite spec
       Garnix.Monad.BubblingSpec
       Garnix.Monad.ConcurrencySpec
       Garnix.Monad.ForkTSpec
+      Garnix.Monad.KeyedMutexSpec
       Garnix.Monad.MemoizationSpec
       Garnix.Monad.NoThrowSpec
       Garnix.Monad.PoolSpec
@@ -926,6 +928,7 @@ test-suite spec
       Garnix.Monad.Bubbling
       Garnix.Monad.Concurrency
       Garnix.Monad.ForkT
+      Garnix.Monad.KeyedMutex
       Garnix.Monad.Memoization
       Garnix.Monad.Metrics
       Garnix.Monad.NoThrow

@@ -35,6 +35,7 @@ import Garnix.Hosting.ServerPool qualified as ServerPool
 import Garnix.Hosting.ServerPool.Types
 import Garnix.LocalProvisioner (exposeServer)
 import Garnix.Monad
+import Garnix.Monad.KeyedMutex (withKeyedMutex)
 import Garnix.Monad.Polling (PollingConfig (PollingConfig), withPolling)
 import Garnix.Monad.SubProcess (runSubProcess)
 import Garnix.Nix.StorePath (withStorePath)
@@ -48,13 +49,29 @@ import Network.Wreq qualified as Wreq
 import System.Process qualified as Proc
 
 -- | Deploys new server versions, deletes old ones.
+--
+-- Serialized per (owner, repo) via 'deployMutex': never two concurrent
+-- rollouts for the same repo, oldest-arrival-first (see
+-- 'Garnix.Monad.KeyedMutex'). This closes a real race where an older push's
+-- redeploy was still in flight when a newer push's redeploy started —
+-- 'getDeployPlan' computes its plan from the CURRENT DB state
+-- ('DB.getRunningServersOf' etc.), so two overlapping rollouts for the same
+-- repo could both plan against the same stale "current servers" snapshot and
+-- then fight over the same guest; the newer one lost. Locking around the
+-- whole plan-then-execute span (not just execution) is what actually
+-- prevents that: the second rollout now only starts computing its plan once
+-- the first has fully finished (including the DB updates below), so it always
+-- sees the first rollout's result as "current".
 rolloutNewServerVersion ::
   Reporter ->
   CommitInfo ->
   DeploymentType ->
   M [ServerInfo]
-rolloutNewServerVersion reporter commitInfo deploymentType =
-  withTextSpan ("deployment_type", fromDeploymentType (const "branch") (const "pr") deploymentType)
+rolloutNewServerVersion reporter commitInfo deploymentType = do
+  mutex <- view #deployMutex
+  let repoKey = (commitInfo ^. repoInfo . ghRepoOwner, commitInfo ^. repoInfo . ghRepoName)
+  withKeyedMutex mutex repoKey
+    $ withTextSpan ("deployment_type", fromDeploymentType (const "branch") (const "pr") deploymentType)
     $ (<?> "Rolling out new servers")
     $ do
       plan <- getDeployPlan reporter commitInfo deploymentType
