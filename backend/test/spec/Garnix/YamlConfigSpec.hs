@@ -708,6 +708,28 @@ spec = do
         githubTokenModeScope (GithubTokenContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenWrite)
           `shouldBe` Just (GithubTokenScopeContents (GithubTokenNamedRepos ["a", "b"]) GithubTokenWrite)
 
+    -- §3 (amended): `servers` is gone from BOTH sources a repo's config can
+    -- come from — the yaml file (this test) and a flake's `garnix.config`
+    -- output ("rejects a flake garnix.config with a servers key", below).
+    -- The "server section" describe block above only exercises
+    -- 'decodeServerSection' (a single `servers[0]` entry's own codec, reused
+    -- from 'decodeDeploySpec's parity tests) — it never goes through
+    -- 'decodeConfig', so it does not actually cover top-level rejection.
+    it "rejects a yaml file with a top-level servers key" $ do
+      let config :: ByteString
+          config =
+            cs
+              $ unindent
+                [i|
+                  servers:
+                    - configuration: foo
+                      deployment:
+                        type: on-branch
+                        branch: master
+                |]
+      decodeConfig config
+        `shouldBe` Left "servers: moved into nixosConfigurations — declare garnix.server in the configuration (see docs)"
+
     inM . aroundM_ suppressLogsWhenPassing . context "parsing from flake.nix" $ do
       it "uses default config when there's no yaml file and no config section in flake" $ GH.withFakeGithubInterface $ \ghState -> do
         let emptyFlake =
@@ -722,10 +744,11 @@ spec = do
         config `shouldBeM` def
 
       -- §3 (amended): `servers` is gone from BOTH sources a repo's config can
-      -- come from — the yaml file (covered under "servers section" above via
-      -- 'decodeConfig') and a flake's `garnix.config` output (this test).
-      -- garnix.yaml's own hello-server example used exactly this shape
-      -- before migrating to `garnix.server` inside the nixosConfiguration.
+      -- come from — the yaml file ("rejects a yaml file with a top-level
+      -- servers key", above) and a flake's `garnix.config` output (this
+      -- test). garnix.yaml's own hello-server example used exactly this
+      -- shape before migrating to `garnix.server` inside the
+      -- nixosConfiguration.
       it "rejects a flake garnix.config with a servers key" $ GH.withFakeGithubInterface $ \ghState -> do
         let flake =
               cs

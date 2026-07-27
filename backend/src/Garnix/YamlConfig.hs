@@ -537,7 +537,10 @@ data ServerSection = ServerSection
 
 instance HasCodec ServerSection where
   codec =
-    object "servers"
+    -- Labelled "server" (singular): this codec now decodes ONE nix-declared
+    -- `garnix.server` configuration (via 'decodeDeploySpec'), not an entry
+    -- from a yaml `servers:` list — that key is gone (§3).
+    object "server"
       $ ServerSection
       <$> requiredField
         "configuration"
