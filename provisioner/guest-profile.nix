@@ -15,9 +15,10 @@
 #     as the garnix user)
 #
 # `garnix.server.*` also carries the post-eval description of this config as
-# a deployable server (mirrors garnix.yaml's legacy `servers:` list, but
-# discovered by the backend via `nix eval` after the build instead of parsed
-# pre-eval — see docs/plans/2026-07-27-nix-native-server-config-design.md).
+# a deployable server (the ONLY source of server config now — garnix.yaml's
+# old `servers:` list is gone; the backend discovers this via `nix eval`
+# after the build instead of parsing it pre-eval — see
+# docs/plans/2026-07-27-nix-native-server-config-design.md).
 # Example:
 #   garnix.server = {
 #     deployment = { type = "on-branch"; branch = "main"; machine = "i1x2"; };
@@ -204,6 +205,20 @@ in
       description = "Open a public DNAT port on the garnix host forwarding to the guest's SSH (:22).";
     };
 
+    authentikDefault = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Have garnix drop its own OIDC (Authentik) credentials onto this
+        server at /var/garnix/keys/default-authentik.env, for use with the
+        garnix-authentik guest module's `mode = "default"`. The server is
+        then gated by the exact same Authentik application (and
+        entitlements) as garnix itself. Mirrors the yaml codec's
+        `servers[].authentik: default` field (a string there only because
+        "default" was its only accepted value; a plain bool here).
+      '';
+    };
+
     authorizeDeployerGithubKeys = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -334,6 +349,7 @@ in
             exposeSSH
             authorizeDeployerGithubKeys
             authorizedSSHKeys
+            authentikDefault
             ;
           ports = map (p: { inherit (p) name port type; }) cfg.ports;
           applicationLog =
