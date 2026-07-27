@@ -162,6 +162,14 @@
   justify-items: stretch;
 }
 
+/* Destructive action sits alone in the last row — pin it to the grid's
+   right column instead of flowing into the left. */
+.deleteAction {
+  grid-column: 3;
+  display: grid;
+  justify-items: stretch;
+}
+
 /* Per-snapshot action buttons in the BackupsModal (Download / Lock /
    Restore): 1-3 buttons per row, so a plain flex row rather than the
    fixed 3-column grid the server-row actions use. */

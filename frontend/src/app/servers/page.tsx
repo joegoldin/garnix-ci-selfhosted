@@ -416,12 +416,14 @@ const ServersTable = (props: {
                     </Button>
                   ) : null}
                   {server.status !== "Ended" ? (
-                    <Button
-                      onClick={() => setDeleteServerModal(server.id)}
-                      style="warning"
-                    >
-                      Delete
-                    </Button>
+                    <div className={styles.deleteAction}>
+                      <Button
+                        onClick={() => setDeleteServerModal(server.id)}
+                        style="warning"
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   ) : null}
                 </td>
               </tr>
