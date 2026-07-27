@@ -1333,6 +1333,14 @@ bug. The module generates it as `head -c 32 /dev/urandom | base64 -w0 | tr '+/'
 that the file is non-empty, so a guest that stored a bad secret repairs itself
 on the next activation (at the cost of invalidating existing sessions).
 
+**`garnix.authentik.skipAuthPaths`** lets specific path prefixes (e.g. `/mcp`)
+bypass the SSO gate entirely and proxy straight to `upstream` — for endpoints
+that carry their own auth (API bearer tokens, webhooks) and can't follow an
+OIDC redirect. Each entry becomes an nginx prefix location covering the path
+and everything under it; entries can't be `/` or start with `/oauth2` (the
+module asserts this — either would defeat the gate or break the callback
+flow). See `docs/authentik-cookbook.md` for the full worked example.
+
 ## Server backups
 
 Scheduled snapshots of a **deployed server's** data — not to be confused with

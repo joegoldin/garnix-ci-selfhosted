@@ -217,6 +217,34 @@ modules = [
 Push to your deploy branch; garnix builds and deploys the guest. Hitting the
 app's URL now bounces you through Authentik, and only entitled users get in.
 
+## Bypassing the gate for token-authenticated paths
+
+Some endpoints can't do the OIDC dance — API/webhook clients that authenticate
+with their own bearer token and can't follow a browser redirect to Authentik.
+`garnix.authentik.skipAuthPaths` proxies declared path prefixes straight to
+`upstream`, with no `auth_request` gate, so the app's own token check is the
+only thing guarding them:
+
+```nix
+garnix.authentik = {
+  enable = true;
+  publicUrl = "https://myapp.main.myrepo.myorg.apps.example.com";
+  issuerUrl = "https://authentik.example.com/application/o/myapp/";
+  clientId = "<client id>";
+  clientSecretFile = ./secrets/myapp-client-secret.age;
+  upstream = "127.0.0.1:8080";
+  skipAuthPaths = [ "/mcp" ];   # e.g. an MCP endpoint hit by bearer-token clients
+};
+```
+
+Each entry becomes an nginx prefix location covering the path and everything
+under it (`/mcp` also matches `/mcp/anything`), proxying to the same upstream
+as the authenticated catch-all. Entries must start with `/`, and can't be `/`
+itself or start with `/oauth2` — either would blow a hole in the gate or break
+the OIDC callback flow; the module asserts this. Only bypass paths whose
+handler enforces its own authentication — anything else is reachable by
+anyone who can route to the guest.
+
 ## Shared mode: one provider, many apps
 
 If you'd rather not mint a provider + secret per app, run everything through a

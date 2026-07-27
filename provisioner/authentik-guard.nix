@@ -26,6 +26,8 @@
 #     allowedGroups = [ "my-app-users" ];   # omit to allow any authenticated user
 #     upstream = "127.0.0.1:8080";          # your service (must NOT listen on :80)
 #     clientSecretFile = ./secrets/myapp-client-secret.age;  # committed .age file
+#     skipAuthPaths = [ "/mcp" ];           # token-authenticated endpoints: proxy
+#                                            # straight to upstream, no SSO gate
 #   };
 #   services.myThing.port = 8080;           # your actual app, behind the gate
 { lib, config, pkgs, ... }:
@@ -236,6 +238,18 @@ in
       default = [ "*" ];
       description = "Allowed email domains ([\"*\"] = any).";
     };
+
+    skipAuthPaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "/mcp" ];
+      description = ''
+        Path prefixes proxied straight to `upstream`, skipping the SSO gate
+        (no auth_request). For endpoints that carry their own authentication
+        (API bearer tokens, webhooks). Each entry becomes an nginx prefix
+        location covering the path and everything under it.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -270,6 +284,18 @@ in
           With only the default scopes the claim `allowedGroups` checks is never
           issued, so every login would be rejected (or, worse, allowed if the
           claim is absent). Add the shared provider's per-app scope mapping.
+        '';
+      }
+      {
+        assertion = lib.all (
+          p: lib.hasPrefix "/" p && p != "/" && !(lib.hasPrefix "/oauth2" p)
+        ) cfg.skipAuthPaths;
+        message = ''
+          garnix.authentik.skipAuthPaths: every entry must be a path prefix
+          starting with "/", must not be "/" itself (that would bypass the SSO
+          gate entirely), and must not start with "/oauth2" (that would break
+          the oauth2-proxy callback/auth flow the gate depends on). Got:
+          ${lib.concatStringsSep ", " cfg.skipAuthPaths}
         '';
       }
     ];
@@ -455,50 +481,75 @@ in
           proxy_buffers 8 16k;
           proxy_busy_buffers_size 32k;
         '';
-        locations = {
-          "/oauth2/" = {
-            proxyPass = "http://127.0.0.1:4180";
-            extraConfig = ''
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Scheme $scheme;
-              proxy_set_header X-Auth-Request-Redirect $request_uri;
-            '';
-          };
-          "= /oauth2/auth" = {
-            proxyPass = "http://127.0.0.1:4180";
-            extraConfig = ''
-              internal;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Original-URI $request_uri;
-              proxy_pass_request_body off;
-              proxy_set_header Content-Length "";
-            '';
-          };
-          "/" = {
-            proxyPass = "http://${cfg.upstream}";
-            extraConfig = ''
-              # Never trust client-supplied identity headers.
-              proxy_set_header X-Auth-Request-User "";
-              proxy_set_header X-Auth-Request-Email "";
-              proxy_set_header X-Auth-Request-Groups "";
+        # skipAuthPaths get their own prefix location proxying straight to
+        # upstream (same proxy_pass target as the authenticated catch-all
+        # below, minus every auth_request-related directive). `//` here means
+        # the hand-written locations on the right always win on key collision
+        # (e.g. a skipAuthPaths entry can never shadow "/" or "/oauth2/*"),
+        # and nginx's own longest-prefix matching makes any of these prefix
+        # locations correct regardless of iteration order.
+        locations =
+          (lib.listToAttrs (
+            map (path: {
+              name = path;
+              value = {
+                proxyPass = "http://${cfg.upstream}";
+                extraConfig = ''
+                  # Never trust client-supplied identity headers, even though
+                  # this path skips the SSO gate — the upstream enforces its
+                  # own auth (e.g. bearer tokens) and must not be fooled by a
+                  # spoofed X-Auth-Request-* header.
+                  proxy_set_header X-Auth-Request-User "";
+                  proxy_set_header X-Auth-Request-Email "";
+                  proxy_set_header X-Auth-Request-Groups "";
+                '';
+              };
+            }) cfg.skipAuthPaths
+          ))
+          // {
+            "/oauth2/" = {
+              proxyPass = "http://127.0.0.1:4180";
+              extraConfig = ''
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Scheme $scheme;
+                proxy_set_header X-Auth-Request-Redirect $request_uri;
+              '';
+            };
+            "= /oauth2/auth" = {
+              proxyPass = "http://127.0.0.1:4180";
+              extraConfig = ''
+                internal;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Original-URI $request_uri;
+                proxy_pass_request_body off;
+                proxy_set_header Content-Length "";
+              '';
+            };
+            "/" = {
+              proxyPass = "http://${cfg.upstream}";
+              extraConfig = ''
+                # Never trust client-supplied identity headers.
+                proxy_set_header X-Auth-Request-User "";
+                proxy_set_header X-Auth-Request-Email "";
+                proxy_set_header X-Auth-Request-Groups "";
 
-              auth_request /oauth2/auth;
-              error_page 401 = @oauth2_signin;
+                auth_request /oauth2/auth;
+                error_page 401 = @oauth2_signin;
 
-              auth_request_set $auth_user   $upstream_http_x_auth_request_user;
-              auth_request_set $auth_email  $upstream_http_x_auth_request_email;
-              auth_request_set $auth_groups $upstream_http_x_auth_request_groups;
-              proxy_set_header X-Auth-Request-User   $auth_user;
-              proxy_set_header X-Auth-Request-Email  $auth_email;
-              proxy_set_header X-Auth-Request-Groups $auth_groups;
-            '';
+                auth_request_set $auth_user   $upstream_http_x_auth_request_user;
+                auth_request_set $auth_email  $upstream_http_x_auth_request_email;
+                auth_request_set $auth_groups $upstream_http_x_auth_request_groups;
+                proxy_set_header X-Auth-Request-User   $auth_user;
+                proxy_set_header X-Auth-Request-Email  $auth_email;
+                proxy_set_header X-Auth-Request-Groups $auth_groups;
+              '';
+            };
+            "@oauth2_signin" = {
+              extraConfig = ''
+                return 302 /oauth2/start?rd=$scheme://$host$request_uri;
+              '';
+            };
           };
-          "@oauth2_signin" = {
-            extraConfig = ''
-              return 302 /oauth2/start?rd=$scheme://$host$request_uri;
-            '';
-          };
-        };
       };
     };
   };
