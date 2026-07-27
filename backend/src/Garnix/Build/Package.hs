@@ -4,6 +4,7 @@ import Control.Concurrent.Async.Lifted
 import Control.Lens
 import Cradle
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Types (parseMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Data.UUID (UUID)
@@ -86,38 +87,109 @@ doBuild fodChecker runReporter buildKind flakeDir repoConfig plan initialBuild =
       reportBuildResult runReporter updatedBuild <?> "Reporting final build result"
       pure updatedBuild
 
+-- | One @nix eval --json
+-- .#nixosConfigurations.\<package\>.config.garnix.server.deploySpec@ per
+-- built nixosConfiguration (see provisioner/guest-profile.nix and
+-- docs/plans/2026-07-27-nix-native-server-config-design.md §3). Mockable
+-- (see 'Garnix.Monad.discoverDeploySpecMock') so fast specs never shell out
+-- to nix. Guarded exactly like the old bare persistence eval below: an eval
+-- error (missing option — most commonly a config that doesn't import the
+-- fork's @garnix-guest@ module at all, e.g. one that only imports
+-- garnix-lib directly) or a non-zero exit yields 'Nothing', never an
+-- exception.
+--
+-- Kept at the raw 'Aeson.Value' level (not decoded into a
+-- 'Garnix.YamlConfig.ServerSection' here): this module has no reason to
+-- import 'Garnix.YamlConfig' otherwise, and the two callers want different
+-- projections of the same JSON — this function ('getPersistenceName') only
+-- needs @persistence.{enable,name}@, while 'Garnix.Hosting.Deploy' decodes
+-- the whole aggregate.
+discoverDeploySpecJson :: FlakeDir -> PackageName -> M (Maybe Aeson.Value)
+discoverDeploySpecJson = curry
+  $ mockable #discoverDeploySpecMock
+  $ \(flakeDir, pkg) -> do
+    workingDir <- view #workingDir
+    cacheDir <- getNixXdgCacheDir
+    nixConfig <- view #userNixConfig
+    flakeDir' <- safeGetAbsoluteFlakeDir flakeDir
+    (exit, StdoutRaw s) <-
+      (>>= run)
+        $ cmd "nix"
+        & addArgs
+          [ "eval",
+            cs flakeDir' <> "#nixosConfigurations." <> cs (getPackageName pkg) <> ".config.garnix.server.deploySpec",
+            "--json" :: Text
+          ]
+        & addNixConfigEnvironment nixConfig
+        & setWorkingDir workingDir
+        & silenceStderr
+        & pure
+        & inNixSandbox [] (Just cacheDir)
+    pure $ case exit of
+      ExitFailure _ -> Nothing
+      ExitSuccess -> Aeson.decodeStrict s
+
+-- | Pull just @persistence.{enable,name}@ out of a decoded deploySpec (see
+-- 'discoverDeploySpecJson'). The guest module always renders this fixed
+-- shape (guest-profile.nix's `deploySpec.persistence` is `or`-guarded to
+-- always be present, even for configs without garnix-lib imported at all —
+-- see 182e616's report), so a parse miss here is impossible in production;
+-- treated the same as "no persistence" rather than raised as an error.
+persistenceNameFromDeploySpec :: Aeson.Value -> Maybe Text
+persistenceNameFromDeploySpec deploySpecJson =
+  fromMaybe Nothing $ flip parseMaybe deploySpecJson $ Aeson.withObject "deploySpec" $ \o -> do
+    persistenceValue <- o Aeson..: "persistence"
+    flip (Aeson.withObject "persistence") persistenceValue $ \p -> do
+      enable <- p Aeson..: "enable"
+      name <- p Aeson..: "name"
+      pure $ if enable then name else Nothing
+
 getPersistenceName :: FlakeDir -> Build -> M (Maybe Text)
-getPersistenceName flakeDir b = do
-  let isNixos = b ^. packageType == TypeNixosConfiguration
-      succeeded = b ^. status == Just Success
+getPersistenceName flakeDir b
+  | isNixos && succeeded =
+      discoverDeploySpecJson flakeDir (b ^. package) >>= \case
+        Just deploySpecJson -> pure $ persistenceNameFromDeploySpec deploySpecJson
+        -- Fallback: this config never had a `deploySpec` option to begin
+        -- with (didn't import the fork's guest module) — try the bare
+        -- persistence eval a legacy config importing only garnix-lib still
+        -- supports.
+        Nothing -> getBarePersistenceName flakeDir b
+  | otherwise = pure Nothing
+  where
+    isNixos = b ^. packageType == TypeNixosConfiguration
+    succeeded = b ^. status == Just Success
+
+-- | The original (pre-nix-native) persistence eval: 'discoverDeploySpecJson'
+-- above supersedes this for any config importing the fork's @garnix-guest@
+-- module, but a config importing ONLY garnix-lib's persistence module
+-- directly (no `garnix.server.deploySpec` option at all) still needs it.
+getBarePersistenceName :: FlakeDir -> Build -> M (Maybe Text)
+getBarePersistenceName flakeDir b = do
   workingDir <- view #workingDir
   cacheDir <- getNixXdgCacheDir
   nixConfig <- view #userNixConfig
   flakeDir' <- safeGetAbsoluteFlakeDir flakeDir
-  if isNixos && succeeded
-    then do
-      (exit, StdoutRaw s) <-
-        (>>= run)
-          $ cmd "nix"
-          & addArgs
-            [ "eval",
-              cs flakeDir' <> "#nixosConfigurations." <> cs (b ^. package),
-              "--apply",
-              "c : if c.config.garnix.server.persistence.enable then c.config.garnix.server.persistence.name else null",
-              "--json" :: Text
-            ]
-          & addNixConfigEnvironment nixConfig
-          & setWorkingDir workingDir
-          & silenceStderr
-          & pure
-          & inNixSandbox [] (Just cacheDir)
+  (exit, StdoutRaw s) <-
+    (>>= run)
+      $ cmd "nix"
+      & addArgs
+        [ "eval",
+          cs flakeDir' <> "#nixosConfigurations." <> cs (b ^. package),
+          "--apply",
+          "c : if c.config.garnix.server.persistence.enable then c.config.garnix.server.persistence.name else null",
+          "--json" :: Text
+        ]
+      & addNixConfigEnvironment nixConfig
+      & setWorkingDir workingDir
+      & silenceStderr
+      & pure
+      & inNixSandbox [] (Just cacheDir)
 
-      pure $ case exit of
-        ExitFailure _ -> Nothing
-        ExitSuccess -> case Aeson.decodeStrict @Text s of
-          Just "" -> Nothing
-          other -> other
-    else pure Nothing
+  pure $ case exit of
+    ExitFailure _ -> Nothing
+    ExitSuccess -> case Aeson.decodeStrict @Text s of
+      Just "" -> Nothing
+      other -> other
 
 buildPkg ::
   (HasCallStack) =>

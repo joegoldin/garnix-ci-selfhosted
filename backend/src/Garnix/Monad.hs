@@ -382,7 +382,19 @@ data EnvMocks = EnvMocks
     buildPkgMock :: Maybe (Mock (Maybe FodChecker, RunReporter, BuildKind, FlakeDir, RepoConfig, ProductPlan, Build) Build),
     s3CacheUploadMock :: Maybe (Mock (RunReporter, GhRepoOwner, GhRepoName, EvaluationResult, RepoPublicity) ()),
     fodCheckMock :: Maybe (Mock (Maybe FodChecker, Nix.DrvPath) ()),
-    rebuildFodMock :: Maybe (Mock (System, Nix.DrvPath) (Either Text Text))
+    rebuildFodMock :: Maybe (Mock (System, Nix.DrvPath) (Either Text Text)),
+    -- | The shared discovery primitive behind the nix-native server config:
+    -- one @nix eval --json
+    -- .#nixosConfigurations.\<package\>.config.garnix.server.deploySpec@ per
+    -- built nixosConfiguration, guarded the same way the old bare
+    -- persistence eval was (eval error / missing option ⇒ 'Nothing' — not a
+    -- nix-declared server). 'Garnix.Build.Package' decodes just the
+    -- persistence sub-object out of the result; 'Garnix.Hosting.Deploy'
+    -- decodes the whole thing into a 'Garnix.YamlConfig.ServerSection' via
+    -- 'Garnix.YamlConfig.decodeDeploySpec'. Kept at the raw-JSON level here
+    -- (rather than 'ServerSection') so this module doesn't have to import
+    -- 'Garnix.YamlConfig', which itself imports 'Garnix.Monad'.
+    discoverDeploySpecMock :: Maybe (Mock (FlakeDir, PackageName) (Maybe Value))
   }
   deriving (Generic)
 
@@ -401,7 +413,8 @@ emptyMocks =
       buildPkgMock = Nothing,
       s3CacheUploadMock = Nothing,
       fodCheckMock = Nothing,
-      rebuildFodMock = Nothing
+      rebuildFodMock = Nothing,
+      discoverDeploySpecMock = Nothing
     }
 
 data Mock arg result = Mock

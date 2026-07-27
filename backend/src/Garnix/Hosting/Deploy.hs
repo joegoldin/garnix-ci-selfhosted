@@ -23,6 +23,7 @@ import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Garnix.API.Keys (getRepoKeys)
+import Garnix.Build.Package qualified as Package
 import Garnix.BuildLogs.Types (mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.DB.Backups qualified as DBBackups
@@ -99,6 +100,29 @@ stopUnusedServers = do
       let hostName = hostToDomainName host <> "." <> domain
        in hostName `notElem` heartbeats
 
+-- | Discover this build's nix-declared server spec, if any (design §3): a
+-- built nixosConfiguration is a server precisely when its
+-- @config.garnix.server.deploySpec.deployment@ is non-null. 'Nothing' covers
+-- both "not a nix-declared server at all" (no `deploySpec` option — the
+-- shared 'Package.discoverDeploySpecJson' primitive already collapses that
+-- to 'Nothing', same as an eval error) and "declared, but not deploying"
+-- (`deployment = null`). A malformed aggregate (shouldn't happen for a real
+-- deploySpec, which satisfied guest-profile.nix's own assertions) is logged
+-- and treated as "not a server" rather than wedging the whole rollout.
+discoverServerSection :: FlakeDir -> Build -> M (Maybe ServerSection)
+discoverServerSection flakeDir build = do
+  Package.discoverDeploySpecJson flakeDir (build ^. package) >>= \case
+    Nothing -> pure Nothing
+    Just deploySpecJson -> case decodeDeploySpec (build ^. package) deploySpecJson of
+      Left err -> do
+        log Warning
+          $ "discoverServerSection: malformed garnix.server.deploySpec for "
+          <> getPackageName (build ^. package)
+          <> ": "
+          <> cs err
+        pure Nothing
+      Right mSection -> pure mSection
+
 getDeployPlan ::
   Reporter ->
   CommitInfo ->
@@ -111,15 +135,6 @@ getDeployPlan reporter commitInfo deploymentType = do
         (commitInfo ^. repoInfo . ghRepoOwner)
         (commitInfo ^. repoInfo . ghRepoName)
     cfg <- getConfig evalTimeout
-    let fullWantedPackagesMapping :: Map PackageName (ServerTier, Bool, ServerSection) = Map.fromList $ case deploymentType of
-          BranchDeployment thisBranch -> flip mapMaybe (cfg ^. serverSection)
-            $ \s -> case s ^. deploySection of
-              OnBranch branch serverTier isPrimary | branch == thisBranch -> Just (s ^. configuration, (serverTier, isPrimary, s))
-              _ -> Nothing
-          GhPrDeployment _prId -> flip mapMaybe (cfg ^. serverSection)
-            $ \s -> case s ^. deploySection of
-              OnPullRequest prTier -> Just (s ^. configuration, (prTier, False, s))
-              _ -> Nothing
     -- A single-deployment redeploy (Servers-page "Redeploy" with "only this
     -- deployment" checked) restricts the rollout to one package and leaves the
     -- repo's other running deployments untouched. The target is persisted
@@ -129,67 +144,86 @@ getDeployPlan reporter commitInfo deploymentType = do
         (commitInfo ^. repoInfo . ghRepoOwner)
         (commitInfo ^. repoInfo . ghRepoName)
         (commitInfo ^. commit)
-    let wantedPackagesMapping = case mDeployTarget of
-          Just pkg -> Map.filterWithKey (\k _ -> k == pkg) fullWantedPackagesMapping
-          Nothing -> fullWantedPackagesMapping
-    let wantedPackages = Map.keys wantedPackagesMapping
     existing <- DB.getRunningServersOf (commitInfo ^. repoInfo) deploymentType
-    wantedBuilds <- withPolling (PollingConfig (fromSeconds @Int 2) (fromHours @Int 2)) $ do
+
+    -- Under nix-native, whether a built nixosConfiguration is a server at
+    -- all is discovered FROM the build (its deploySpec) rather than
+    -- declared independently in yaml — so, unlike the old yaml-driven plan,
+    -- this waits for EVERY nixosConfiguration build of this commit (not a
+    -- pre-known "wanted" subset) before it can know which ones matter.
+    nixosBuilds <- withPolling (PollingConfig (fromSeconds @Int 2) (fromHours @Int 2)) $ do
       builds <- DB.getLatestBuildsMatching (commitInfo ^. repoInfo) (commitInfo ^. commit)
       let overallPackageFinished = case find (\build -> build ^. packageType == TypeOverall) builds of
             Nothing -> False
             Just b -> isJust (b ^. status)
-          wantedAndStarted =
-            filter
-              ( \build ->
-                  build
-                    ^. package
-                    `elem` wantedPackages
-                    && build
-                    ^. packageType
-                    == TypeNixosConfiguration
-              )
-              builds
-          wantedAndFinished = filter (\build -> isJust (build ^. status)) wantedAndStarted
-          wantedAndNotStarted = filter (`notElem` wantedAndStarted ^.. each . package) wantedPackages
-          uploadedAllBuilds = all (\b -> b ^. uploadedToCache == Just True) wantedAndFinished
-      when (overallPackageFinished && not (null wantedAndNotStarted)) $ do
-        throw $ DeploymentWantsNixosConfigurationsThatDontExist wantedAndNotStarted
-      pure
-        $ if sort wantedPackages == sort (wantedAndFinished ^.. each . package) && uploadedAllBuilds
-          then Just wantedAndFinished
-          else Nothing
+          nixosConfigBuilds = filter (\build -> build ^. packageType == TypeNixosConfiguration) builds
+          -- Only successful builds ever upload; a failed/timed-out/cancelled
+          -- one never will, so it can't gate readiness.
+          uploadedAllBuilds = all (\b -> b ^. status /= Just Success || b ^. uploadedToCache == Just True) nixosConfigBuilds
+      pure $ if overallPackageFinished && uploadedAllBuilds then Just nixosConfigBuilds else Nothing
+
+    -- Discover each build's deploySpec (eval doesn't require the derivation
+    -- to have been successfully realized, so this runs even for a build
+    -- whose STATUS is Failure/Timeout/Cancelled — otherwise a server whose
+    -- build failed would silently vanish from the plan instead of
+    -- surfacing a "<package> failed" error via 'checkAllBuildsSucceeded'
+    -- below, same as the old yaml-driven behavior).
+    discovered <- forM nixosBuilds $ \build -> (build,) <$> discoverServerSection (cfg ^. flakeDir) build
+    let matchesDeployment section = case (deploymentType, section ^. deploySection) of
+          (BranchDeployment thisBranch, OnBranch branch' serverTier isPrimary)
+            | branch' == thisBranch -> Just (serverTier, isPrimary)
+          (GhPrDeployment _prId, OnPullRequest prTier) -> Just (prTier, False)
+          _ -> Nothing
+        fullWantedPackagesMapping :: Map PackageName (ServerTier, Bool, ServerSection, Build)
+        fullWantedPackagesMapping =
+          Map.fromList
+            [ (build ^. package, (serverTier, isPrimary, section, build))
+              | (build, Just section) <- discovered,
+                Just (serverTier, isPrimary) <- [matchesDeployment section]
+            ]
+        wantedPackagesMapping = case mDeployTarget of
+          Just pkg -> Map.filterWithKey (\k _ -> k == pkg) fullWantedPackagesMapping
+          Nothing -> fullWantedPackagesMapping
+
+    -- The one place "wants a deployment that doesn't exist" can still
+    -- happen: a manual single-deployment redeploy target naming a package
+    -- that this commit either never built, or that no longer declares a
+    -- matching `garnix.server.deployment` (e.g. removed from the flake).
+    -- Under normal (non-manual-target) pushes this can't happen by
+    -- construction — "wanted" is derived FROM what got built, not from an
+    -- independent declaration that could go stale.
+    case mDeployTarget of
+      Just pkg | Map.notMember pkg wantedPackagesMapping -> throw $ DeploymentWantsNixosConfigurationsThatDontExist [pkg]
+      _ -> pure ()
 
     wantedServers <-
-      wantedBuilds
+      Map.elems wantedPackagesMapping
         & mapM
-          ( \build -> case Map.lookup (build ^. package) wantedPackagesMapping of
-              Just (serverTier, domainIsPrimary, section) -> do
-                useDefaultAuthentik <- case _serverSectionAuthentikSection section of
-                  Nothing -> pure False
-                  Just "default" -> pure True
-                  Just other -> throw $ OtherError $ "Unsupported servers[].authentik value " <> show other <> "; only \"default\" is supported"
-                -- Split garnix.yaml servers[].ports into http (Traefik subdomains)
-                -- and tcp (raw host-port DNAT); ssh keys/expose come straight
-                -- off the section.
-                let httpPorts = [(_serverPortName p, _serverPortPort p) | p <- _serverSectionPorts section, _serverPortType p == HttpPort]
-                    tcpPorts = [(_serverPortName p, _serverPortPort p) | p <- _serverSectionPorts section, _serverPortType p == TcpPort]
-                pure
-                  $ ServerToSpinUp
-                    { serverTier,
-                      build,
-                      domainIsPrimary,
-                      useDefaultAuthentik,
-                      exposeSSH = _serverSectionExposeSSH section,
-                      authorizeDeployerGithubKeys = _serverSectionAuthorizeDeployerGithubKeys section,
-                      authorizedSSHKeys = _serverSectionAuthorizedSSHKeys section,
-                      httpPorts,
-                      tcpPorts,
-                      domains = _serverSectionDomains section,
-                      logFile = getServerLogFile <$> _serverSectionLogFile section,
-                      backupsJson = Aeson.toJSON <$> _serverSectionBackups section
-                    }
-              Nothing -> throw $ OtherError "impossible: wantedPackagesMap should contain all deployable packages"
+          ( \(serverTier, domainIsPrimary, section, build) -> do
+              useDefaultAuthentik <- case _serverSectionAuthentikSection section of
+                Nothing -> pure False
+                Just "default" -> pure True
+                Just other -> throw $ OtherError $ "Unsupported garnix.server authentik value " <> show other <> "; only \"default\" is supported"
+              -- Split garnix.server.ports into http (Traefik subdomains) and
+              -- tcp (raw host-port DNAT); ssh keys/expose come straight off
+              -- the section.
+              let httpPorts = [(_serverPortName p, _serverPortPort p) | p <- _serverSectionPorts section, _serverPortType p == HttpPort]
+                  tcpPorts = [(_serverPortName p, _serverPortPort p) | p <- _serverSectionPorts section, _serverPortType p == TcpPort]
+              pure
+                $ ServerToSpinUp
+                  { serverTier,
+                    build,
+                    domainIsPrimary,
+                    useDefaultAuthentik,
+                    exposeSSH = _serverSectionExposeSSH section,
+                    authorizeDeployerGithubKeys = _serverSectionAuthorizeDeployerGithubKeys section,
+                    authorizedSSHKeys = _serverSectionAuthorizedSSHKeys section,
+                    httpPorts,
+                    tcpPorts,
+                    domains = _serverSectionDomains section,
+                    logFile = getServerLogFile <$> _serverSectionLogFile section,
+                    backupsJson = Aeson.toJSON <$> _serverSectionBackups section
+                  }
           )
     let toRedeploy =
           [ (server, wanted)

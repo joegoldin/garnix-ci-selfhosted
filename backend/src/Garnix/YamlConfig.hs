@@ -55,6 +55,7 @@ module Garnix.YamlConfig
     buildSections,
     configuration,
     decodeConfig,
+    decodeDeploySpec,
     deploySection,
     deployTypeExplanation,
     excludeBranches,
@@ -66,7 +67,6 @@ module Garnix.YamlConfig
     moduleSection,
     parseAttributeMatcher,
     secondPart,
-    serverSection,
     thirdPart,
     fodChecks,
     flakeDir,
@@ -77,13 +77,17 @@ where
 import Autodocodec
 import Cradle qualified
 import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HashMap
 import Data.Text qualified as T
 import Data.Tuple.Extra (fst3, snd3, thd3, uncurry3)
 import Data.Void (Void)
-import Data.Yaml (decodeEither', decodeFileEither, prettyPrintParseException)
+import Data.Yaml (decodeEither', prettyPrintParseException)
+import Data.Yaml qualified as Yaml
 import GHC.IsList (fromList)
 import Garnix.Duration (Duration)
 import Garnix.Hosting.ServerPool.Types
@@ -126,9 +130,21 @@ getConfigFromFlake evalTimeout = do
   case result of
     (Cradle.ExitFailure _, _) -> pure Nothing
     (Cradle.ExitSuccess, Cradle.StdoutRaw stdout) ->
-      case decodeEither' stdout of
+      -- Decode to a raw 'Aeson.Value' first (rather than straight to
+      -- 'GarnixConfig') so a `servers:` key can be rejected LOUDLY —
+      -- otherwise it would just silently fail 'decodeConfigValue' below and
+      -- fall through to "Nothing", exactly like any other malformed
+      -- `garnix.config` output. A repo's flake declaring
+      -- `garnix.config.servers` is a migration mistake (the field moved
+      -- into nixosConfigurations, same as the yaml `servers:` key — see
+      -- 'rejectServersKey'), not "no config here", so it must throw.
+      case decodeEither' stdout :: Either Yaml.ParseException Aeson.Value of
         Left _ -> pure Nothing
-        Right config -> pure $ Just config
+        Right value -> case rejectServersKey value of
+          Left err -> throw $ DecodeConfigError (cs err)
+          Right () -> case decodeConfigValue value of
+            Left _ -> pure Nothing
+            Right config -> pure $ Just config
 
 getConfig :: (HasCallStack) => Duration -> M GarnixConfig
 getConfig evalTimeout = do
@@ -139,14 +155,97 @@ getConfig evalTimeout = do
       exists' <- liftIO . doesFileExist $ dir </> "garnix.yaml"
       if exists'
         then do
-          eDecoded <- liftIO . decodeFileEither $ dir </> "garnix.yaml"
-          case eDecoded of
-            Left e -> throw $ DecodeConfigError . cs $ prettyPrintParseException e
+          bytes <- liftIO . BS.readFile $ dir </> "garnix.yaml"
+          case decodeConfig bytes of
+            Left e -> throw $ DecodeConfigError (cs e)
             Right decoded -> pure decoded
         else pure def
 
+-- | A `servers:` key anywhere at the top level (yaml file OR a flake's
+-- `garnix.config` output) is a hard migration error: the section moved into
+-- each nixosConfiguration's own `garnix.server` (see
+-- docs/plans/2026-07-27-nix-native-server-config-design.md §3). Checked
+-- against the raw parsed value BEFORE the codec gets a chance to just
+-- quietly ignore the unrecognized key (autodocodec's default behavior for
+-- unknown object keys).
+rejectServersKey :: Aeson.Value -> Either String ()
+rejectServersKey (Aeson.Object o)
+  | KeyMap.member "servers" o =
+      Left "servers: moved into nixosConfigurations — declare garnix.server in the configuration (see docs)"
+rejectServersKey _ = Right ()
+
+decodeConfigValue :: Aeson.Value -> Either String GarnixConfig
+decodeConfigValue value = do
+  rejectServersKey value
+  parseEither parseJSONViaCodec value
+
 decodeConfig :: ByteString -> Either String GarnixConfig
-decodeConfig = first prettyPrintParseException . decodeEither'
+decodeConfig bytes = do
+  value <- first prettyPrintParseException (decodeEither' bytes :: Either Yaml.ParseException Aeson.Value)
+  decodeConfigValue value
+
+-- | autodocodec's `optionalField` decodes "key ABSENT ⇒ Nothing"; it does
+-- NOT accept an explicit JSON @null@ for that key (a decode error instead
+-- — it tries to decode @null@ as the field's underlying type). Strip
+-- null-valued keys from an object before handing it to a codec that uses
+-- `optionalField`, so an explicit @null@ (as guest-profile.nix renders
+-- every unset `nullOr` hook option) behaves the same as an absent key.
+stripNulls :: Aeson.Value -> Aeson.Value
+stripNulls (Aeson.Object o) = Aeson.Object (KeyMap.filter (/= Aeson.Null) o)
+stripNulls v = v
+
+-- | Decode a nix-declared @garnix.server.deploySpec@ JSON aggregate (see
+-- provisioner/guest-profile.nix) into the SAME 'ServerSection' the yaml
+-- codec used to produce for a repo's old `servers:` list — everything
+-- downstream (deploy planning, domains validation, backups capture,
+-- exposeSSH, persistence) stays unchanged. `configuration` isn't part of
+-- the aggregate (it's implicit: whichever nixosConfiguration was
+-- evaluated), so the caller supplies it. Returns 'Right Nothing' when
+-- `deployment` is null (a buildable config that isn't a server — the
+-- common case); 'Left' only for a malformed aggregate, which should not
+-- happen for a value that satisfied guest-profile.nix's own assertions.
+decodeDeploySpec :: PackageName -> Aeson.Value -> Either String (Maybe ServerSection)
+decodeDeploySpec pkg = parseEither $ Aeson.withObject "deploySpec" $ \o -> do
+  deploymentValue <- o Aeson..: "deployment"
+  case deploymentValue of
+    Aeson.Null -> pure Nothing
+    _ -> do
+      deploySection' <- parseJSONViaCodec deploymentValue
+      domains' <- o Aeson..: "domains"
+      exposeSSH' <- o Aeson..: "exposeSSH"
+      authorizeDeployerGithubKeys' <- o Aeson..: "authorizeDeployerGithubKeys"
+      authorizedSSHKeys' <- o Aeson..: "authorizedSSHKeys"
+      portsValue <- o Aeson..: "ports"
+      ports' <- parseJSONViaCodec portsValue
+      applicationLogValue <- o Aeson..: "applicationLog"
+      logFile' <- case applicationLogValue of
+        Aeson.Null -> pure Nothing
+        _ -> resolveServerApplicationLog <$> parseJSONViaCodec applicationLogValue
+      backupsValue <- o Aeson..: "backups"
+      backups' <- case backupsValue of
+        Aeson.Null -> pure Nothing
+        -- 'BackupSection's codec decodes its four optional hook fields via
+        -- autodocodec's `optionalField`, which means "key ABSENT ⇒
+        -- Nothing" — it errors on an explicit JSON `null`. The guest
+        -- module's `nullOr str` hook options always render as explicit
+        -- `null` when unset (never omitted), so strip null-valued keys
+        -- first to line the two shapes up.
+        _ -> Just <$> parseJSONViaCodec (stripNulls backupsValue)
+      authentikDefault' <- o Aeson..:? "authentikDefault" Aeson..!= False
+      pure
+        $ Just
+          ServerSection
+            { _serverSectionConfiguration = pkg,
+              _serverSectionDeploySection = deploySection',
+              _serverSectionAuthentikSection = if authentikDefault' then Just "default" else Nothing,
+              _serverSectionExposeSSH = exposeSSH',
+              _serverSectionAuthorizeDeployerGithubKeys = authorizeDeployerGithubKeys',
+              _serverSectionAuthorizedSSHKeys = authorizedSSHKeys',
+              _serverSectionPorts = ports',
+              _serverSectionDomains = domains',
+              _serverSectionLogFile = logFile',
+              _serverSectionBackups = backups'
+            }
 
 newtype AttributePartMatcher = AttributePartMatcher {getAttributePartMatcher :: Text}
   deriving stock (Eq, Show, Generic)
@@ -748,7 +847,6 @@ instance Default ModuleSection where
 data GarnixConfig = GarnixConfig
   { _garnixConfigBuildSections :: [BuildSection],
     _garnixConfigIncrementalizeBuildsSection :: IncrementalizeBuildsSection,
-    _garnixConfigServerSection :: [ServerSection],
     _garnixConfigActions :: [Action],
     _garnixConfigArtifacts :: [ArtifactSection],
     _garnixConfigModuleSection :: ModuleSection,
@@ -767,7 +865,7 @@ data GarnixConfig = GarnixConfig
   deriving stock (Eq, Show, Generic)
 
 instance Default GarnixConfig where
-  def = GarnixConfig [def] def [] [] [] def False False (FlakeDir ".")
+  def = GarnixConfig [def] def [] [] def False False (FlakeDir ".")
 
 instance FromJSON GarnixConfig where
   parseJSON = parseJSONViaCodec
@@ -808,12 +906,6 @@ instance HasCodec GarnixConfig where
                       <> "builds. See our https://garnix.io/docs for more information."
                   )
                   .= _garnixConfigIncrementalizeBuildsSection
-              )
-          <*> ( optionalFieldWithDefault
-                  "servers"
-                  []
-                  "Specifies what servers to deploy."
-                  .= _garnixConfigServerSection
               )
           <*> ( optionalFieldWithDefault
                   "actions"
