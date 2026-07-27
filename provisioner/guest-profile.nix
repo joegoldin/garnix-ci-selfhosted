@@ -15,10 +15,8 @@
 #     as the garnix user)
 #
 # `garnix.server.*` also carries the post-eval description of this config as
-# a deployable server (the ONLY source of server config now — garnix.yaml's
-# old `servers:` list is gone; the backend discovers this via `nix eval`
-# after the build instead of parsing it pre-eval — see
-# docs/plans/2026-07-27-nix-native-server-config-design.md).
+# a deployable server — the only source of server config; the backend
+# discovers it via `nix eval` after the build.
 # Example:
 #   garnix.server = {
 #     deployment = { type = "on-branch"; branch = "main"; machine = "i1x2"; };
@@ -38,8 +36,8 @@ let
   cfg = config.garnix.server;
 
   # Mirrors backend/src/Garnix/YamlConfig.hs's parseBackupSchedule /
-  # validateBackupPath, so a nix-declared server fails the same assertions a
-  # garnix.yaml-declared one would fail at config-parse time.
+  # validateBackupPath: keep both in sync, or a deploySpec that evaluates
+  # here can still fail decodeDeploySpec on the backend.
   isBackupScheduleValid =
     s:
     s == "hourly"
@@ -136,11 +134,11 @@ in
       type = lib.types.str;
       default = config.garnix.guest.sshPublicKey;
       description = ''
-        Public key of the dedicated web-terminal certificate authority (finding
-        H3), trusted as TrustedUserCAKeys so the backend can mint short-lived
+        Public key of the dedicated web-terminal certificate authority,
+        trusted as TrustedUserCAKeys so the backend can mint short-lived
         per-session login certs WITHOUT the guest trusting the hosting/deploy
-        key as a CA. Defaults to sshPublicKey for backward compatibility: guests
-        deployed before H3 (and user flakes that don't set it) keep trusting the
+        key as a CA. Defaults to sshPublicKey so guests that don't set it
+        (or were deployed before this option existed) keep trusting the
         hosting key as CA. The provisioner injects the real terminal-CA pubkey.
       '';
     };
@@ -378,8 +376,7 @@ in
         module is also imported). Rendered verbatim to
         `/etc/garnix/server.json` in the guest below — the backend `nix
         eval`s this one option per built `nixosConfiguration` to discover
-        servers declared in Nix instead of garnix.yaml's legacy `servers:`
-        list.
+        servers.
       '';
     };
   };
@@ -457,7 +454,7 @@ in
       # Deploy-delivered key material (repo-key, default-authentik.env,
       # authorized_keys) lives in RAM only: a tmpfs over /var/garnix/keys means
       # the repo's secret-decryption key is never written to the persistent
-      # root.img, so a copied/backed-up/leaked disk image can't yield it (M1).
+      # root.img, so a copied/backed-up/leaked disk image can't yield it.
       # The backend delivers all three files post-boot over ssh (copyKeys /
       # copyDefaultAuthentikEnv / copyAuthorizedKeys), so the mount — active
       # since local-fs.target, long before sshd — is always in place first.
@@ -481,7 +478,7 @@ in
           # IPv4-only: the provisioner's dnsmasq (per-MAC reservations) is the
           # single source of addressing truth. Never accept router advertisements
           # — on a shared bridge an RA is how a neighbour impersonates the
-          # gateway (M8). Host-side bridge port isolation already stops
+          # gateway. Host-side bridge port isolation already stops
           # guest->guest RA/DHCP at L2; this is guest-side belt.
           networkConfig = {
             DHCP = "ipv4";
@@ -556,7 +553,7 @@ in
         # which both breaks pure eval and can never see the delivered file.)
         # Declare your own login users in the guest config for the user-module
         # pattern.
-        # Trust the DEDICATED web-terminal certificate authority (finding H3) as a
+        # Trust the DEDICATED web-terminal certificate authority as a
         # user-certificate authority — NOT the hosting/deploy key. This lets the
         # backend mint short-lived, per-session SSH certificates (signed by the
         # terminal CA) to open the web terminal directly as any declared login user
@@ -565,9 +562,9 @@ in
         # only mint terminal certs (bounded by the login-user principal the backend
         # sets), and does NOT hand out the standing root/deploy key. The certs are
         # minted on demand by the backend and expire within the terminal-session
-        # window. The /etc file keeps its historical name and seeds the durable
-        # copy on first boot. terminalCaPublicKey defaults to the hosting key, so
-        # guests deployed before H3 stay evaluable until recreated.
+        # window. This /etc path is also the tmpfiles seed source above (etc ->
+        # /var/lib/garnix/terminal-ca.pub on first boot) — don't rename it without
+        # updating that rule too.
         #
         # AuthorizedPrincipalsFile pins a terminal cert to THIS server, not just
         # to its login user. Every terminal cert is signed (see
