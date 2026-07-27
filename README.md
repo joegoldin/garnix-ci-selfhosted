@@ -92,7 +92,7 @@ NixOS machine. Everything below uses example values — substitute your own:
   endpoint; pre-warm
   guests cannot report before claim, and the ingestion route is guest-subnet
   gated. See [Monitoring](#monitoring).
-- **SSH into deployed servers + extra ports** — `garnix.yaml` `servers[]` gains
+- **SSH into deployed servers + extra ports** — `garnix.server` gains
   `exposeSSH` (public DNAT), `authorizeDeployerGithubKeys`, `authorizedSSHKeys`,
   and `ports`; reach guests via tailscale, ProxyJump, or DNAT, and expose extra
   http/tcp ports. Password auth is off, and direct human SSH to the guest's
@@ -102,15 +102,15 @@ NixOS machine. Everything below uses example values — substitute your own:
   login user, using short-lived certificates from a dedicated SSH CA separate
   from the hosting/deploy key. See
   [SSH into a deployed server](#ssh-into-a-deployed-server-and-expose-extra-ports).
-- **Configurable microVM size** — `deployment.machine` on each `servers[]` entry
-  picks a tier (`i1x1`…`i16x32`, default `i1x2` = 1 vCPU / 2 GiB); see
+- **Configurable microVM size** — `deployment.machine` on each `garnix.server`
+  block picks a tier (`i1x1`…`i16x32`, default `i1x2` = 1 vCPU / 2 GiB); see
   [Server deployments](#server-deployments-self-host-microvm-hosting).
-- **Live deployed-server logs** — `servers[].applicationLog` is disabled by
+- **Live deployed-server logs** — `garnix.server.applicationLog` is disabled by
   default; enable it to follow its absolute guest `path` over the existing
   private deploy SSH channel. The Servers page's Logs modal shows deploy output
   and application output side by side, with owner-gated API access and bounded
   process-local scrollback.
-- **Custom & vanity domains** — `garnix.yaml` `servers[].domains:` lets a
+- **Custom & vanity domains** — `garnix.server.domains` lets a
   hosted server answer on extra hostnames; operator wildcard bases
   (`services.garnixServer.extraHostingDomains`) and admin-registered
   connected domains (Configure page, DNS-points-here verify) both add more
@@ -931,16 +931,91 @@ claim/redeployment before activating the repository configuration. After a
 standalone guest reboot, redeploy it before expecting services that consume
 those runtime credentials to start successfully.
 
-Pick a size per server with `deployment.machine` in `garnix.yaml` (default
+### Declaring a server
+
+**Principle:** if it needs to be known *before* nix runs, it belongs in
+`garnix.yaml`; if it describes the server, it belongs in the server's own
+module — `garnix.server.*`, set inside the `nixosConfiguration` it
+describes. `garnix.yaml` shrinks to the pre-nix contract: `builds`,
+`autoCancelSuperseded`, `actions`, `artifacts` — decisions the backend has
+to make *before* it can evaluate your flake at all. Everything about what
+gets deployed and how is post-eval information, so it lives next to the
+configuration it deploys, discovered by the backend after a successful
+build.
+
+A server-hosting repo's `garnix.yaml` ends up close to empty:
+
+```yaml
+# garnix.yaml — complete
+autoCancelSuperseded: true
+builds:
+  include:
+    - "packages.x86_64-linux.*"
+    - "nixosConfigurations.*"
+```
+
+and the server description lives in the `nixosConfiguration` itself:
+
+```nix
+# inside nixosConfigurations.fridge
+garnix.server = {
+  deployment = {
+    type = "on-branch";
+    branch = "main";
+    machine = "i2x2";
+    isPrimary = true;
+  };
+  domains = [ "fridge.example.com" ]; # placeholder — use your own hosting domain
+  exposeSSH = true;
+  backups = {
+    paths = [ "/var/lib/jkfridge" ];
+    schedule = "daily";
+    # Store-path hooks, not bare command names: because this string ends up
+    # inside a derivation (`/etc/garnix/server.json`, the closure-pinning
+    # mechanism below), Nix's string context pins `sqlite`'s store path
+    # into the guest's closure — no separate `environment.systemPackages`
+    # entry needed for the hook to have something to run.
+    preBackupCommand = "${pkgs.sqlite}/bin/sqlite3 /var/lib/jkfridge/app.db '.backup /var/lib/jkfridge/app.db.snapshot'";
+    postBackupCommand = "${pkgs.coreutils}/bin/rm -f /var/lib/jkfridge/app.db.snapshot";
+  };
+  persistence = {
+    enable = true;
+    name = "jkfridge"; # PERMANENT — changing it wipes the VM and its data
+  };
+  authentikDefault = true; # reuse garnix's own login — see docs/authentik-cookbook.md
+};
+```
+
+Most of that option surface — `deployment`, `domains`, `exposeSSH`,
+`authorizeDeployerGithubKeys`, `authorizedSSHKeys`, `ports`,
+`applicationLog`, `backups`, `authentikDefault` — is documented inline in
+`provisioner/guest-profile.nix`. `persistence` is the one exception: it's
+declared by [garnix-lib](https://github.com/joegoldin/garnix-lib) (imported
+separately, alongside the guest module) and merges into the same
+`garnix.server` namespace. Every example in the rest of this section shows
+a piece of the surface in context.
+
+**The legacy yaml `servers:` key is gone, not deprecated.** A `garnix.yaml`
+with a `servers:` section — or a flake `garnix.config.servers` output, the
+other pre-nix-native way a repo used to declare one — is rejected outright
+at config-decode time, with a pointed error rather than a silent no-op:
+
+```
+servers: moved into nixosConfigurations — declare garnix.server in the configuration (see docs)
+```
+
+An unmigrated repo therefore fails loudly instead of quietly deploying
+nothing.
+
+Pick a size per server with `deployment.machine` in `garnix.server` (default
 `i1x2`); the tier name encodes `<vCPU>x<GiB>` and maps to guest resources
 (20 GiB root + 20 GiB writable-store overlay for every tier):
 
-```yaml
-servers:
-  - configuration: myServer
-    deployment:
-      branch: main
-      machine: i2x4 # 2 vCPU, 4 GiB — omit for the i1x2 default
+```nix
+garnix.server.deployment = {
+  branch = "main";
+  machine = "i2x4"; # 2 vCPU, 4 GiB — omit for the i1x2 default
+};
 ```
 
 | tier             | vCPU | RAM (MiB) |
@@ -968,15 +1043,14 @@ Application logging is off by default. Enable it to add a live service log
 beside the deployment output in the Servers page's **Logs** modal. `path` is
 optional and defaults to `/var/log/nginx/hello-access.log`:
 
-```yaml
-servers:
-  - configuration: myServer
-    deployment:
-      type: on-branch
-      branch: main
-    applicationLog:
-      enable: true
-      path: /var/log/my-service.log
+```nix
+garnix.server = {
+  deployment = { type = "on-branch"; branch = "main"; };
+  applicationLog = {
+    enable = true;
+    path = "/var/log/my-service.log";
+  };
+};
 ```
 
 After a successful deployment, the backend follows that file with a fixed
@@ -1009,29 +1083,27 @@ and pool autostart across host reboots (the pool refills itself).
 
 ### SSH into a deployed server, and expose extra ports
 
-`garnix.yaml` `servers[]` entries take four optional networking fields.
+`garnix.server` takes four optional networking fields.
 **Reachability** (`exposeSSH`) and **login authorization**
 (`authorizeDeployerGithubKeys` / `authorizedSSHKeys`) are independent — you
 usually want both:
 
-```yaml
-servers:
-  - configuration: myServer
-    deployment:
-      branch: main
-      machine: i2x2
-    # Reachability: open a public DNAT port forwarding to the guest's :22.
-    # This does NOT grant login by itself.
-    exposeSSH: true
-    # Login: authorize the deployer's github.com/<user>.keys on the garnix user.
-    authorizeDeployerGithubKeys: true
-    # Login: authorize extra explicit keys on the garnix user.
-    authorizedSSHKeys:
-      - "ssh-ed25519 AAAA... me@laptop"
-    # Extra ports. `http` -> a Traefik subdomain; `tcp` -> a raw host port.
-    ports:
-      - { name: api, port: 8080, type: http }
-      - { name: db, port: 5432, type: tcp }
+```nix
+garnix.server = {
+  deployment = { branch = "main"; machine = "i2x2"; };
+  # Reachability: open a public DNAT port forwarding to the guest's :22.
+  # This does NOT grant login by itself.
+  exposeSSH = true;
+  # Login: authorize the deployer's github.com/<user>.keys on the garnix user.
+  authorizeDeployerGithubKeys = true;
+  # Login: authorize extra explicit keys on the garnix user.
+  authorizedSSHKeys = [ "ssh-ed25519 AAAA... me@laptop" ];
+  # Extra ports. `http` -> a Traefik subdomain; `tcp` -> a raw host port.
+  ports = [
+    { name = "api"; port = 8080; type = "http"; }
+    { name = "db"; port = 5432; type = "tcp"; }
+  ];
+};
 ```
 
 **Hardened by default.** Password authentication is disabled
@@ -1153,17 +1225,18 @@ transition file with the new public key alone.
 
 ### Custom & vanity domains
 
-`garnix.yaml` `servers[]` entries take an optional `domains:` list — extra
+`garnix.server` takes an optional `domains` list — extra
 hostnames a deployed server answers on, alongside its default
 `<pkg>.<branch>.<repo>.<owner>.<hostingDomain>` address:
 
-```yaml
-servers:
-  - configuration: myServer
-    deployment: { branch: main }
-    domains:
-      - myapp.example.dev # vanity, under a known hosting base
-      - app.example.com # bare custom domain
+```nix
+garnix.server = {
+  deployment = { branch = "main"; };
+  domains = [
+    "myapp.example.dev" # vanity, under a known hosting base
+    "app.example.com" # bare custom domain
+  ];
+};
 ```
 
 Each declared name is checked against the known **hosting bases** — the
@@ -1193,8 +1266,8 @@ record, as appropriate), then click **Verify**. Verification is a
 **DNS-points-here** check — an A/wildcard lookup confirming the domain already
 resolves to the host — not a TXT token or ownership challenge. Once a
 registered domain is verified, it joins the known bases above, so any
-`servers[].domains` entry under it becomes wildcard-covered with no further
-DNS changes.
+`garnix.server.domains` entry under it becomes wildcard-covered with no
+further DNS changes.
 
 **Servers page (i) menu.** Each running server's controls include an **(i)**
 button listing its declared domains and, per domain, the exact record to set
@@ -1249,19 +1322,18 @@ gate on port 80 (the port Traefik proxies to), so every request needs a valid
 session before it reaches your service. Point your own service at a different
 port and set `garnix.authentik.upstream` to it.
 
-**Fastest path — reuse garnix's own login (`mode = "default"`):** put
-`authentik: default` on the server's `garnix.yaml` entry and garnix drops its
-_own_ OIDC client credentials (plus this deployment's redirect URL) onto the
-guest at deploy time — no provider setup, no client id, no secret in the repo.
-Whoever can log into garnix can reach the app. Ideal for dev deployments.
+**Fastest path — reuse garnix's own login (`mode = "default"`):** set
+`garnix.server.authentikDefault = true;` on the server's configuration and
+garnix drops its _own_ OIDC client credentials (plus this deployment's
+redirect URL) onto the guest at deploy time — no provider setup, no client
+id, no secret in the repo. Whoever can log into garnix can reach the app.
+Ideal for dev deployments.
 
-```yaml
-servers:
-  - configuration: hello
-    deployment:
-      type: on-branch
-      branch: main
-    authentik: default
+```nix
+garnix.server = {
+  deployment = { type = "on-branch"; branch = "main"; };
+  authentikDefault = true;
+};
 ```
 
 ```nix
@@ -1355,20 +1427,21 @@ see (or trust) these headers. See "Header-based SSO to the app" in
 
 Scheduled snapshots of a **deployed server's** data — not to be confused with
 [Step 12](#step-12--backups), which backs up the garnix instance itself.
-Declare the paths in `garnix.yaml` and the backend pulls a tar over SSH,
-compresses it, content-addresses it, and uploads it to a private bucket:
+Declare the paths in `garnix.server.backups` and the backend pulls a tar over
+SSH, compresses it, content-addresses it, and uploads it to a private bucket:
 
-```yaml
-servers:
-  - configuration: db
-    deployment: { type: on-branch, branch: main }
-    backups:
-      paths: [/var/lib/postgresql] # required, non-empty; no / or /nix/store
-      schedule: daily # hourly | daily (default) | weekly | "<N>h"
-      preBackupCommand: systemctl stop myapp # optional; non-zero exit aborts
-      postBackupCommand: systemctl start myapp # optional; ALWAYS attempted
-      preRestoreCommand: systemctl stop myapp # optional
-      postRestoreCommand: systemctl start myapp # optional
+```nix
+garnix.server = {
+  deployment = { type = "on-branch"; branch = "main"; };
+  backups = {
+    paths = [ "/var/lib/postgresql" ]; # required, non-empty; no / or /nix/store
+    schedule = "daily"; # hourly | daily (default) | weekly | "<N>h"
+    preBackupCommand = "systemctl stop myapp"; # optional; non-zero exit aborts
+    postBackupCommand = "systemctl start myapp"; # optional; ALWAYS attempted
+    preRestoreCommand = "systemctl stop myapp"; # optional
+    postRestoreCommand = "systemctl start myapp"; # optional
+  };
+};
 ```
 
 A scheduler pass runs every 5 minutes and captures whatever is due (one guest
