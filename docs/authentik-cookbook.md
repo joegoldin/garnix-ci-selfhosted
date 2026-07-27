@@ -245,6 +245,46 @@ the OIDC callback flow; the module asserts this. Only bypass paths whose
 handler enforces its own authentication — anything else is reachable by
 anyone who can route to the guest.
 
+## Header-based SSO to the app
+
+Once a request has passed the auth_request gate, your app usually doesn't
+need its own login screen — it can just read who's logged in from a header
+and trust it. `garnix.authentik.forwardIdentityHeaders` (**default `true`**)
+forwards the verified identity from oauth2-proxy's auth subrequest
+(`setXauthrequest = true` sets these as response headers on `/oauth2/auth`) to
+`upstream` as:
+
+- `X-Auth-Request-User`
+- `X-Auth-Request-Email`
+- `X-Auth-Request-Preferred-Username`
+- `X-Auth-Request-Groups`
+
+```nix
+garnix.authentik = {
+  enable = true;
+  publicUrl = "https://myapp.main.myrepo.myorg.apps.example.com";
+  issuerUrl = "https://authentik.example.com/application/o/myapp/";
+  clientId = "<client id>";
+  clientSecretFile = ./secrets/myapp-client-secret.age;
+  upstream = "127.0.0.1:8080";
+  # forwardIdentityHeaders = true;  # default — set false to withhold identity
+};
+```
+
+**Trust model:** the gate sets these headers with an *unconditional*
+`proxy_set_header` on every proxied request, so even if a client sends its own
+`X-Auth-Request-User: admin`, the value nginx forwards is always the one it
+just read from the auth subrequest — the client's header is discarded, not
+merged. Your app should only read these headers as trusted identity when it
+*knows* it's deployed behind this gate (i.e. it never listens anywhere else,
+or it's on a private network reachable only via the gate) — if the same app
+binary can also be reached directly, bypassing nginx, these headers become
+attacker-controlled again. `skipAuthPaths` locations blank all four headers
+unconditionally, regardless of `forwardIdentityHeaders`, since those requests
+never go through the auth subrequest and have no verified identity to
+forward. Set `forwardIdentityHeaders = false` if your app has its own login
+and should not see (or accidentally trust) these headers.
+
 ## Shared mode: one provider, many apps
 
 If you'd rather not mint a provider + secret per app, run everything through a

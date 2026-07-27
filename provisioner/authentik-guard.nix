@@ -28,6 +28,9 @@
 #     clientSecretFile = ./secrets/myapp-client-secret.age;  # committed .age file
 #     skipAuthPaths = [ "/mcp" ];           # token-authenticated endpoints: proxy
 #                                            # straight to upstream, no SSO gate
+#     forwardIdentityHeaders = true;        # default; forwards X-Auth-Request-User/
+#                                            # -Email/-Preferred-Username/-Groups to
+#                                            # upstream (set false to stop)
 #   };
 #   services.myThing.port = 8080;           # your actual app, behind the gate
 { lib, config, pkgs, ... }:
@@ -248,6 +251,19 @@ in
         (no auth_request). For endpoints that carry their own authentication
         (API bearer tokens, webhooks). Each entry becomes an nginx prefix
         location covering the path and everything under it.
+      '';
+    };
+
+    forwardIdentityHeaders = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Forward the authenticated identity to `upstream` as
+        X-Auth-Request-User / -Email / -Preferred-Username / -Groups headers
+        (from oauth2-proxy's auth subrequest). The gate always overwrites these
+        headers on proxied requests, so clients cannot spoof them; on
+        skipAuthPaths they are blanked as before. Set false to stop forwarding
+        the authenticated identity to upstream.
       '';
     };
   };
@@ -498,9 +514,13 @@ in
                   # Never trust client-supplied identity headers, even though
                   # this path skips the SSO gate — the upstream enforces its
                   # own auth (e.g. bearer tokens) and must not be fooled by a
-                  # spoofed X-Auth-Request-* header.
+                  # spoofed X-Auth-Request-* header. Blanked unconditionally
+                  # here regardless of forwardIdentityHeaders: skipAuthPaths
+                  # never runs the auth subrequest, so there is no identity to
+                  # forward in the first place.
                   proxy_set_header X-Auth-Request-User "";
                   proxy_set_header X-Auth-Request-Email "";
+                  proxy_set_header X-Auth-Request-Preferred-Username "";
                   proxy_set_header X-Auth-Request-Groups "";
                 '';
               };
@@ -528,20 +548,36 @@ in
             "/" = {
               proxyPass = "http://${cfg.upstream}";
               extraConfig = ''
-                # Never trust client-supplied identity headers.
+                # Never trust client-supplied identity headers. Blanked here
+                # first; when forwardIdentityHeaders is on, the block below
+                # overwrites these with the real values from the auth
+                # subrequest (a later proxy_set_header for the same header
+                # name always wins over an earlier one in the same nginx
+                # location) — so a client-forged header is never what reaches
+                # upstream either way.
                 proxy_set_header X-Auth-Request-User "";
                 proxy_set_header X-Auth-Request-Email "";
+                proxy_set_header X-Auth-Request-Preferred-Username "";
                 proxy_set_header X-Auth-Request-Groups "";
 
                 auth_request /oauth2/auth;
                 error_page 401 = @oauth2_signin;
+              ''
+              + lib.optionalString cfg.forwardIdentityHeaders ''
 
-                auth_request_set $auth_user   $upstream_http_x_auth_request_user;
-                auth_request_set $auth_email  $upstream_http_x_auth_request_email;
-                auth_request_set $auth_groups $upstream_http_x_auth_request_groups;
-                proxy_set_header X-Auth-Request-User   $auth_user;
-                proxy_set_header X-Auth-Request-Email  $auth_email;
-                proxy_set_header X-Auth-Request-Groups $auth_groups;
+                # garnix.authentik.forwardIdentityHeaders: pull the verified
+                # identity out of the /oauth2/auth subrequest's response
+                # headers (oauth2-proxy's setXauthrequest = true) and forward
+                # it to the upstream app. Unconditional proxy_set_header, so
+                # it always overwrites whatever the client sent above.
+                auth_request_set $auth_user      $upstream_http_x_auth_request_user;
+                auth_request_set $auth_email     $upstream_http_x_auth_request_email;
+                auth_request_set $auth_preferred $upstream_http_x_auth_request_preferred_username;
+                auth_request_set $auth_groups    $upstream_http_x_auth_request_groups;
+                proxy_set_header X-Auth-Request-User               $auth_user;
+                proxy_set_header X-Auth-Request-Email              $auth_email;
+                proxy_set_header X-Auth-Request-Preferred-Username $auth_preferred;
+                proxy_set_header X-Auth-Request-Groups             $auth_groups;
               '';
             };
             "@oauth2_signin" = {

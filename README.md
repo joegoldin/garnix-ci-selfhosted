@@ -1341,6 +1341,16 @@ and everything under it; entries can't be `/` or start with `/oauth2` (the
 module asserts this — either would defeat the gate or break the callback
 flow). See `docs/authentik-cookbook.md` for the full worked example.
 
+**`garnix.authentik.forwardIdentityHeaders`** (default `true`) forwards the
+authenticated identity to `upstream` as `X-Auth-Request-User` /
+`-Email` / `-Preferred-Username` / `-Groups`, pulled from oauth2-proxy's auth
+subrequest (`setXauthrequest = true`). The gate always overwrites these
+headers on proxied requests — a client cannot spoof them — and `skipAuthPaths`
+locations blank them regardless of this setting, since those never run the
+auth subrequest in the first place. Set it to `false` if your app should not
+see (or trust) these headers. See "Header-based SSO to the app" in
+`docs/authentik-cookbook.md`.
+
 ## Server backups
 
 Scheduled snapshots of a **deployed server's** data — not to be confused with
