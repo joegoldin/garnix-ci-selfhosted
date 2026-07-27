@@ -307,6 +307,7 @@ const ServersTable = (props: {
               </span>
             </th>
             <th>Created</th>
+            <th>Last deployed</th>
             <th></th>
           </tr>
         </thead>
@@ -373,6 +374,14 @@ const ServersTable = (props: {
                         diffTime(new Date(), server.created_at),
                       ) + " ago"
                     : "-"}
+                </td>
+                <td>
+                  {server.ready_at ? (
+                    formatDurationLong(diffTime(new Date(), server.ready_at)) +
+                    " ago"
+                  ) : (
+                    <span className={styles.muted}>—</span>
+                  )}
                 </td>
                 <td className={styles.rowActions}>
                   {server.status === "Online" ? (

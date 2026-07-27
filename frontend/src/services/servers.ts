@@ -37,6 +37,11 @@ const runningServerSchema = z.object({
   commit: z.string(),
   ipv4: z.string().optional(),
   created_at: z.coerce.date().optional(),
+  // Timestamp of the most recent successful switch-to-configuration; for a
+  // persistent server this is re-stamped in place on every redeploy (same
+  // VM), while created_at stays fixed at initial provisioning. Absent until
+  // the server first comes Online.
+  ready_at: z.coerce.date().optional(),
   deploy_logs: z.string(),
   url: z.string(),
   // Extra hostnames declared for this server (garnix.yaml servers[].domains),

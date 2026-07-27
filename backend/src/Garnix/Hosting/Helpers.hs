@@ -33,6 +33,11 @@ data RunningServer = RunningServer
     _runningServerRepoName :: GhRepoName,
     _runningServerPackageName :: PackageName,
     _runningServerCreatedAt :: Maybe UTCTime,
+    -- | Timestamp of the most recent successful switch-to-configuration
+    -- (re-stamped in place on every redeploy of a persistent server; see
+    -- 'redeployServer' in Garnix.Hosting.Deploy). 'Nothing' until the server
+    -- first comes Online.
+    _runningServerReadyAt :: Maybe UTCTime,
     _runningServerConfigurationBuildId :: BuildId,
     _runningServerCommit :: CommitHash,
     _runningServerIpv4 :: Maybe Text,
@@ -84,7 +89,7 @@ getRunningAndRecentServersForOwners owners = do
     ( \(id, pr, branch, readyAt, endedAt, repoUser, repoName, packageName, createdAt, buildId, commit, ipv4, logs) -> do
         typ <- serverDeploymentType pr branch
         status <- serverStatus readyAt endedAt
-        pure $ RunningServer id typ status repoUser repoName packageName createdAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (mfilter (not . null) (lookup id domainsAssoc)) (mfilter (not . null) (lookup id sshUsersAssoc))
+        pure $ RunningServer id typ status repoUser repoName packageName createdAt readyAt buildId commit ipv4 logs (mkUrl typ repoName repoUser packageName) (lookup id exposures) (lookup id stats) (mfilter (not . null) (lookup id domainsAssoc)) (mfilter (not . null) (lookup id sshUsersAssoc))
     )
     <$> DB.pgQuery
       [pgSQL|
