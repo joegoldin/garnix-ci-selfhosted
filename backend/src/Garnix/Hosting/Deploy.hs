@@ -157,10 +157,23 @@ getDeployPlan reporter commitInfo deploymentType = do
             Nothing -> False
             Just b -> isJust (b ^. status)
           nixosConfigBuilds = filter (\build -> build ^. packageType == TypeNixosConfiguration) builds
+          -- The TypeOverall row alone is NOT sufficient to know every
+          -- nixosConfiguration build has finished: Build/Flake.hs marks it
+          -- Success at REGISTRATION time, before any individual build has
+          -- actually run, so a build with status = Nothing is a real
+          -- in-flight build, not a gap in the schema. Every
+          -- nixosConfiguration row of this commit must individually reach a
+          -- terminal status (isJust) before discovery can trust the set —
+          -- otherwise 'checkAllBuildsSucceeded' below can observe status =
+          -- Nothing and throw "<package> has no status" for a build that was
+          -- simply still running (see the pre-nix-native
+          -- 'wantedAndFinished'/'sort wantedPackages == ...' gate this
+          -- replaces).
+          allBuildsFinished = all (\b -> isJust (b ^. status)) nixosConfigBuilds
           -- Only successful builds ever upload; a failed/timed-out/cancelled
           -- one never will, so it can't gate readiness.
           uploadedAllBuilds = all (\b -> b ^. status /= Just Success || b ^. uploadedToCache == Just True) nixosConfigBuilds
-      pure $ if overallPackageFinished && uploadedAllBuilds then Just nixosConfigBuilds else Nothing
+      pure $ if overallPackageFinished && allBuildsFinished && uploadedAllBuilds then Just nixosConfigBuilds else Nothing
 
     -- Discover each build's deploySpec (eval doesn't require the derivation
     -- to have been successfully realized, so this runs even for a build

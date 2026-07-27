@@ -15,12 +15,14 @@ import Data.Text.IO qualified as T
 import Data.Tuple.Extra ((&&&))
 import Database.PostgreSQL.Typed (pgSQL)
 import Garnix.API.GhWebhooks (ghWebhookPullRequest)
+import Garnix.Async (timeout)
 import Garnix.Backups (BackupTarget (..), runServerBackup, runServerRestore)
 import Garnix.Build (buildFlake)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withPrivateNixXdgCache)
 import Garnix.DB qualified as DB
 import Garnix.DB.Backups qualified as Backups
+import Garnix.Duration (fromSeconds)
 import Garnix.Hosting.Deploy
 import Garnix.Hosting.ServerPool (sshArgsFor)
 import Garnix.Monad
@@ -783,6 +785,43 @@ spec = do
           Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
           [plan] <- getMockCalls #executeDeployPlanMock
           plan `shouldHavePlan` (GhPrDeployment 42, [], [])
+
+    -- Regression: 'getDeployPlan's discovery poll (Deploy.hs) used to gate
+    -- solely on the TypeOverall "Build starting" row reaching a terminal
+    -- status. But Build/Flake.hs marks that row Success at REGISTRATION
+    -- time, before any individual build has actually run — so a
+    -- nixosConfiguration build that is still in flight (status = Nothing)
+    -- was wrongly treated as part of a "finished" batch, and
+    -- 'checkAllBuildsSucceeded' then threw "<package> has no status".
+    -- Orchestrator.handlePullRequest rolls out PR servers concurrently with
+    -- the push build, so this window is hit for real in production.
+    it "waits for an in-flight nixosConfiguration build even though the TypeOverall build already finished" $ do
+      withMockReturning #executeDeployPlanMock [] $ do
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          building <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & status .~ Nothing
+              & uploadedToCache ?~ False
+          promise <- Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42
+          -- Neither succeeds nor throws while the build is still in flight —
+          -- this proves the poll is genuinely waiting, not merely "hasn't
+          -- reached executeDeployPlan yet" (the pre-fix bug instead threw
+          -- immediately out of checkAllBuildsSucceeded).
+          raced <- timeout (fromSeconds @Int 5) (try (resolve promise))
+          liftIO $ isNothing raced `shouldBe` True
+          -- Now the build actually finishes; discovery may proceed.
+          DB.reportBuildResultDB (building & status ?~ Success)
+          DB.setBuildUploaded (building ^. id)
+          final <- timeout (fromSeconds @Int 30) (try (resolve promise))
+          liftIO $ case final of
+            Just (Right ()) -> pure ()
+            other -> expectationFailure $ cs $ "expected the rollout to proceed once the build finished, got: " <> show other
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
 
     it "works if there are other (non-nixosConfig) packages with the same name" $ do
       withMockReturning #executeDeployPlanMock [] $ do
