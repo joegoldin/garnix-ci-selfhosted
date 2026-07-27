@@ -32,6 +32,20 @@ in
 {
   options.garnix.local-provisioner = {
     enable = lib.mkEnableOption "the garnix local microVM provisioner daemon";
+    autostartGuests = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        microVMs are created imperatively by garnix-provisionerd and do NOT
+        survive a host reboot on their own — without this, a deployed guest
+        stays down until someone redeploys it by hand. When true, the
+        garnix-guest-autostart.service oneshot queries the garnix DB on boot
+        for every LIVE deployed server (servers.ready_at IS NOT NULL AND
+        servers.ended_at IS NULL) and starts its microvm@garnix-<id>.service.
+        The warm pool (server_pool table) is deliberately excluded — it
+        refills itself. Set false to opt out.
+      '';
+    };
     socketPath = lib.mkOption {
       type = lib.types.str;
       default = "/run/garnix-provisioner/provisioner.sock";
@@ -395,6 +409,84 @@ in
           RestartSec = 5;
         };
         unitConfig.StartLimitIntervalSec = 0;
+      };
+
+      # ── Revive deployed guests after a host reboot ───────────────────────────
+      # microVMs are created imperatively (the daemon's `create` action), so
+      # nothing about them survives a reboot on its own: the guest specs and
+      # disks are still on disk, but no microvm@ unit is running, and none is
+      # wantedBy anything that would bring it back. Before this unit existed,
+      # a deployed guest just stayed down until its next redeploy (the
+      # long-documented "pool autostart across host reboots" README gap —
+      # this closes the deployed-guest half of it; see below for why the pool
+      # half is deliberately left alone).
+      services.garnix-guest-autostart = lib.mkIf cfg.autostartGuests {
+        description = ''
+          Restart every LIVE deployed guest after a host reboot (servers.ready_at
+          IS NOT NULL AND servers.ended_at IS NULL). RECOVERY PROPERTY: because
+          this unit is wantedBy multi-user.target and newly introduced, the
+          FIRST `switch-to-configuration switch` that brings it onto a host
+          starts it immediately as part of that switch — so the very next
+          deploy after a reboot (even a deploy that isn't otherwise about this
+          feature) also revives every guest, with no separate manual restart
+          needed. Deliberately does NOT touch the warm pool (server_pool
+          table): the pool refills itself (ServerPool.hs's
+          initializeProvisioningPool self-heals stale rows and reprovisions up
+          to the configured ideal size every _checkServerPoolInterval);
+          force-starting old pool guests here would hand that loop VMs whose
+          disk/network state predates the reboot instead of letting it
+          provision clean replacements, which would fight rather than help
+          the backend's own self-healing.
+        '';
+        wantedBy = [ "multi-user.target" ];
+        wants = [
+          "postgresql.service"
+          "garnix-provisionerd.service"
+          "network-online.target"
+        ];
+        after = [
+          "postgresql.service"
+          "garnix-provisionerd.service"
+          "network-online.target"
+        ];
+        path = [ pkgs.postgresql_18 pkgs.util-linux "/run/current-system/sw" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -uo pipefail
+          echo "garnix-guest-autostart: querying live deployed servers"
+          # Query as the postgres superuser over the local Unix socket — the
+          # same "sudo -u postgres psql -p <port>" pattern documented for
+          # operating this DB. `runuser` (rather than `User = "postgres"` on
+          # the whole unit) scopes the privilege drop to only this query: the
+          # rest of the script needs root to `systemctl start` microvm@ units
+          # (dbus/polkit does not grant that to the postgres user), so the
+          # unit as a whole must stay root and switch users just for psql.
+          ids="$(runuser -u postgres -- psql -X -q -t -A \
+            -p ${toString config.garnix.database.dbPort} \
+            -d ${config.garnix.database.dbName} \
+            -c "SELECT provisioner_id FROM servers WHERE ready_at IS NOT NULL AND ended_at IS NULL;")"
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "garnix-guest-autostart: psql query failed (exit $status); cannot determine which guests to start" >&2
+            exit 1
+          fi
+          if [ -z "$ids" ]; then
+            echo "garnix-guest-autostart: no live deployed servers in the DB; nothing to start"
+            exit 0
+          fi
+          for id in $ids; do
+            # A guest whose spec dir went missing (e.g. a since-cleaned-up
+            # test server) must not fail the whole unit — log and move on.
+            if systemctl start "microvm@garnix-$id.service"; then
+              echo "garnix-guest-autostart: started microvm@garnix-$id.service"
+            else
+              echo "garnix-guest-autostart: microvm@garnix-$id.service failed to start (spec dir may be missing) - continuing" >&2
+            fi
+          done
+        '';
       };
     };
 

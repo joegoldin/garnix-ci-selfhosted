@@ -853,6 +853,18 @@ compensating transaction: a failure rolls back already-applied mutations in
 reverse order, and a rollback failure reports both errors instead of hiding the
 original cause. Port ranges are validated before any firewall change.
 
+Deployed guests autostart after a host reboot. microVMs are created
+imperatively, so nothing about them survives a reboot on its own;
+`garnix-guest-autostart.service` (`garnix.local-provisioner.autostartGuests`,
+default `true`) queries the DB on boot for every LIVE deployed server
+(`servers.ready_at IS NOT NULL AND servers.ended_at IS NULL`) and starts its
+`microvm@garnix-<id>.service`. Because the unit is `wantedBy
+multi-user.target`, the first `switch-to-configuration switch` that
+introduces it also starts it immediately — so the very next deploy after a
+reboot revives every guest, no separate manual restart needed. The warm pool
+is deliberately excluded: it refills itself, and force-starting stale pool
+VMs would fight that self-healing.
+
 Host wiring (the fork stays input-free, so you import microvm.nix yourself):
 
 ```nix
@@ -1084,9 +1096,11 @@ Enable pre-warming with `services.garnixServer.provisionServerPool`, then set
 the exact available tiers with `services.garnixServer.serverPool` (for example,
 `{ i2x4 = 1; }`). Each deployment's `machine` must match a pooled tier.
 
-Deferred (documented, not implemented): guest IPv6 (recorded as `""`),
-heartbeat-based reaping (disabled in self-host; deploys tear servers down),
-and pool autostart across host reboots (the pool refills itself).
+Deferred (documented, not implemented): guest IPv6 (recorded as `""`) and
+heartbeat-based reaping (disabled in self-host; deploys tear servers down).
+Deployed-guest autostart across host reboots now exists (see above); pool
+autostart remains intentionally absent — the pool refills itself, and
+force-starting stale pool VMs would fight that self-healing.
 
 ### SSH into a deployed server, and expose extra ports
 
