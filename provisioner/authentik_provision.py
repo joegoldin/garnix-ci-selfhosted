@@ -149,6 +149,9 @@ class Authentik:
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", f"Bearer {self.token}")
         req.add_header("Accept", "application/json")
+        # python-urllib's default UA is on Cloudflare's bot blocklist (error
+        # 1010); identify honestly so a proxied Authentik doesn't 403 us.
+        req.add_header("User-Agent", "authentik-provision (garnix-ci-selfhosted)")
         if data is not None:
             req.add_header("Content-Type", "application/json")
         try:
@@ -173,18 +176,21 @@ class Authentik:
     # --- resolution helpers ------------------------------------------------
     def scope_pm_path(self):
         if self._scope_pm_path is None:
+            last_error = None
             for candidate in ("/propertymappings/provider/scope/",
                               "/propertymappings/scope/"):
                 try:
                     self.get(candidate, {"page_size": 1})
                     self._scope_pm_path = candidate
                     break
-                except RuntimeError:
+                except RuntimeError as e:
+                    last_error = e
                     continue
             if self._scope_pm_path is None:
                 die("could not locate the scope property-mapping API endpoint "
                     "(tried /propertymappings/provider/scope/ and "
-                    "/propertymappings/scope/); check the Authentik version/token")
+                    "/propertymappings/scope/); check the Authentik version/token. "
+                    f"Last error: {last_error}")
         return self._scope_pm_path
 
     def default_flow(self, designation, required):
