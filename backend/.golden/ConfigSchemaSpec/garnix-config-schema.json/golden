@@ -109,7 +109,7 @@
                     "type": "array"
                 },
                 "autoCancelSuperseded": {
-                    "$comment": "Whether a new push (to the same branch, or for a fork PR, the same fork) cancels this repo's older not-yet-finished builds and runs (deploys/actions/etc.) instead of letting them race the new push. Equivalent in effect to cancelSupersededBuilds, but also covers fork PRs and cancels in-flight runs, not just branch-scoped builds; either flag being true is enough to enable cancellation.",
+                    "$comment": "Whether a new push (to the same branch, or for a fork PR, the same fork) cancels this repo's older not-yet-finished builds and runs (deploys/actions/etc.) instead of letting them race the new push.",
                     "type": "boolean"
                 },
                 "builds": {
@@ -167,10 +167,6 @@
                             "type": "array"
                         }
                     ]
-                },
-                "cancelSupersededBuilds": {
-                    "$comment": "Whether a new push to a branch cancels still-running and queued builds of older commits on the same branch. Useful when only the latest commit matters.",
-                    "type": "boolean"
                 },
                 "flakeDir": {
                     "$comment": "The directory containing your flake.nix relative from the repo root (if not in the repo root).",

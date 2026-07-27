@@ -477,10 +477,10 @@ recent versions). `skipped` is non-blocking — treated as success for dependent
 checks and the overall commit — but shown distinctly in the UI (a grey dash)
 so an all-skipped check is never mistaken for a green pass.
 
-**Only the latest commit matters?** Set `cancelSupersededBuilds: true` in
-`garnix.yaml` and a new push to a branch cancels the still-queued/running
-builds of older commits on that branch (PR-from-fork builds are untouched).
-Off by default.
+**Only the latest commit matters?** Set `autoCancelSuperseded: true` in
+`garnix.yaml` and a new push (to the same branch, or for a fork PR, the same
+fork) cancels the repo's still-queued/running builds and runs
+(deploys/actions/etc.) from older commits in that scope. Off by default.
 
 **Restarting and cancelling from the UI:** a commit page shows **Restart
 failed** (re-runs each failed/timed-out build; if the eval itself failed, the

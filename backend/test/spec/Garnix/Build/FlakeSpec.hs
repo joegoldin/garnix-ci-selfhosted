@@ -4,7 +4,7 @@ import Garnix.Build.Flake (supersededCancellationScope)
 import Garnix.DB (SupersededScope (..))
 import Garnix.Prelude
 import Garnix.Types
-import Garnix.YamlConfig (autoCancelSuperseded, cancelSupersededBuilds)
+import Garnix.YamlConfig (autoCancelSuperseded)
 import Test.Hspec
 
 -- | Unit tests for the pure auto-cancel-superseded decision logic. This is
@@ -17,23 +17,13 @@ import Test.Hspec
 spec :: Spec
 spec = do
   describe "supersededCancellationScope" $ do
-    it "never cancels when neither garnix.yaml flag is on, regardless of branch or fork" $ do
+    it "never cancels when the garnix.yaml flag is off, regardless of branch or fork" $ do
       supersededCancellationScope def (Just "main") Nothing `shouldBe` Nothing
       supersededCancellationScope def Nothing (Just (PrFromFork "someone/fork")) `shouldBe` Nothing
       supersededCancellationScope def Nothing Nothing `shouldBe` Nothing
 
-    it "scopes an ordinary (or non-fork PR) branch push by branch when cancelSupersededBuilds is on" $ do
-      let config = def & cancelSupersededBuilds .~ True
-      supersededCancellationScope config (Just "main") Nothing
-        `shouldBe` Just (SupersededBranch "main")
-
     it "scopes an ordinary (or non-fork PR) branch push by branch when autoCancelSuperseded is on" $ do
       let config = def & autoCancelSuperseded .~ True
-      supersededCancellationScope config (Just "main") Nothing
-        `shouldBe` Just (SupersededBranch "main")
-
-    it "is on if EITHER cancelSupersededBuilds or autoCancelSuperseded is set" $ do
-      let config = def & cancelSupersededBuilds .~ True & autoCancelSuperseded .~ True
       supersededCancellationScope config (Just "main") Nothing
         `shouldBe` Just (SupersededBranch "main")
 

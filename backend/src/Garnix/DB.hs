@@ -867,9 +867,8 @@ data SupersededScope
 
 -- | Cancel every still-unfinished build AND run (action/deploy/FOD-check/etc.)
 -- of *older* pushes within the same scope (same repo, different commit; see
--- 'SupersededScope'). Used when a repo's garnix.yaml sets @cancelSupersededBuilds@
--- or the broader @autoCancelSuperseded@ (either flag enables it; see
--- 'Garnix.Build.Flake.supersededCancellationScope' and 'runBuildFlake');
+-- 'SupersededScope'). Used when a repo's garnix.yaml sets @autoCancelSuperseded@
+-- (see 'Garnix.Build.Flake.supersededCancellationScope' and 'runBuildFlake');
 -- in-flight builds notice via 'Garnix.Build.Package.abortOnCancellation',
 -- actions via 'Garnix.Build.Action.abortOnRunCancellation'. This reuses
 -- EXACTLY the same DB-level cancellation the "Cancel build" button uses (see

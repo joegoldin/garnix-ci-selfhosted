@@ -7,8 +7,9 @@
 -- UNUSED BY DESIGN as of the "autoCancelSuperseded moves to garnix.yaml"
 -- rework: this Configure-page-driven column is no longer read or written by
 -- the application. The feature now lives entirely in garnix.yaml (top-level
--- `autoCancelSuperseded`, alongside the pre-existing `cancelSupersededBuilds`)
--- and is decided from the pushed commit's own parsed config — see
+-- `autoCancelSuperseded`; the older, narrower `cancelSupersededBuilds` flag
+-- it briefly coexisted with was later removed) and is decided from the
+-- pushed commit's own parsed config — see
 -- Garnix.Build.Flake.supersededCancellationScope. Left in place (already
 -- deployed; dropping it is unnecessary churn) rather than reverted.
 BEGIN;

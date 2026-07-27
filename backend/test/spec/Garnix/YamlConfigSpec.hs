@@ -734,3 +734,12 @@ spec = do
                 |]
         let actual = (^. autoCancelSuperseded) <$> decodeConfig config
         actual `shouldBe` Right True
+
+      it "still parses a config carrying the removed legacy cancelSupersededBuilds key, ignoring it (unknown-key, autodocodec object decode) and leaving the flag false" $ do
+        let config =
+              cs
+                [i|
+                  cancelSupersededBuilds: true
+                |]
+        let actual = (^. autoCancelSuperseded) <$> decodeConfig config
+        actual `shouldBe` Right False
