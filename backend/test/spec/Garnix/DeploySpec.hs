@@ -1,14 +1,15 @@
 module Garnix.DeploySpec (spec) where
 
+import Autodocodec (toJSONViaCodec)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import Control.Lens
 import Cradle
+import Data.Aeson qualified as Aeson
 import Data.Map ((!))
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
 import Data.Set qualified as Set
 import Data.String.Interpolate
-import Data.String.Interpolate.Util
 import Data.Text qualified as Text
 import Data.Text.IO qualified as T
 import Data.Tuple.Extra ((&&&))
@@ -35,7 +36,7 @@ import Garnix.TestHelpers.ProvisionerMock (Thread (..), provisionerMockState, _g
 import Garnix.TestHelpers.Reporter (withTestReporter_)
 import Garnix.TestHelpers.ServerPool
 import Garnix.Types hiding (context)
-import Garnix.YamlConfig (BackupSchedule (..), BackupSection (..), DeploySection (OnPullRequest), GarnixConfig, ServerSection (ServerSection), serverSection)
+import Garnix.YamlConfig (BackupSchedule (..), BackupSection (..), DeploySection (OnBranch, OnPullRequest), GarnixConfig, ServerLogFile (..), ServerPort (..), ServerPortType (..), ServerSection (..))
 import GitHub.Data.Id qualified as Github.Data
 import GitHub.Data.Webhooks.Events (CheckSuiteEvent (..), EventHasRepo (..), PullRequestEvent, senderOfEvent)
 import GitHub.Data.Webhooks.Payload (HookCheckSuite (..), HookRepository (..), whUserLogin)
@@ -55,47 +56,46 @@ spec = do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          writeMatchingConfig branch (PackageName "default")
-          servers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          liftIO $ length servers `shouldBe` 1
-          forM_ servers $ \server -> server `shouldHaveState` "running"
-          case servers ^.. traversed . readyAt of
-            res | any isNothing res -> liftIO $ assertFailure "expected ready flag to be set in returned serverInfo"
-            _ -> pure ()
+          withMatchingConfig branch (PackageName "default") $ do
+            servers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            liftIO $ length servers `shouldBe` 1
+            forM_ servers $ \server -> server `shouldHaveState` "running"
+            case servers ^.. traversed . readyAt of
+              res | any isNothing res -> liftIO $ assertFailure "expected ready flag to be set in returned serverInfo"
+              _ -> pure ()
 
       it "does not deploy on any failing builds" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
-          writeMatchingConfig branch (PackageName "myHost")
-          _ <- doABuild flakeWithFailingBuilds event repoInfo
-          serverLogs <- getDeployLogsDB
-          liftIO $ serverLogs `shouldBe` []
+          withMatchingConfig branch (PackageName "myHost") $ do
+            _ <- doABuild flakeWithFailingBuilds event repoInfo
+            serverLogs <- getDeployLogsDB
+            liftIO $ serverLogs `shouldBe` []
 
       it "does nothing if the branch doesn't match" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          withContext (defaultEvent & eventBranch ?~ "something-else") $ \_ branch ->
-            writeMatchingConfig branch (PackageName "default")
-          servers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          liftIO $ length servers `shouldBe` 0
+          withMatchingConfig "something-else" (PackageName "default") $ do
+            servers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            liftIO $ length servers `shouldBe` 0
 
       it "does nothing if there are no servers to deploy" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          writeUnmatchingConfig
-          servers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          liftIO $ length servers `shouldBe` 0
+          withUnmatchingConfig $ do
+            servers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            liftIO $ length servers `shouldBe` 0
 
       it "deletes old servers" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          writeMatchingConfig branch (PackageName "default")
-          firstGenServers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          forM_ firstGenServers assertNotExists
+          withMatchingConfig branch (PackageName "default") $ do
+            firstGenServers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            forM_ firstGenServers assertNotExists
 
       context "persistence" $ do
         -- The mock flakes declare github: inputs, so the RepoInfo needs the
@@ -105,112 +105,115 @@ spec = do
               iAuth <- getInstallation $ Github.Data.Id 42
               pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
             flake = flakeWithPersistence True "db" "db" "local"
-            yaml = Just $ getMultiConfig "branch" [PackageName "db"]
+            -- No `servers:` yaml at all now (§3, removed from the schema
+            -- entirely) — deployment/persistence are mocked directly at the
+            -- 'discoverDeploySpecMock' seam below, standing in for BOTH the
+            -- real `nix eval` Garnix.Build.Package would have done
+            -- (persistence capture) and the one Garnix.Hosting.Deploy would
+            -- have done (deploy planning) — see 'withServerSectionAndPersistence'.
+            yaml = Nothing
             branch = "branch"
         context "build" $ around_ Deprecated.addTestSecrets $ do
-          it "build fails when persistence is enabled and name is empty" $ do
-            (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db" "" "local") yaml branch $ \_mockGithubRepo commit -> do
-              withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty =<< mkCommitInfo commit
-                (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
-                liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Just "db"]
-            err error `shouldBe` DeploymentWantsNixosConfigurationsThatDontExist [PackageName "db"]
+          it "fails if persistence is enabled with an empty name" $ do
+            (Left error) <- Deprecated.withMockRepo (cs flake) yaml branch $ \_mockGithubRepo commit -> do
+              withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "")
+                $ withMockReturning #executeDeployPlanMock []
+                $ do
+                  resolve =<< buildFlake mempty =<< mkCommitInfo commit
+            err error `shouldBe` NameIsNotValidSubdomain PersistenceNameSubdomain ""
 
         context "planning" $ around_ Deprecated.addTestSecrets $ do
           it "ignores persistence names if persistence is not enabled" $ do
-            result <- Deprecated.withMockRepo (cs $ flakeWithPersistence False "db" "db" "local") yaml branch $ \_mockGithubRepo commit -> do
-              withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty =<< mkCommitInfo commit
-                (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
-                liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Nothing]
+            result <- Deprecated.withMockRepo (cs flake) yaml branch $ \_mockGithubRepo commit -> do
+              withServerSectionAndPersistence "db" (onBranchSection "db" branch) Nothing
+                $ withMockReturning #executeDeployPlanMock []
+                $ do
+                  resolve =<< buildFlake mempty =<< mkCommitInfo commit
+                  (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
+                  liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Nothing]
             result `shouldBe` Right ()
 
           it "fails if persistence name is not a valid subdomain" $ do
-            (Left error) <- Deprecated.withMockRepo (cs $ flakeWithPersistence True "db/invalid-name" "db" "local") yaml branch $ \_mockGithubRepo commit -> do
-              withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty =<< mkCommitInfo commit
+            (Left error) <- Deprecated.withMockRepo (cs flake) yaml branch $ \_mockGithubRepo commit -> do
+              withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "db/invalid-name")
+                $ withMockReturning #executeDeployPlanMock []
+                $ do
+                  resolve =<< buildFlake mempty =<< mkCommitInfo commit
             err error `shouldBe` NameIsNotValidSubdomain PersistenceNameSubdomain "db/invalid-name"
 
           it "correctly reads and stores the persistence name" $ do
-            result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-              withMockReturning #executeDeployPlanMock [] $ do
-                resolve =<< buildFlake mempty =<< mkCommitInfo commit
-                (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
-                liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Just "db"]
+            result <- Deprecated.withMockRepo (cs flake) yaml branch $ \_mockGithubRepo commit -> do
+              withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "db")
+                $ withMockReturning #executeDeployPlanMock []
+                $ do
+                  resolve =<< buildFlake mempty =<< mkCommitInfo commit
+                  (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
+                  liftIO $ plan1 ^.. #toSpinUp . traverse . #build . persistenceName `shouldBe` [Just "db"]
             result `shouldBe` Right ()
 
           it "plans to redeploy to the same server" $ do
-            result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
-              withMockReturning #executeDeployPlanMock [] $ do
-                now <- liftIO getCurrentTime
-                [existingBuild] <- createBuildsFor "owner" "repo" "branch" "prevcommit" [("db", Just "db")]
-                void $ addTestServer $ \server ->
-                  server
-                    & configurationBuildId .~ (existingBuild ^. id)
-                    & readyAt ?~ now
-                    & endedAt .~ Nothing
+            result <- Deprecated.withMockRepo (cs flake) yaml branch $ \_mockGithubRepo commit -> do
+              withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "db")
+                $ withMockReturning #executeDeployPlanMock []
+                $ do
+                  now <- liftIO getCurrentTime
+                  [existingBuild] <- createBuildsFor "owner" "repo" "branch" "prevcommit" [("db", Just "db")]
+                  void $ addTestServer $ \server ->
+                    server
+                      & configurationBuildId .~ (existingBuild ^. id)
+                      & readyAt ?~ now
+                      & endedAt .~ Nothing
 
-                resolve =<< buildFlake mempty =<< mkCommitInfo commit
+                  resolve =<< buildFlake mempty =<< mkCommitInfo commit
 
-                (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
+                  (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
 
-                liftIO $ length (plan1 ^. #toSpinUp) `shouldBe` 0
-                liftIO $ length (plan1 ^. #toSpinDown) `shouldBe` 0
-                liftIO $ length (plan1 ^. #toRedeploy) `shouldBe` 1
+                  liftIO $ length (plan1 ^. #toSpinUp) `shouldBe` 0
+                  liftIO $ length (plan1 ^. #toSpinDown) `shouldBe` 0
+                  liftIO $ length (plan1 ^. #toRedeploy) `shouldBe` 1
             result `shouldBe` Right ()
 
           it "keeps runtime configuration in a persistent redeploy plan" $ do
-            let runtimeYaml =
-                  Just
-                    $ cs
-                      [i|
-servers:
-  - configuration: db
-    deployment:
-      type: on-branch
-      branch: branch
-    authentik: default
-    exposeSSH: true
-    authorizeDeployerGithubKeys: true
-    authorizedSSHKeys:
-      - ssh-ed25519 AAAATEST explicit@test
-    ports:
-      - name: web
-        port: 8080
-        type: http
-      - name: database
-        port: 5432
-        type: tcp
-    domains:
-      - db.example.test
-    applicationLog:
-      enable: true
-      path: /var/log/database.log
-|]
-            result <- Deprecated.withMockRepo flake runtimeYaml branch $ \_mockGithubRepo commit -> do
-              withMockReturning #executeDeployPlanMock [] $ do
-                now <- liftIO getCurrentTime
-                [existingBuild] <- createBuildsFor "owner" "repo" "branch" "prevcommit" [("db", Just "db")]
-                existingServer <- addTestServer $ \server ->
-                  server
-                    & configurationBuildId .~ (existingBuild ^. id)
-                    & readyAt ?~ now
-                    & endedAt .~ Nothing
-                DB.setServerDomains (existingServer ^. id) ["db.example.test"]
+            let runtimeSection =
+                  ServerSection
+                    "db"
+                    (OnBranch branch def False)
+                    (Just "default")
+                    True -- exposeSSH
+                    True -- authorizeDeployerGithubKeys
+                    ["ssh-ed25519 AAAATEST explicit@test"]
+                    [ ServerPort 8080 "web" HttpPort,
+                      ServerPort 5432 "database" TcpPort
+                    ]
+                    ["db.example.test"]
+                    (Just (ServerLogFile "/var/log/database.log"))
+                    Nothing
+            result <- Deprecated.withMockRepo (cs flake) yaml branch $ \_mockGithubRepo commit -> do
+              withServerSectionAndPersistence "db" runtimeSection (Just "db")
+                $ withMockReturning #executeDeployPlanMock []
+                $ do
+                  now <- liftIO getCurrentTime
+                  [existingBuild] <- createBuildsFor "owner" "repo" "branch" "prevcommit" [("db", Just "db")]
+                  existingServer <- addTestServer $ \server ->
+                    server
+                      & configurationBuildId .~ (existingBuild ^. id)
+                      & readyAt ?~ now
+                      & endedAt .~ Nothing
+                  DB.setServerDomains (existingServer ^. id) ["db.example.test"]
 
-                resolve =<< buildFlake mempty =<< mkCommitInfo commit
+                  resolve =<< buildFlake mempty =<< mkCommitInfo commit
 
-                (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
-                let [(_, wanted)] = plan1 ^. #toRedeploy
-                liftIO $ do
-                  wanted ^. #useDefaultAuthentik `shouldBe` True
-                  wanted ^. #exposeSSH `shouldBe` True
-                  wanted ^. #authorizeDeployerGithubKeys `shouldBe` True
-                  wanted ^. #authorizedSSHKeys `shouldBe` ["ssh-ed25519 AAAATEST explicit@test"]
-                  wanted ^. #httpPorts `shouldBe` [("web", 8080)]
-                  wanted ^. #tcpPorts `shouldBe` [("database", 5432)]
-                  wanted ^. #domains `shouldBe` ["db.example.test"]
-                  wanted ^. #logFile `shouldBe` Just "/var/log/database.log"
+                  (_, _, plan1, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
+                  let [(_, wanted)] = plan1 ^. #toRedeploy
+                  liftIO $ do
+                    wanted ^. #useDefaultAuthentik `shouldBe` True
+                    wanted ^. #exposeSSH `shouldBe` True
+                    wanted ^. #authorizeDeployerGithubKeys `shouldBe` True
+                    wanted ^. #authorizedSSHKeys `shouldBe` ["ssh-ed25519 AAAATEST explicit@test"]
+                    wanted ^. #httpPorts `shouldBe` [("web", 8080)]
+                    wanted ^. #tcpPorts `shouldBe` [("database", 5432)]
+                    wanted ^. #domains `shouldBe` ["db.example.test"]
+                    wanted ^. #logFile `shouldBe` Just "/var/log/database.log"
             result `shouldBe` Right ()
 
       it "does not mark server as ready from a failed deployment" $ do
@@ -219,96 +222,95 @@ servers:
         let sort' = sortOn (getHashId . getServerId . _serverInfoId)
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild (makeMultiFlake packages) event repoInfo
-          writeMultiConfig branch packages
-          void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          firstGenServers <- sort' <$> getAllDbServers
-          liftIO $ length firstGenServers `shouldBe` 2
+          withMultiConfig branch packages $ do
+            void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            firstGenServers <- sort' <$> getAllDbServers
+            liftIO $ length firstGenServers `shouldBe` 2
 
-          sync <- liftIO newEmptyMVar
-          void
-            $ try
-            $ withMock #startServerMock (startServerAndFailOnAllExcept sync "first")
-            $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          secondGenServers <- (\\ firstGenServers) . sort' <$> getAllDbServers
+            sync <- liftIO newEmptyMVar
+            void
+              $ try
+              $ withMock #startServerMock (startServerAndFailOnAllExcept sync "first")
+              $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            secondGenServers <- (\\ firstGenServers) . sort' <$> getAllDbServers
 
-          liftIO $ fmap (^. endedAt) firstGenServers `shouldBe` [Nothing, Nothing]
-          liftIO $ length secondGenServers `shouldBe` 1
-          liftIO $ fmap (^. readyAt) secondGenServers `shouldBe` [Nothing]
+            liftIO $ fmap (^. endedAt) firstGenServers `shouldBe` [Nothing, Nothing]
+            liftIO $ length secondGenServers `shouldBe` 1
+            liftIO $ fmap (^. readyAt) secondGenServers `shouldBe` [Nothing]
 
       it "deletes servers from previous deploys that did not successfully initialize" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          writeMatchingConfig branch (PackageName "default")
-          firstGenServers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          liftIO $ length firstGenServers `shouldBe` 1
-          -- Simulate a previous deploy that never initialized: clear the
-          -- readiness the pool set. (Servers now provision on demand, so the
-          -- old waitTillServerIsInitializedMock=False no longer models this —
-          -- it just makes provisionOne throw.) getRunningServersOf filters on
-          -- ended_at only, so deploy-2 still picks this up and must reap it.
-          void $ DB.pgExec [pgSQL| UPDATE servers SET ready_at = NULL |]
-          void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          forM_ firstGenServers $ \server ->
-            assertNotExists server
+          withMatchingConfig branch (PackageName "default") $ do
+            firstGenServers <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            liftIO $ length firstGenServers `shouldBe` 1
+            -- Simulate a previous deploy that never initialized: clear the
+            -- readiness the pool set. (Servers now provision on demand, so the
+            -- old waitTillServerIsInitializedMock=False no longer models this —
+            -- it just makes provisionOne throw.) getRunningServersOf filters on
+            -- ended_at only, so deploy-2 still picks this up and must reap it.
+            void $ DB.pgExec [pgSQL| UPDATE servers SET ready_at = NULL |]
+            void $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            forM_ firstGenServers $ \server ->
+              assertNotExists server
 
       it "does not delete servers from a different branch" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo1 <- doABuild simpleFlake event repoInfo
-          writeMatchingConfig branch (PackageName "default")
-          firstGenServers <- rolloutNewServerVersion mempty commitInfo1 (BranchDeployment branch)
-          liftIO $ length firstGenServers `shouldBe` 1
-          let event2 = defaultEvent & eventBranch ?~ "some-other-branch"
-          withContext event2 $ \repoInfo branch -> do
-            writeUnmatchingConfig
-            commitInfo2 <- doABuild (simpleFlake' "Some other description") event2 repoInfo
-            writeMatchingConfig branch (PackageName "default")
-            secondGenServers <- rolloutNewServerVersion mempty commitInfo2 (BranchDeployment branch)
-            liftIO $ length secondGenServers `shouldBe` 1
-            forM_ firstGenServers $ \server ->
-              server `shouldHaveState` "running"
+          withMatchingConfig branch (PackageName "default") $ do
+            firstGenServers <- rolloutNewServerVersion mempty commitInfo1 (BranchDeployment branch)
+            liftIO $ length firstGenServers `shouldBe` 1
+            let event2 = defaultEvent & eventBranch ?~ "some-other-branch"
+            withContext event2 $ \repoInfo branch -> do
+              commitInfo2 <- doABuild (simpleFlake' "Some other description") event2 repoInfo
+              withMatchingConfig branch (PackageName "default") $ do
+                secondGenServers <- rolloutNewServerVersion mempty commitInfo2 (BranchDeployment branch)
+                liftIO $ length secondGenServers `shouldBe` 1
+                forM_ firstGenServers $ \server ->
+                  server `shouldHaveState` "running"
 
       it "deploys the repo key to /var/garnix/keys/repo-key (only root readable)" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          writeMatchingConfig branch (PackageName "default")
-          [server] <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          (ip, sshArgs) <- sshArgsFor server
-          StdoutRaw result <-
-            run $ cmd "ssh"
-              & addArgs
-                (sshArgs <> ["root@" <> cs ip, "cat /var/garnix/keys/repo-key"])
+          withMatchingConfig branch (PackageName "default") $ do
+            [server] <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            (ip, sshArgs) <- sshArgsFor server
+            StdoutRaw result <-
+              run $ cmd "ssh"
+                & addArgs
+                  (sshArgs <> ["root@" <> cs ip, "cat /var/garnix/keys/repo-key"])
 
-          liftIO $ cs result `shouldStartWith` "AGE-SECRET-KEY"
+            liftIO $ cs result `shouldStartWith` "AGE-SECRET-KEY"
 
       it "deploys the terminal CA public key to the durable guest path" $ do
         let event = defaultEvent
         runTestM $ withContext event $ \repoInfo branch -> do
           commitInfo <- doABuild simpleFlake event repoInfo
-          writeMatchingConfig branch (PackageName "default")
-          [server] <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-          terminalCaKey <- view #sshTerminalCaKey
-          expected <-
-            liftIO (deriveSshPublicKey terminalCaKey)
-              >>= either (error . cs) pure
-          (ip, sshArgs) <- sshArgsFor server
-          StdoutRaw actual <-
-            run $ cmd "ssh"
-              & addArgs
-                (sshArgs <> ["root@" <> cs ip, "cat /var/lib/garnix/terminal-ca.pub"])
+          withMatchingConfig branch (PackageName "default") $ do
+            [server] <- rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+            terminalCaKey <- view #sshTerminalCaKey
+            expected <-
+              liftIO (deriveSshPublicKey terminalCaKey)
+                >>= either (error . cs) pure
+            (ip, sshArgs) <- sshArgsFor server
+            StdoutRaw actual <-
+              run $ cmd "ssh"
+                & addArgs
+                  (sshArgs <> ["root@" <> cs ip, "cat /var/lib/garnix/terminal-ca.pub"])
 
-          liftIO $ Text.strip (cs actual) `shouldBe` expected
+            liftIO $ Text.strip (cs actual) `shouldBe` expected
 
       context "stopUnusedServers" $ do
         let mkCommitInfo c = do
               iAuth <- getInstallation $ Github.Data.Id 42
               pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
             flake = flakeWithPersistence True "db" "db" "local"
-            yaml = Just $ onPullRequestConfig (PackageName "db")
+            yaml = Nothing
             branch = "branch"
-            runPrEvent ci = do
+            runPrEvent ci = withServerSection "db" (onPullRequestSection "db") $ do
               resolve =<< buildFlake mempty ci
               void $ Build.Checkout.withCheckout ci $ rolloutNewServerVersion mempty ci (GhPrDeployment 1)
 
@@ -376,26 +378,26 @@ servers:
           result `shouldBe` Right ()
 
         it "does not stop branch servers" $ Deprecated.addTestSecrets $ do
-          let branchYaml = Just $ getMultiConfig branch [PackageName "db"]
-          result <- Deprecated.withMockRepo flake branchYaml branch $ \_mockGithubRepo commit -> do
+          result <- Deprecated.withMockRepo flake Nothing branch $ \_mockGithubRepo commit -> do
             ci <- mkCommitInfo commit
 
-            resolve =<< buildFlake mempty ci
-            before <- fromSingleton <$> getAllDbServers
-            void
-              $ DB.pgExec
-                [pgSQL|
-                  UPDATE servers
-                    SET ready_at = (ready_at - interval '13 hours')
-                    WHERE servers.id = ${before ^. id}
-                |]
-            stopUnusedServers
-            after <- fromSingleton <$> getAllDbServers
+            withServerSection "db" (onBranchSection "db" branch) $ do
+              resolve =<< buildFlake mempty ci
+              before <- fromSingleton <$> getAllDbServers
+              void
+                $ DB.pgExec
+                  [pgSQL|
+                    UPDATE servers
+                      SET ready_at = (ready_at - interval '13 hours')
+                      WHERE servers.id = ${before ^. id}
+                  |]
+              stopUnusedServers
+              after <- fromSingleton <$> getAllDbServers
 
-            liftIO $ do
-              before ^. endedAt `shouldBe` Nothing
-              after ^. endedAt `shouldBe` Nothing
-              before ^. id `shouldBe` after ^. id
+              liftIO $ do
+                before ^. endedAt `shouldBe` Nothing
+                after ^. endedAt `shouldBe` Nothing
+                before ^. id `shouldBe` after ^. id
 
           result `shouldBe` Right ()
 
@@ -405,29 +407,29 @@ servers:
           runTestM $ withContext event $ \repoInfo branch -> do
             withMock #setupServerMock (\_ -> throw $ ProvisioningError "test error") $ do
               commitInfo <- doABuild simpleFlake event repoInfo
-              writeMatchingConfig branch (PackageName "default")
-              Left result <- try $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
-              liftIO $ err result `shouldBe` ProvisioningError "test error"
-              [(_id, deployLogs)] <- getDeployLogsDB
-              liftIO $ deployLogs `shouldBe` "Error provisioning server: test error\n"
-              [failedServer] <- getAllDbServers
-              liftIO $ failedServer ^. endedAt `shouldSatisfy` isJust
+              withMatchingConfig branch (PackageName "default") $ do
+                Left result <- try $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branch)
+                liftIO $ err result `shouldBe` ProvisioningError "test error"
+                [(_id, deployLogs)] <- getDeployLogsDB
+                liftIO $ deployLogs `shouldBe` "Error provisioning server: test error\n"
+                [failedServer] <- getAllDbServers
+                liftIO $ failedServer ^. endedAt `shouldSatisfy` isJust
 
         it "reports failed deployments to github" $ do
           let event = defaultEvent
           runTestM $ withContext event $ \repoInfo branch -> do
             withMock #setupServerMock (\_ -> throw $ ProvisioningError "test error") $ do
               commitInfo <- doABuild simpleFlake event repoInfo
-              writeMatchingConfig branch (PackageName "default")
-              result <- withTestReporter_ $ \reporter ->
-                void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
-              let (Just testReport) = result ^? ix "deployment default"
-              (testReport ^. #success) `shouldBeM` Just False
-              -- `shouldContain`, not `shouldStartWith`: the deploy report now
-              -- opens with the live provisioning-progress lines ("Provisioning …
-              -- on a … guest", "Guest … ready — activating configuration…") that
-              -- the WAITING-ON tree shows, so the failure message no longer leads.
-              liftIO $ testReport ^. #logs . to cs `shouldContain` "Error provisioning server: test error"
+              withMatchingConfig branch (PackageName "default") $ do
+                result <- withTestReporter_ $ \reporter ->
+                  void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
+                let (Just testReport) = result ^? ix "deployment default"
+                (testReport ^. #success) `shouldBeM` Just False
+                -- `shouldContain`, not `shouldStartWith`: the deploy report now
+                -- opens with the live provisioning-progress lines ("Provisioning …
+                -- on a … guest", "Guest … ready — activating configuration…") that
+                -- the WAITING-ON tree shows, so the failure message no longer leads.
+                liftIO $ testReport ^. #logs . to cs `shouldContain` "Error provisioning server: test error"
 
         it "reports failed activations to github" $ do
           let event = defaultEvent
@@ -458,38 +460,38 @@ servers:
           runTestM $ withContext event $ \repoInfo branch -> do
             withMock #setupServerMock (\_ -> throw expectedError) $ do
               commitInfo <- doABuild simpleFlake event repoInfo
-              writeMatchingConfig branch (PackageName "default")
-              result <- withTestReporter_ $ \reporter -> do
-                void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
-              let (Just testReport) = result ^? ix "deployment default"
-              (testReport ^. #success) `shouldBeM` Just False
-              -- `shouldContain`, not `shouldStartWith`: the report now opens with
-              -- the live provisioning-progress prefix before the activation error.
-              liftIO $ testReport ^. #logs . to cs `shouldContain` "Failed to activate server\nYou may be able to debug this by sshing into 12.34.56.78 or 0123:4567:89ab:cdef::/64\nStderr:\nsome stderr\n"
+              withMatchingConfig branch (PackageName "default") $ do
+                result <- withTestReporter_ $ \reporter -> do
+                  void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
+                let (Just testReport) = result ^? ix "deployment default"
+                (testReport ^. #success) `shouldBeM` Just False
+                -- `shouldContain`, not `shouldStartWith`: the report now opens with
+                -- the live provisioning-progress prefix before the activation error.
+                liftIO $ testReport ^. #logs . to cs `shouldContain` "Failed to activate server\nYou may be able to debug this by sshing into 12.34.56.78 or 0123:4567:89ab:cdef::/64\nStderr:\nsome stderr\n"
 
         it "reports successful deployments to github" $ do
           let event = defaultEvent
           runTestM $ withContext event $ \repoInfo branch -> do
             commitInfo <- doABuild simpleFlake event repoInfo
-            writeMatchingConfig branch (PackageName "default")
-            reports <- withTestReporter_ $ \reporter ->
-              void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
-            let logs' = cs $ (reports ! "deployment default") ^. #logs
-            liftIO $ do
-              logs' `shouldContain` "Server has been successfully deployed to: https://default.branch.repo.owner.garnix.me"
-              logs' `shouldContain` "starting the following units:"
+            withMatchingConfig branch (PackageName "default") $ do
+              reports <- withTestReporter_ $ \reporter ->
+                void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
+              let logs' = cs $ (reports ! "deployment default") ^. #logs
+              liftIO $ do
+                logs' `shouldContain` "Server has been successfully deployed to: https://default.branch.repo.owner.garnix.me"
+                logs' `shouldContain` "starting the following units:"
 
         it "includes activate script output on failures" $ do
           let event = defaultEvent
           runTestM $ withContext event $ \repoInfo branch -> do
             commitInfo <- doABuild flakeWithFailingActivation event repoInfo
-            writeMatchingConfig branch (PackageName "default")
-            reports <- withTestReporter_ $ \reporter -> do
-              void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
-            let logs' = cs $ (reports Map.! "deployment default") ^. #logs
-            liftIO $ do
-              logs' `shouldContain` "Failed to activate server"
-              logs' `shouldContain` "activationFailure: command not found"
+            withMatchingConfig branch (PackageName "default") $ do
+              reports <- withTestReporter_ $ \reporter -> do
+                void $ try $ rolloutNewServerVersion reporter commitInfo (BranchDeployment branch)
+              let logs' = cs $ (reports Map.! "deployment default") ^. #logs
+              liftIO $ do
+                logs' `shouldContain` "Failed to activate server"
+                logs' `shouldContain` "activationFailure: command not found"
 
   -- These scenarios perform multiple real guest activations against one
   -- persistent VM. Give each its own pool instead of the randomized describe's
@@ -507,44 +509,45 @@ servers:
             iAuth <- getInstallation $ Github.Data.Id 42
             pure $ CommitInfo "owner" (RepoIsPublic True) (RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") "owner" "repo") (Just "branch") Nothing c
           flake = flakeWithPersistence True "db" "db" "local"
-          yaml = Just $ getMultiConfig "branch" [PackageName "db"]
+          yaml = Nothing
           branch = "branch"
           sshServer serverInfo args = do
             (ip, sshArgs) <- sshArgsFor serverInfo
             StdoutRaw stdout <- run $ cmd "ssh" & addArgs (sshArgs <> (("garnix@" <> ip) : args))
             pure stdout
       result <- Deprecated.withMockRepo flake yaml branch $ \mockGithubRepo commit -> do
-        resolve =<< buildFlake mempty =<< mkCommitInfo commit
-        firstGenServer <- fromSingleton <$> getAllDbServers
+        withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "db") $ do
+          resolve =<< buildFlake mempty =<< mkCommitInfo commit
+          firstGenServer <- fromSingleton <$> getAllDbServers
 
-        terminalCaKey <- view #sshTerminalCaKey
-        expectedTerminalCa <-
-          liftIO (deriveSshPublicKey terminalCaKey)
-            >>= either (error . cs) pure
+          terminalCaKey <- view #sshTerminalCaKey
+          expectedTerminalCa <-
+            liftIO (deriveSshPublicKey terminalCaKey)
+              >>= either (error . cs) pure
 
-        void $ sshServer firstGenServer ["sudo", "touch", "/hello"]
-        void
-          $ sshServer
-            firstGenServer
-            ["sudo", "truncate", "-s", "0", "/var/lib/garnix/terminal-ca.pub"]
+          void $ sshServer firstGenServer ["sudo", "touch", "/hello"]
+          void
+            $ sshServer
+              firstGenServer
+              ["sudo", "truncate", "-s", "0", "/var/lib/garnix/terminal-ca.pub"]
 
-        liftIO $ writeFile (mockGithubRepo </> "flake.nix") (cs $ flakeWithPersistence True "db" "db" "second")
-        commit2 <- commitAll mockGithubRepo
-        resolve =<< buildFlake mempty =<< mkCommitInfo commit2
-        secondGenServers <- getAllDbServers
+          liftIO $ writeFile (mockGithubRepo </> "flake.nix") (cs $ flakeWithPersistence True "db" "db" "second")
+          commit2 <- commitAll mockGithubRepo
+          resolve =<< buildFlake mempty =<< mkCommitInfo commit2
+          secondGenServers <- getAllDbServers
 
-        liftIO $ length secondGenServers `shouldBe` 1
-        let secondGen = fromSingleton secondGenServers
+          liftIO $ length secondGenServers `shouldBe` 1
+          let secondGen = fromSingleton secondGenServers
 
-        stdout <- sshServer secondGen ["sudo", "ls", "/hello"]
-        terminalCa <- sshServer secondGen ["cat", "/var/lib/garnix/terminal-ca.pub"]
+          stdout <- sshServer secondGen ["sudo", "ls", "/hello"]
+          terminalCa <- sshServer secondGen ["cat", "/var/lib/garnix/terminal-ca.pub"]
 
-        liftIO $ do
-          firstGenServer ^. configurationBuildId `shouldNotBe` secondGen ^. configurationBuildId
-          firstGenServer ^. id `shouldBe` secondGen ^. id
-          firstGenServer ^. ipv4Addr `shouldBe` secondGen ^. ipv4Addr
-          stdout `shouldBe` "/hello\n"
-          Text.strip (cs terminalCa) `shouldBe` expectedTerminalCa
+          liftIO $ do
+            firstGenServer ^. configurationBuildId `shouldNotBe` secondGen ^. configurationBuildId
+            firstGenServer ^. id `shouldBe` secondGen ^. id
+            firstGenServer ^. ipv4Addr `shouldBe` secondGen ^. ipv4Addr
+            stdout `shouldBe` "/hello\n"
+            Text.strip (cs terminalCa) `shouldBe` expectedTerminalCa
 
       result `shouldBe` Right ()
 
@@ -565,7 +568,7 @@ servers:
           -- flakeWithPersistence (not simpleFlake): its guest authorizes the
           -- garnix user, which is the identity the backup pipeline SSHes as.
           flake = flakeWithPersistence True "db" "db" "local"
-          yaml = Just $ getMultiConfig "branch" [PackageName "db"]
+          yaml = Nothing
           branch = "branch"
           -- One argv element, so the guest's shell parses the redirect rather
           -- than the local one.
@@ -582,7 +585,7 @@ servers:
                 _backupSectionPreRestoreCommand = Nothing,
                 _backupSectionPostRestoreCommand = Nothing
               }
-      result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> do
+      result <- Deprecated.withMockRepo flake yaml branch $ \_mockGithubRepo commit -> withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "db") $ do
         resolve =<< buildFlake mempty =<< mkCommitInfo commit
         server <- fromSingleton <$> getAllDbServers
         void
@@ -646,10 +649,10 @@ servers:
     $ it "reports redeployment of a persistent server"
     $ do
       let event = defaultEvent
-      runTestM $ withContext event $ \repoInfo branch -> do
-        let flake = flakeWithPersistenceAndConfig True "db" "db" "local"
+      runTestM $ withContext event $ \repoInfo branch -> withServerSectionAndPersistence "db" (onBranchSection "db" branch) (Just "db") $ do
+        let flake = flakeWithPersistence True "db" "db" "local"
         _ <- doABuild flake event repoInfo
-        let flake2 = flakeWithPersistenceAndConfig True "db" "db" "local2"
+        let flake2 = flakeWithPersistence True "db" "db" "local2"
         commitInfo <- doABuild flake2 event repoInfo
         let builds = DB.getBuildsByCommit (repoInfo ^. ghRepoOwner) (repoInfo ^. ghRepoName) (commitInfo ^. commit)
         build <- fromSingleton . filter (\p -> p ^. packageType == TypeNixosConfiguration) <$> builds
@@ -683,37 +686,26 @@ servers:
 
     it "allows specifying a primary domain deployment" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        let garnixYaml =
-              unindent
-                [i|
-                  servers:
-                    - configuration: foo
-                      deployment:
-                        type: on-branch
-                        branch: #{getBranch branchName}
-                        isPrimary: true
-                    - configuration: bar
-                      deployment:
-                        type: on-branch
-                        branch: #{getBranch branchName}
-                |]
-        dir <- view #workingDir
-        liftIO $ T.writeFile (dir </> "garnix.yaml") $ cs garnixYaml
-        void $ createBuildsFor user name branchName commit [("foo", Nothing), ("bar", Nothing)]
-        iAuth <- getInstallation $ Github.Data.Id 42
-        let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") user name
-        let commitInfo = CommitInfo (getGhRepoOwner user) (RepoIsPublic True) repoInfo (Just branchName) Nothing commit
-        void
-          $ withPrivateNixXdgCache
-          $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branchName)
-        (_, _, plan, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
-        Set.fromList
-          ( plan
-              ^.. #toSpinUp
-                . each
-                . to ((^. #build . package) &&& (^. #domainIsPrimary))
-          )
-          `shouldBeM` Set.fromList [("foo", True), ("bar", False)]
+        withServerSections
+          [ ("foo", ServerSection "foo" (OnBranch branchName def True) Nothing False False [] [] [] Nothing Nothing),
+            ("bar", onBranchSection "bar" branchName)
+          ]
+          $ do
+            void $ createBuildsFor user name branchName commit [("foo", Nothing), ("bar", Nothing)]
+            iAuth <- getInstallation $ Github.Data.Id 42
+            let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") user name
+            let commitInfo = CommitInfo (getGhRepoOwner user) (RepoIsPublic True) repoInfo (Just branchName) Nothing commit
+            void
+              $ withPrivateNixXdgCache
+              $ rolloutNewServerVersion mempty commitInfo (BranchDeployment branchName)
+            (_, _, plan, _) <- fromSingleton <$> getMockCalls #executeDeployPlanMock
+            Set.fromList
+              ( plan
+                  ^.. #toSpinUp
+                    . each
+                    . to ((^. #build . package) &&& (^. #domainIsPrimary))
+              )
+              `shouldBeM` Set.fromList [("foo", True), ("bar", False)]
 
   let wrap =
         inM
@@ -739,241 +731,241 @@ servers:
 
     it "deploys servers for a PR with `on-pull-request`" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & uploadedToCache ?~ True
+          Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
 
     it "does not deploy when on-pull-request is not set" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ []
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [])
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withUnmatchingConfig $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & uploadedToCache ?~ True
+          Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [])
 
-    it "does not deploy on wrong package type" $ do
+    -- Under nix-native discovery, "wanted" is derived FROM built
+    -- nixosConfigurations' own deploySpecs rather than an independent
+    -- declaration that could name a package no build matches — so there is
+    -- no longer a "declared but never built" error case here (only a
+    -- manual single-deployment redeploy target naming a stale package can
+    -- still hit 'DeploymentWantsNixosConfigurationsThatDontExist', covered
+    -- in the "persistence" context above). With no TypeNixosConfiguration
+    -- build named "test-nix-config" at all, the plan is simply empty.
+    it "does not deploy when no nixosConfiguration build exists for the PR" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "Build starting"
-            & packageType .~ TypeOverall
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-conoofig"
-            & packageType .~ TypePackage
-            & uploadedToCache ?~ True
-        result <- try $ Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
-        liftIO $ first err result `shouldBe` Left (DeploymentWantsNixosConfigurationsThatDontExist [PackageName "test-nix-config"])
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "Build starting"
+              & packageType .~ TypeOverall
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-conoofig"
+              & packageType .~ TypePackage
+              & uploadedToCache ?~ True
+          Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [])
 
     it "works if there are other (non-nixosConfig) packages with the same name" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & packageType .~ TypePackage
-            & uploadedToCache ?~ True
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & packageType .~ TypeNixosConfiguration
-            & uploadedToCache ?~ True
-        Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & packageType .~ TypePackage
+              & uploadedToCache ?~ True
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & packageType .~ TypeNixosConfiguration
+              & uploadedToCache ?~ True
+          Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
 
     it "does not deploy from external forks" $ do
       withMockReturning #executeDeployPlanMock [] $ do
         p <- emptyPromise
         withMockReturning #buildFlakeMock p $ do
-          commit <-
-            Deprecated.writeMockRemote "test-branch"
-              $ def
-              & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
+          commit <- Deprecated.writeMockRemote "test-branch" def
+          withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+            let prEvent =
+                  mkPullRequestEvent commit "test-branch" "other-owner/repo-fork" "owner/repo" testInstallationId
+                    & number .~ 42
+            _ <- testBuild $ \build ->
+              build
+                & fromPrEvent prEvent
+                & package .~ "test-nix-config"
+                & uploadedToCache ?~ True
+            ghWebhookPullRequest prEvent >>= resolve
+            calls <- getMockCalls #executeDeployPlanMock
+            liftIO $ null calls `shouldBe` True
+
+    it "does not deploy invalid subdomains" $ do
+      withMockReturning #executeDeployPlanMock [] $ do
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "foo/bar" (onPullRequestSection "foo/bar") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "foo/bar"
+              & uploadedToCache ?~ True
+          result <- try $ Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
+          liftIO $ first err result `shouldBe` Left (NameIsNotValidSubdomain PackageNameSubdomain "foo/bar")
+
+    it "does deploy when (unused) branch name is not a valid subdomain" $ do
+      withMockReturning #executeDeployPlanMock [] $ do
+        commit <- Deprecated.writeMockRemote "sh/some-feature" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
           let prEvent =
-                mkPullRequestEvent commit "test-branch" "other-owner/repo-fork" "owner/repo" testInstallationId
+                mkPullRequestEvent commit "sh/some-feature" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
                   & number .~ 42
+          _ <- testOverallBuild prEvent
           _ <- testBuild $ \build ->
             build
               & fromPrEvent prEvent
               & package .~ "test-nix-config"
               & uploadedToCache ?~ True
           ghWebhookPullRequest prEvent >>= resolve
-          calls <- getMockCalls #executeDeployPlanMock
-          liftIO $ null calls `shouldBe` True
-
-    it "does not deploy invalid subdomains" $ do
-      withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "foo/bar" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "foo/bar"
-            & uploadedToCache ?~ True
-        result <- try $ Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
-        liftIO $ first err result `shouldBe` Left (NameIsNotValidSubdomain PackageNameSubdomain "foo/bar")
-
-    it "does deploy when (unused) branch name is not a valid subdomain" $ do
-      withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "sh/some-feature"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        let prEvent =
-              mkPullRequestEvent commit "sh/some-feature" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
-                & number .~ 42
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent prEvent
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        ghWebhookPullRequest prEvent >>= resolve
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
 
     it "deploys multiple servers" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "pkg-a" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing, ServerSection "pkg-b" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        let prEvent =
-              mkPullRequestEvent commit "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
-                & number .~ 42
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent prEvent
-            & package .~ "pkg-a"
-            & uploadedToCache ?~ True
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent prEvent
-            & package .~ "pkg-b"
-            & uploadedToCache ?~ True
-        ghWebhookPullRequest prEvent >>= resolve
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "pkg-a"), (commit, "pkg-b")])
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSections
+          [ ("pkg-a", onPullRequestSection "pkg-a"),
+            ("pkg-b", onPullRequestSection "pkg-b")
+          ]
+          $ do
+            let prEvent =
+                  mkPullRequestEvent commit "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
+                    & number .~ 42
+            _ <- testOverallBuild prEvent
+            _ <- testBuild $ \build ->
+              build
+                & fromPrEvent prEvent
+                & package .~ "pkg-a"
+                & uploadedToCache ?~ True
+            _ <- testBuild $ \build ->
+              build
+                & fromPrEvent prEvent
+                & package .~ "pkg-b"
+                & uploadedToCache ?~ True
+            ghWebhookPullRequest prEvent >>= resolve
+            [plan] <- getMockCalls #executeDeployPlanMock
+            plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "pkg-a"), (commit, "pkg-b")])
 
     it "does not deploy any servers if a configuration fails" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        _build <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & status ?~ Failure
-            & uploadedToCache ?~ True
-        promise <- Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42
-        result <- try $ resolve promise
-        liftIO $ first err result `shouldBe` Left (OtherError "test-nix-config failed")
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          _build <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & status ?~ Failure
+              & uploadedToCache ?~ True
+          promise <- Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42
+          result <- try $ resolve promise
+          liftIO $ first err result `shouldBe` Left (OtherError "test-nix-config failed")
 
     it "does not deploy any servers if a configuration times out" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        _build <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & status ?~ Timeout
-            & uploadedToCache ?~ True
-        promise <- Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42
-        result <- try $ resolve promise
-        liftIO $ first err result `shouldBe` Left (OtherError "test-nix-config timed out")
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          _build <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & status ?~ Timeout
+              & uploadedToCache ?~ True
+          promise <- Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42
+          result <- try $ resolve promise
+          liftIO $ first err result `shouldBe` Left (OtherError "test-nix-config timed out")
 
     it "shuts down old servers from the same pull request" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commitA <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        let prEvent =
-              mkPullRequestEvent commitA "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
-                & number .~ 42
-        buildA <- testBuild $ \build ->
-          build
-            & fromPrEvent prEvent
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        ghWebhookPullRequest prEvent >>= resolve
-        void $ addTestServer $ \server ->
-          server
-            & configurationBuildId .~ (buildA ^. id)
-            & pullRequest ?~ GhPullRequestId (fromIntegral $ prEvent ^. number)
+        commitA <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          let prEvent =
+                mkPullRequestEvent commitA "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
+                  & number .~ 42
+          _ <- testOverallBuild prEvent
+          buildA <- testBuild $ \build ->
+            build
+              & fromPrEvent prEvent
+              & package .~ "test-nix-config"
+              & uploadedToCache ?~ True
+          ghWebhookPullRequest prEvent >>= resolve
+          void $ addTestServer $ \server ->
+            server
+              & configurationBuildId .~ (buildA ^. id)
+              & pullRequest ?~ GhPullRequestId (fromIntegral $ prEvent ^. number)
 
-        mockRemote <- view #workingDir
-        liftIO $ writeFile (mockRemote </> "some-added-file") "foo"
-        commitB <- commitAll mockRemote
-        let prEvent =
-              mkPullRequestEvent commitB "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
-                & number .~ 42
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent prEvent
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        ghWebhookPullRequest prEvent >>= resolve
-        [planA, planB] <- getMockCalls #executeDeployPlanMock
-        planA `shouldHavePlan` (GhPrDeployment 42, [], [(commitA, "test-nix-config")])
-        planB `shouldHavePlan` (GhPrDeployment 42, planSpunUpBuildIds planA, [(commitB, "test-nix-config")])
+          mockRemote <- view #workingDir
+          liftIO $ writeFile (mockRemote </> "some-added-file") "foo"
+          commitB <- commitAll mockRemote
+          let prEvent2 =
+                mkPullRequestEvent commitB "test-branch" "test-owner/test-repo" "test-owner/test-repo" testInstallationId
+                  & number .~ 42
+          _ <- testOverallBuild prEvent2
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent prEvent2
+              & package .~ "test-nix-config"
+              & uploadedToCache ?~ True
+          ghWebhookPullRequest prEvent2 >>= resolve
+          [planA, planB] <- getMockCalls #executeDeployPlanMock
+          planA `shouldHavePlan` (GhPrDeployment 42, [], [(commitA, "test-nix-config")])
+          planB `shouldHavePlan` (GhPrDeployment 42, planSpunUpBuildIds planA, [(commitB, "test-nix-config")])
 
     it "does not shut down `on-branch` servers from the same branch" $ do
       withMockReturning #executeDeployPlanMock [] $ do
-        commit <-
-          Deprecated.writeMockRemote "test-branch"
-            $ def
-            & serverSection .~ [ServerSection "test-nix-config" (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing]
-        build <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        void $ addTestServer $ \server ->
-          server
-            & configurationBuildId .~ (build ^. id)
-        _ <- testBuild $ \build ->
-          build
-            & fromPrEvent (mkPrEvent commit)
-            & package .~ "test-nix-config"
-            & uploadedToCache ?~ True
-        Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
-        [plan] <- getMockCalls #executeDeployPlanMock
-        plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
+        commit <- Deprecated.writeMockRemote "test-branch" def
+        withServerSection "test-nix-config" (onPullRequestSection "test-nix-config") $ do
+          _ <- testOverallBuild (mkPrEvent commit)
+          build <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & uploadedToCache ?~ True
+          void $ addTestServer $ \server ->
+            server
+              & configurationBuildId .~ (build ^. id)
+          _ <- testBuild $ \build ->
+            build
+              & fromPrEvent (mkPrEvent commit)
+              & package .~ "test-nix-config"
+              & uploadedToCache ?~ True
+          Orchestrator.handlePullRequest mempty (mkCommitInfo commit) 42 >>= resolve
+          [plan] <- getMockCalls #executeDeployPlanMock
+          plan `shouldHavePlan` (GhPrDeployment 42, [], [(commit, "test-nix-config")])
 
 -- * Helpers
 
@@ -1185,72 +1177,6 @@ flakeWithFailingActivation =
       }
     |]
 
-flakeWithPersistenceAndConfig :: Bool -> Text -> PackageName -> Text -> Text
-flakeWithPersistenceAndConfig enable name (PackageName package) t =
-  cs
-    [i|
-{
-  inputs = {
-    # If you update this, update also places where it matches.
-    # Search for INNER_NIXPKGS_MATCHES
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
-    garnix.url = "github:garnix-io/garnix-lib/d3f3a98a0baddb3bdc6e0d028d1b58251a1d86f5";
-  };
-
-  outputs =
-    { self, nixpkgs, garnix }: {
-      garnix.config = {
-        servers = [{
-          configuration = "#{package}";
-          deployment = {
-            type = "on-branch";
-            branch = "branch";
-          };
-        }];
-      };
-
-      nixosConfigurations."#{package}" = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        modules = [
-          #{virtualisationModules}
-          garnix.nixosModules.garnix
-          {
-            config = {
-              boot.isContainer = true;
-
-              #{sshKey}
-
-              # something that we can safely modify to get a different hash
-              networking.hostName = "#{t}";
-
-              garnix.server = {
-                 enable = #{if enable then "true" :: String else "false"};
-                 isVM = true;
-                 persistence = {
-                  enable = #{if enable then "true" :: String else "false"};
-                  name = "#{name}";
-                };
-              };
-            };
-          }
-        ];
-
-      };
-    };
-}
-    |]
-  where
-    sshKey :: String
-    sshKey =
-      if enable
-        then
-          [i|
-              users.users.garnix.openssh.authorizedKeys.keys = [
-                   "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC2sZYF9l/ssO+uk5bdaZLskJKxNFbbJDd3cR1TR17KE1elmC4KQ7LOU3329JMyiDU73DlUHRG+1zhN9I6UNCJR8en7YDPWODw+1eKAFI1IQiYuuvp3rO9RnR5DYXxzGjEBuxxxOqLRCLmaWsP4nQ6kzmmWvIYZ9npNLCp1KN42EcCzlpUR4NOqxJr834vkqlgk3dnl00wYlLO5v4+t0l48SrcUL8EM7z/i0ivjT/15sl6PgNSgTGbB6eIWg9oLt76rhXpGvvccCp/atDb98+OXlPpDw90MgO0sGA8UyAFAKrpoLaNTPFyRrCBlHLIBlvgagNaYoq6DOGJVOGK227tJMiwDnhUyOirutYnIJ6MNdUGmq2bF7nX15uXGmGKfHf4TaShgMCcitlsrzVwuO/gdce1Y5TnJc/Wdbj3D8j95/41bBp6MyRlUK5gpT0R+NSX1hv0rL+eSa56REwfcZMrYWFr3Hpv7eq9VHAS0NBj+Hy5N9JCc+mvB7w2XufNoMkk= jkarni@janus"
-              ];
-      |]
-        else ""
-
 flakeWithPersistence :: Bool -> Text -> PackageName -> Text -> Text
 flakeWithPersistence enable name (PackageName package) t =
   cs
@@ -1357,53 +1283,87 @@ makeMultiFlake packages = cs buildFile
 
        |]
 
-writeMatchingConfig :: Branch -> PackageName -> M ()
-writeMatchingConfig branch = writeMultiConfig branch . pure
-
-writeUnmatchingConfig :: M ()
-writeUnmatchingConfig = do
-  dir <- view #workingDir
-  liftIO $ T.writeFile (dir </> "garnix.yaml") (cs cfg)
+-- | Build the nix-native `garnix.server.deploySpec` JSON that
+-- 'Garnix.YamlConfig.decodeDeploySpec' would decode back into the given
+-- 'ServerSection' — the shape provisioner/guest-profile.nix renders (see
+-- 182e616 and docs/plans/2026-07-27-nix-native-server-config-design.md
+-- §2-3). The `configuration` field isn't part of the real aggregate
+-- (implicit — whichever nixosConfiguration was evaluated), so it isn't
+-- encoded here either; the caller supplies it as the mock's lookup key.
+-- `persistenceName` mirrors the deploySpec's own `persistence.{enable,name}`
+-- sub-object (independent of `ServerSection`, exactly like production:
+-- persistence isn't one of 'ServerSection's fields either — see
+-- 'Garnix.Build.Package.persistenceNameFromDeploySpec').
+encodeDeploySpec :: Maybe Text -> ServerSection -> Aeson.Value
+encodeDeploySpec persistenceName section =
+  Aeson.object
+    [ "deployment" Aeson..= toJSONViaCodec (_serverSectionDeploySection section),
+      "domains" Aeson..= _serverSectionDomains section,
+      "exposeSSH" Aeson..= _serverSectionExposeSSH section,
+      "authorizeDeployerGithubKeys" Aeson..= _serverSectionAuthorizeDeployerGithubKeys section,
+      "authorizedSSHKeys" Aeson..= _serverSectionAuthorizedSSHKeys section,
+      "ports" Aeson..= toJSONViaCodec (_serverSectionPorts section),
+      "applicationLog" Aeson..= (encodeAppLog <$> _serverSectionLogFile section),
+      "backups" Aeson..= _serverSectionBackups section,
+      "authentikDefault" Aeson..= (_serverSectionAuthentikSection section == Just "default"),
+      "persistence" Aeson..= Aeson.object ["enable" Aeson..= isJust persistenceName, "name" Aeson..= persistenceName]
+    ]
   where
-    cfg =
-      unindent
-        [i|
-        servers: []
+    encodeAppLog (ServerLogFile path) = Aeson.object ["enable" Aeson..= True, "path" Aeson..= path]
 
-      |]
+-- | Mock the deploySpec discovery seam (see
+-- 'Garnix.Monad.discoverDeploySpecMock') so specific packages resolve to
+-- exactly the given 'ServerSection's (plus an optional persistence name,
+-- rendered into the same aggregate — see 'encodeDeploySpec'), and nothing
+-- else — the nix-native replacement for writing a `servers:` yaml section
+-- (removed from the schema entirely, §3). Packages not listed resolve to
+-- 'Nothing' (not a server), same as a build whose nixosConfiguration never
+-- imported the guest module. This is the ONE discovery seam shared by both
+-- 'Garnix.Build.Package' (persistence capture, at build time) and
+-- 'Garnix.Hosting.Deploy' (deploy planning) — mocking it here stands in for
+-- BOTH real `nix eval`s at once, so a persistence name set here is what a
+-- real build's `getPersistenceName` would also have captured.
+withServerSectionsAndPersistence :: [(PackageName, ServerSection, Maybe Text)] -> M a -> M a
+withServerSectionsAndPersistence entries =
+  withMock #discoverDeploySpecMock $ \(_flakeDir, pkg) ->
+    pure $ case [(section, persistenceName) | (k, section, persistenceName) <- entries, k == pkg] of
+      (section, persistenceName) : _ -> Just (encodeDeploySpec persistenceName section)
+      [] -> Nothing
 
-writeMultiConfig :: Branch -> [PackageName] -> M ()
-writeMultiConfig branch packages = do
-  dir <- view #workingDir
-  liftIO $ T.writeFile (dir </> "garnix.yaml") (cs $ getMultiConfig branch packages)
+withServerSections :: [(PackageName, ServerSection)] -> M a -> M a
+withServerSections sections = withServerSectionsAndPersistence [(pkg, section, Nothing) | (pkg, section) <- sections]
 
-onPullRequestConfig :: PackageName -> Text
-onPullRequestConfig (PackageName pkg) =
-  cs
-    [i|
-servers:
-  - configuration: #{pkg}
-    deployment:
-      type: on-pull-request
-  |]
+withServerSection :: PackageName -> ServerSection -> M a -> M a
+withServerSection pkg section = withServerSections [(pkg, section)]
 
-getMultiConfig :: Branch -> [PackageName] -> Text
-getMultiConfig (Branch branch) packages = cs buildFile
-  where
-    buildFile :: String
-    buildFile =
-      "servers:" <> case packages of
-        [] -> " []"
-        _ -> foldMap buildConfigEntry packages
+withServerSectionAndPersistence :: PackageName -> ServerSection -> Maybe Text -> M a -> M a
+withServerSectionAndPersistence pkg section persistenceName = withServerSectionsAndPersistence [(pkg, section, persistenceName)]
 
-    buildConfigEntry :: PackageName -> String
-    buildConfigEntry (PackageName pkg) =
-      [i|
-  - configuration: #{pkg}
-    deployment:
-      type: on-branch
-      branch: #{branch}
-       |]
+-- | A default on-branch server section for `pkg`, deploying from `branch`
+-- with i1x2/no extras — mirrors what a bare
+-- `servers:\n  - configuration: pkg\n    deployment: {type: on-branch, branch}`
+-- yaml entry used to produce.
+onBranchSection :: PackageName -> Branch -> ServerSection
+onBranchSection pkg branch = ServerSection pkg (OnBranch branch def False) Nothing False False [] [] [] Nothing Nothing
+
+onPullRequestSection :: PackageName -> ServerSection
+onPullRequestSection pkg = ServerSection pkg (OnPullRequest def) Nothing False False [] [] [] Nothing Nothing
+
+-- | Mocks a single `pkg` as an on-branch server for `branch` for the
+-- duration of `action` — the nix-native replacement for
+-- @writeMatchingConfig branch pkg@ followed by unscoped later reads.
+withMatchingConfig :: Branch -> PackageName -> M a -> M a
+withMatchingConfig branch pkg = withServerSection pkg (onBranchSection pkg branch)
+
+-- | No package resolves to a server — the nix-native replacement for
+-- @writeUnmatchingConfig@ (an empty `servers: []`).
+withUnmatchingConfig :: M a -> M a
+withUnmatchingConfig = withServerSections []
+
+-- | Mocks every listed `pkg` as an on-branch server for `branch` — the
+-- nix-native replacement for @writeMultiConfig@.
+withMultiConfig :: Branch -> [PackageName] -> M a -> M a
+withMultiConfig branch packages = withServerSections [(pkg, onBranchSection pkg branch) | pkg <- packages]
 
 startServerAndFailOnAllExcept ::
   MVar () ->
@@ -1447,8 +1407,7 @@ deployNewServerFor ::
   CommitHash ->
   [(PackageName, Maybe Text)] ->
   M [ServerInfo]
-deployNewServerFor user name branchName commit machineNames = do
-  writeMultiConfig branchName $ fmap fst machineNames
+deployNewServerFor user name branchName commit machineNames = withMultiConfig branchName (fmap fst machineNames) $ do
   void $ createBuildsFor user name branchName commit machineNames
   iAuth <- getInstallation $ Github.Data.Id 42
   let repoInfo = RepoInfo ForgeGithub (Just iAuth) (GhToken "test-token") user name
@@ -1473,6 +1432,22 @@ fromPrEvent prEvent build =
     & repoName .~ "test-repo"
     & gitCommit .~ CommitHash (prEvent ^. payload . head . sha)
     & uploadedToCache ?~ True
+
+-- | 'getDeployPlan's discovery poll (Deploy.hs) waits for a `TypeOverall`
+-- "Build starting" row to reach a terminal status before it treats a
+-- commit's nixosConfiguration builds as complete — the real build pipeline
+-- always registers one (via `setupBuilds`) before any build starts, so
+-- this is what production actually guarantees the poll can rely on. Tests
+-- that fabricate builds directly via 'testBuild' (bypassing the real
+-- pipeline, e.g. everything in "pull-request-deployments" below) must
+-- create this row too, or the poll never terminates.
+testOverallBuild :: PullRequestEvent -> M Build
+testOverallBuild prEvent =
+  testBuild $ \build ->
+    build
+      & fromPrEvent prEvent
+      & package .~ "Build starting"
+      & packageType .~ TypeOverall
 
 mkCommitInfo :: CommitHash -> CommitInfo
 mkCommitInfo commitHash =

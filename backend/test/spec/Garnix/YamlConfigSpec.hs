@@ -1,10 +1,13 @@
 module Garnix.YamlConfigSpec (spec) where
 
-import Autodocodec (HasCodec, eitherDecodeJSONViaCodec, encodeJSONViaCodec)
+import Autodocodec (HasCodec, eitherDecodeJSONViaCodec, encodeJSONViaCodec, parseJSONViaCodec)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Lens (key, nth)
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.String.Interpolate
 import Data.String.Interpolate.Util
+import Data.Yaml qualified as Yaml
 import Garnix.Build.Checkout (remoteWithConfig, runWithCheckout)
 import Garnix.Hosting.ServerPool.Types
 import Garnix.Prelude
@@ -14,6 +17,22 @@ import Garnix.TestHelpers.Monad
 import Garnix.Types hiding (context, logFile, pending)
 import Garnix.YamlConfig
 import Test.Hspec
+
+-- | Decode a single yaml @servers:@ list entry directly into 'ServerSection'
+-- via its own 'HasCodec' instance — 'GarnixConfig' no longer carries a
+-- `servers` field at all (§3: it moved into nixosConfigurations), but
+-- 'ServerSection' itself is unchanged (it's the decode target
+-- 'Garnix.YamlConfig.decodeDeploySpec' now produces from a nix
+-- `garnix.server.deploySpec`), so its own codec fidelity is still worth
+-- testing directly. Fixtures below keep their original `servers:\n  - ...`
+-- shape for a minimal diff; this just reaches into `servers[0]` instead of
+-- going through 'decodeConfig'.
+decodeServerSection :: ByteString -> Either String ServerSection
+decodeServerSection bytes = do
+  value <- first (cs . show) (Yaml.decodeEither' bytes :: Either Yaml.ParseException Aeson.Value)
+  case value ^? key "servers" . nth 0 of
+    Nothing -> Left "expected a servers[0] entry in the fixture"
+    Just v -> parseEither parseJSONViaCodec v
 
 spec :: Spec
 spec = do
@@ -197,8 +216,8 @@ spec = do
                           type: on-branch
                           branch: master
                   |]
-        let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing]
+        let actual = decodeServerSection simpleServerConfig
+        actual `shouldBe` Right (ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing)
         roundtripTest actual
 
       it "parses and serializes 'on-pull-request' deployment type of the 'servers'" $ do
@@ -212,8 +231,8 @@ spec = do
                         deployment:
                           type: on-pull-request
                   |]
-        let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnPullRequest I1x2) Nothing False False [] [] [] Nothing Nothing]
+        let actual = decodeServerSection simpleServerConfig
+        actual `shouldBe` Right (ServerSection "foo" (OnPullRequest I1x2) Nothing False False [] [] [] Nothing Nothing)
         roundtripTest actual
 
       it "parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -229,8 +248,8 @@ spec = do
                           branch: master
                           machine: i4x8
                   |]
-        let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing False False [] [] [] Nothing Nothing]
+        let actual = decodeServerSection simpleServerConfig
+        actual `shouldBe` Right (ServerSection "foo" (OnBranch (Branch "master") I4x8 False) Nothing False False [] [] [] Nothing Nothing)
         roundtripTest actual
 
       it "return a nice error message when failing to parses an 'on-branch' deployment type of the 'servers' with server tier" $ do
@@ -246,8 +265,10 @@ spec = do
                           branch: master
                           machine: i4x69
                   |]
-        let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Left "Aeson exception:\nError in $: \n  Previous branch failure: Error in $.servers[0].deployment.machine: Wrong server type. Supported server types are: i1x1, i1x2, i2x2, i2x3, i2x4, i4x2, i4x4, i4x8, i8x8, i8x16, i16x16, i16x32\nexpected Null, but encountered Object"
+        let actual = decodeServerSection simpleServerConfig
+        actual `shouldSatisfy` \case
+          Left err -> "Wrong server type" `isInfixOf` err
+          Right _ -> False
 
       it "allows setting a primary deployment" $ do
         let simpleServerConfig :: ByteString
@@ -262,8 +283,8 @@ spec = do
                           branch: master
                           isPrimary: true
                   |]
-        let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
-        actual `shouldBe` Right [ServerSection "foo" (OnBranch (Branch "master") I1x2 True) Nothing False False [] [] [] Nothing Nothing]
+        let actual = decodeServerSection simpleServerConfig
+        actual `shouldBe` Right (ServerSection "foo" (OnBranch (Branch "master") I1x2 True) Nothing False False [] [] [] Nothing Nothing)
         roundtripTest actual
 
       it "accepts a custom absolute application log path" $ do
@@ -281,10 +302,10 @@ spec = do
                           enable: true
                           path: /var/log/my-service.log
                   |]
-        let actual = (^. serverSection) <$> decodeConfig simpleServerConfig
+        let actual = decodeServerSection simpleServerConfig
         actual
           `shouldBe` Right
-            [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log")) Nothing]
+            (ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] (Just (ServerLogFile "/var/log/my-service.log")) Nothing)
         roundtripTest actual
 
       it "enables the default application log path explicitly" $ do
@@ -302,8 +323,8 @@ spec = do
                           enable: true
                   |]
         let actual =
-              (^. serverSection . to fromSingleton . logFile)
-                <$> decodeConfig simpleServerConfig
+              (^. logFile)
+                <$> decodeServerSection simpleServerConfig
         actual
           `shouldBe` Right
             (Just (ServerLogFile "/var/log/nginx/hello-access.log"))
@@ -323,10 +344,89 @@ spec = do
                           enable: true
                           path: var/log/my-service.log
                   |]
-        decodeConfig simpleServerConfig
+        decodeServerSection simpleServerConfig
           `shouldSatisfy` \case
             Left err -> "applicationLog.path must be an absolute path" `isInfixOf` err
             Right _ -> False
+
+    -- Task 3 (nix-native server config, spec §3): the backend discovers
+    -- servers from a built nixosConfiguration's
+    -- `config.garnix.server.deploySpec` instead of yaml `servers:`.
+    -- 'decodeDeploySpec' must decode that JSON aggregate into the exact
+    -- same 'ServerSection' the (now-removed) yaml codec would have — this
+    -- is the parity guarantee everything downstream (deploy planning,
+    -- domains validation, backups capture, exposeSSH, persistence) relies
+    -- on to stay unchanged.
+    describe "deploySpec decoding (nix-native discovery, §3)" $ do
+      it "decodes a real guest-profile.nix deploySpec output to the same ServerSection an equivalent yaml servers: entry produces" $ do
+        -- Golden fixture: the real `nix eval --json
+        -- .../config.garnix.server.deploySpec` output shape, copied from
+        -- 182e616's eval evidence (.agent-skills/sdd/nixnative-t1-report.md,
+        -- eval proof (a)) — plus `authentikDefault` (added to
+        -- guest-profile.nix in this task's own small follow-up commit;
+        -- verified the same way, see this task's report).
+        let deploySpecJsonRaw :: String
+            deploySpecJsonRaw =
+              [i|
+                {"applicationLog":null,"authentikDefault":false,"authorizeDeployerGithubKeys":false,"authorizedSSHKeys":[],
+                "backups":{"paths":["/var/lib/myapp"],"postBackupCommand":null,"postRestoreCommand":null,
+                "preBackupCommand":"echo pre","preRestoreCommand":null,"schedule":"weekly"},
+                "deployment":{"branch":"main","isPrimary":true,"machine":"i2x2","type":"on-branch"},
+                "domains":["app.example.test","extra.example.test"],"exposeSSH":true,
+                "persistence":{"enable":false,"name":null},"ports":[]}
+              |]
+            Just deploySpecJson = Aeson.decode (cs deploySpecJsonRaw)
+            -- The equivalent yaml `servers:` entry — same deployment,
+            -- domains, exposeSSH, and backups; nothing else set.
+            equivalentYaml :: ByteString
+            equivalentYaml =
+              cs
+                $ unindent
+                  [i|
+                    servers:
+                      - configuration: myapp
+                        deployment:
+                          type: on-branch
+                          branch: main
+                          machine: i2x2
+                          isPrimary: true
+                        domains:
+                          - app.example.test
+                          - extra.example.test
+                        exposeSSH: true
+                        backups:
+                          paths: [ /var/lib/myapp ]
+                          schedule: weekly
+                          preBackupCommand: "echo pre"
+                  |]
+            fromNix = decodeDeploySpec "myapp" deploySpecJson
+            fromYaml = decodeServerSection equivalentYaml
+        fromNix `shouldBe` (Just <$> fromYaml)
+
+      it "returns Nothing (not a server) when deployment is null" $ do
+        let raw :: String
+            raw =
+              [i|
+                    {"applicationLog":null,"authentikDefault":false,"authorizeDeployerGithubKeys":false,
+                    "authorizedSSHKeys":[],"backups":null,"deployment":null,"domains":[],"exposeSSH":false,
+                    "persistence":{"enable":false,"name":null},"ports":[]}
+                  |]
+            Just deploySpecJson = Aeson.decode (cs raw)
+        decodeDeploySpec "myapp" deploySpecJson `shouldBe` Right Nothing
+
+      it "maps authentikDefault: true to the same authentik: default the yaml codec produces" $ do
+        let raw :: String
+            raw =
+              [i|
+                    {"applicationLog":null,"authentikDefault":true,"authorizeDeployerGithubKeys":false,
+                    "authorizedSSHKeys":[],"backups":null,
+                    "deployment":{"branch":"main","isPrimary":false,"machine":"i1x2","type":"on-branch"},
+                    "domains":[],"exposeSSH":false,"persistence":{"enable":false,"name":null},"ports":[]}
+                  |]
+            Just deploySpecJson = Aeson.decode (cs raw)
+        case decodeDeploySpec "myapp" deploySpecJson of
+          Right (Just section) -> section ^. authentikSection `shouldBe` Just "default"
+          other -> expectationFailure $ cs $ "expected Right (Just ...), got " <> show other
 
     describe "servers[].backups" $ do
       let roundtripTest :: (Show a, Eq a, HasCodec a) => a -> IO ()
@@ -353,8 +453,8 @@ spec = do
                           preRestoreCommand: "echo pre-restore"
                           postRestoreCommand: "echo post"
                   |]
-            actual = (^. serverSection) <$> decodeConfig config
-            Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
+            actual = decodeServerSection config
+            Right (Just section) = (^. backups) <$> decodeServerSection config
         _backupSectionPaths section `shouldBe` ["/var/lib/app"]
         _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 24
         _backupSectionPreBackupCommand section `shouldBe` Just "echo pre"
@@ -378,14 +478,14 @@ spec = do
                         backups:
                           paths: [ /var/lib/app ]
                   |]
-            Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
+            Right (Just section) = (^. backups) <$> decodeServerSection config
         _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 24
 
       it "parses interval schedules" $ do
         let hoursFor :: String -> Either String Int
             hoursFor raw = do
-              cfg <-
-                decodeConfig
+              section <-
+                decodeServerSection
                   $ cs
                   $ unindent
                     [i|
@@ -398,8 +498,8 @@ spec = do
                             paths: [ /var/lib/app ]
                             schedule: #{raw}
                     |]
-              case cfg ^. serverSection . to fromSingleton . backups of
-                Just section -> Right $ _backupScheduleHours (_backupSectionSchedule section)
+              case section ^. backups of
+                Just b -> Right $ _backupScheduleHours (_backupSectionSchedule b)
                 Nothing -> Left "expected a backups section"
         hoursFor "6h" `shouldBe` Right 6
         hoursFor "hourly" `shouldBe` Right 1
@@ -420,8 +520,8 @@ spec = do
                           paths: [ /var/lib/app ]
                           schedule: 6h
                   |]
-            actual = (^. serverSection) <$> decodeConfig config
-            Right (Just section) = (^. serverSection . to fromSingleton . backups) <$> decodeConfig config
+            actual = decodeServerSection config
+            Right (Just section) = (^. backups) <$> decodeServerSection config
         _backupScheduleHours (_backupSectionSchedule section) `shouldBe` 6
         roundtripTest actual
 
@@ -443,8 +543,8 @@ spec = do
             isBadScheduleError = \case
               Left err -> "backups.schedule" `isInfixOf` err
               Right _ -> False
-        decodeConfig (scheduleConfig "0h") `shouldSatisfy` isBadScheduleError
-        decodeConfig (scheduleConfig "sometimes") `shouldSatisfy` isBadScheduleError
+        decodeServerSection (scheduleConfig "0h") `shouldSatisfy` isBadScheduleError
+        decodeServerSection (scheduleConfig "sometimes") `shouldSatisfy` isBadScheduleError
 
       it "rejects bad paths" $ do
         let pathsConfig :: String -> ByteString
@@ -460,10 +560,10 @@ spec = do
                         backups:
                           paths: #{pathsYaml}
                   |]
-        decodeConfig (pathsConfig "[ relative/path ]") `shouldSatisfy` isLeft
-        decodeConfig (pathsConfig "[ / ]") `shouldSatisfy` isLeft
-        decodeConfig (pathsConfig "[ /nix/store/foo ]") `shouldSatisfy` isLeft
-        decodeConfig (pathsConfig "[]") `shouldSatisfy` isLeft
+        decodeServerSection (pathsConfig "[ relative/path ]") `shouldSatisfy` isLeft
+        decodeServerSection (pathsConfig "[ / ]") `shouldSatisfy` isLeft
+        decodeServerSection (pathsConfig "[ /nix/store/foo ]") `shouldSatisfy` isLeft
+        decodeServerSection (pathsConfig "[]") `shouldSatisfy` isLeft
 
     context "artifacts section" $ do
       it "parses the artifacts section" $ do
@@ -621,7 +721,12 @@ spec = do
           runWithCheckout remoteWithConfig commitInfo pure
         config `shouldBeM` def
 
-      it "reads server section from garnix.config" $ GH.withFakeGithubInterface $ \ghState -> do
+      -- §3 (amended): `servers` is gone from BOTH sources a repo's config can
+      -- come from — the yaml file (covered under "servers section" above via
+      -- 'decodeConfig') and a flake's `garnix.config` output (this test).
+      -- garnix.yaml's own hello-server example used exactly this shape
+      -- before migrating to `garnix.server` inside the nixosConfiguration.
+      it "rejects a flake garnix.config with a servers key" $ GH.withFakeGithubInterface $ \ghState -> do
         let flake =
               cs
                 [i|
@@ -641,41 +746,13 @@ spec = do
                     };
                   }
                 |]
-        config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake) $ \commitInfo ->
-          runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing]
-
-      it "ignores the garnix.yaml file if there is a flake.nix garnix.config" $ GH.withFakeGithubInterface $ \ghState -> do
-        let flake =
-              cs
-                [i|
-                  {
-                    outputs = _: {
-                      garnix.config = {
-                        servers = [
-                          {
-                            configuration = "foo";
-                            deployment = {
-                              type = "on-branch";
-                              branch = "master";
-                            };
-                          }
-                        ];
-                      };
-                    };
-                  }
-                |]
-            yaml =
-              cs
-                [i|
-                  servers:
-                    - configuration: bar
-                      deployment:
-                        type: on-pull-request
-                |]
-        config <- GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.setupWithConfig flake $ Just yaml) $ \commitInfo ->
-          runWithCheckout remoteWithConfig commitInfo pure
-        (config ^. serverSection) `shouldBeM` [ServerSection "foo" (OnBranch (Branch "master") I1x2 False) Nothing False False [] [] [] Nothing Nothing]
+        result <-
+          try
+            $ GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake)
+            $ \commitInfo -> runWithCheckout remoteWithConfig commitInfo pure
+        case result of
+          Left e -> err e `shouldBeM` DecodeConfigError "servers: moved into nixosConfigurations — declare garnix.server in the configuration (see docs)"
+          Right (_ :: GarnixConfig) -> liftIO $ expectationFailure "expected a flake garnix.config's servers key to be rejected"
 
     context "modules section" $ do
       it "sets the publish field for the default section to false" $ do
