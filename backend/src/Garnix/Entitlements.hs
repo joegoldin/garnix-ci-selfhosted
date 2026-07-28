@@ -9,6 +9,7 @@ module Garnix.Entitlements
     applyConfiguredTimeouts,
     defaultBuildTimeoutMinutes,
     getConfiguredEvalTimeout,
+    getConfiguredBuildTimeout,
   )
 where
 
@@ -69,3 +70,15 @@ getConfiguredEvalTimeout owner name = do
   repoConfig <- DB.getRepoConfig owner name
   plan <- getPlan owner >>= applyConfiguredTimeouts repoConfig
   pure $ fromMinutes $ plan ^. packageEvaluationTimeout
+
+-- | The configured build timeout for a repo as a 'Duration' (per-repo
+-- override > Configure-page global default > 1 h; 0 = no limit). A running
+-- package build re-resolves this every 30s (see
+-- 'Garnix.Build.Package.runNixBuild') instead of only reading it once at
+-- build start, so a per-repo override raised on the Configure page while the
+-- build is in flight actually extends it.
+getConfiguredBuildTimeout :: GhRepoOwner -> GhRepoName -> M Duration
+getConfiguredBuildTimeout owner name = do
+  repoConfig <- DB.getRepoConfig owner name
+  plan <- getPlan owner >>= applyConfiguredTimeouts repoConfig
+  pure $ fromMinutes $ plan ^. packageBuildTimeout

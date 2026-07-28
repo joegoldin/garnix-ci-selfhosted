@@ -8,7 +8,6 @@ import Data.Aeson.Types (parseMaybe)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Data.UUID (UUID)
-import Garnix.Async
 import Garnix.Attribute
 import Garnix.Build.Evaluation
 import Garnix.Build.FodCheck qualified as FodCheck
@@ -17,6 +16,7 @@ import Garnix.BuildLogs
 import Garnix.BuildLogs.Types (LogLine (LogLine), mkLogLine)
 import Garnix.DB qualified as DB
 import Garnix.Duration
+import Garnix.Entitlements qualified as Entitlements
 import Garnix.Monad
 import Garnix.Monad.Concurrency
 import Garnix.Monad.Metrics
@@ -343,6 +343,47 @@ abortOnCancellation build builder = do
       Left status -> status
       Right _ -> Cancelled
 
+-- | Run @action@ under a build timeout that tracks the repo's *current*
+-- configured value rather than the one captured in the plan at build start.
+-- Every 30s this re-resolves the effective timeout via
+-- 'Entitlements.getConfiguredBuildTimeout' and compares it against elapsed
+-- wall-clock time since @action@ started; once elapsed time catches up to
+-- whatever the repo is configured for right now, @action@ is cancelled the
+-- same way 'Garnix.Async.timeout' cancels it (the losing side of a `race` is
+-- killed, so the underlying nix subprocess actually dies rather than
+-- lingering). This makes a per-repo override raised on the Configure page
+-- while a build is running extend that build immediately, instead of only
+-- taking effect for the next one. An unlimited override (0 minutes) resolves
+-- to 'maxBound' minutes, same as it does at build start, so the poller never
+-- has grounds to fire. A failure to re-resolve (a DB hiccup) keeps the last
+-- successfully resolved value rather than risking the build on a fluke.
+dynamicBuildTimeout :: Build -> Duration -> M a -> M (Maybe a)
+dynamicBuildTimeout build initialLimit action = do
+  startedAt <- liftIO getCurrentTime
+  let go currentLimit = do
+        elapsed <- diffTime <$> liftIO getCurrentTime <*> pure startedAt
+        if elapsed >= currentLimit
+          then pure ()
+          else do
+            threadDelay (fromSeconds @Int 30)
+            nextLimit <-
+              Entitlements.getConfiguredBuildTimeout (build ^. repoUser) (build ^. repoName)
+                `catch` \(e :: SomeException) -> do
+                  log Warning
+                    $ "dynamicBuildTimeout: failed to re-resolve the build timeout for "
+                    <> show (build ^. repoUser)
+                    <> "/"
+                    <> show (build ^. repoName)
+                    <> ", keeping the last known value ("
+                    <> show currentLimit
+                    <> "): "
+                    <> show e
+                  pure currentLimit
+            go nextLimit
+  race (go initialLimit) action >>= \case
+    Left () -> pure Nothing
+    Right v -> pure $ Just v
+
 runNixBuild :: RunReporter -> ProductPlan -> String -> FilePath -> Build -> DrvPath -> M Status
 runNixBuild runReporter productPlan cacheDir workingDir build drvPath = do
   nixConfig <- view #userNixConfig
@@ -355,7 +396,7 @@ runNixBuild runReporter productPlan cacheDir workingDir build drvPath = do
   mExitCode <-
     withTextSpan ("phase", "build") $ do
       withUtf8LinesStream processor $ \logHandle -> do
-        timeout (fromMinutes $ productPlan ^. packageBuildTimeout)
+        dynamicBuildTimeout build (fromMinutes $ productPlan ^. packageBuildTimeout)
           $ (>>= run)
           $ cmd "comment"
           & addArgs
