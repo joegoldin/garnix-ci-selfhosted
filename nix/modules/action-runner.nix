@@ -28,10 +28,22 @@ let
     runtimeInputs = [ pkgs.bubblewrap pkgs.slirp4netns pkgs.coreutils pkgs.getent ];
     text = ''
       TMP=$(mktemp -d)
-      trap 'rm -rf "$TMP"' EXIT
+      # The repo copy (ACTION_REPO_DIR, rsynced in by the backend for
+      # withRepoContents) is deleted here because nothing else ever does: the
+      # backend creates it over ssh with mktemp -d and forgets it, and an
+      # action like a lint run writes gigabytes into it through the /tmp/base
+      # bind. Guarded to /tmp so a mangled environment variable cannot aim
+      # rm -rf anywhere that matters.
+      cleanup() {
+        rm -rf "$TMP"
+        case "''${ACTION_REPO_DIR:-}" in
+          /tmp/?*) rm -rf "$ACTION_REPO_DIR" ;;
+        esac
+      }
+      trap cleanup EXIT
 
       TEMP_SECRET="$TMP"/secret
-      PIDFILE="$TMP"/pidfile
+      STATUSFILE="$TMP"/bwrap-status
       RESOLVCONF="$TMP"/resolv.conf
       SIGNAL="$TMP"/signalfile
       PASSWDFILE="$TMP"/passwd
@@ -41,7 +53,7 @@ let
       COMMAND=$1
       TIMEOUT_SECS=$2
 
-      touch "$PIDFILE"
+      touch "$STATUSFILE"
       getent passwd "$UID" 65534 > "$PASSWDFILE"
       getent group "$(id -g)" 65534 > "$GROUPFILE"
 
@@ -79,6 +91,15 @@ let
            --unshare-net \
            --unshare-user \
            --unshare-uts \
+           `# A PID namespace, so that everything the action starts dies with` \
+           `# the sandbox. Without it a daemonized child (the spec suite's` \
+           `# postgres, a deploy-spec qemu) outlives the action, keeps the` \
+           `# sandbox's mount namespace alive, and pins its tmpfs — multi-GB` \
+           `# of shmem per run that nothing ever releases.` \
+           --unshare-pid \
+           `# The child's host-namespace pid for slirp4netns, which cannot be` \
+           `# read from inside any more: $$ in a PID namespace is 1.` \
+           --json-status-fd 9 \
            --hostname "garnix-action-runner" \
            --ro-bind /nix /nix \
            --bind /run /run \
@@ -132,20 +153,34 @@ let
            --setenv LC_ALL C.UTF-8 \
            --bind "$TEMP_SECRET" "$TEMP_SECRET" \
            --bind "$SIGNAL" /syncfile \
-           --bind "$PIDFILE" /pidfile \
            --setenv GARNIX_ACTION_PRIVATE_KEY_FILE "$TEMP_SECRET" \
            "''${TOKEN_ENV[@]}" \
            "''${REPO_BIND[@]}" \
-           /bin/sh -c "echo \$\$ > /pidfile; read -n 1 -t 30 _ <> /syncfile; $COMMAND" &
+           /bin/sh -c "read -n 1 -t 30 _ <> /syncfile; $COMMAND" 9> "$STATUSFILE" &
 
       TIMEOUT_PID=$!
+
+      # bwrap reports the child's pid on the status fd as soon as the sandbox
+      # exists. Polling for it also closes the race the old pidfile read had,
+      # where slirp4netns could look before the child had written anything.
+      CHILD_PID=""
+      for _ in $(seq 1 300); do
+        CHILD_PID=$(sed -n 's/.*"child-pid": *\([0-9]*\).*/\1/p' "$STATUSFILE" | head -1)
+        [[ -n "$CHILD_PID" ]] && break
+        sleep 0.1
+      done
+      if [[ -z "$CHILD_PID" ]]; then
+        echo "action-runner: bwrap never reported a child pid" >&2
+        kill "$TIMEOUT_PID" 2>/dev/null || true
+        exit 1
+      fi
 
       exec {SIGNAL_FD}> "$SIGNAL"
 
       slirp4netns --configure --mtu=65520 \
           --disable-host-loopback \
           --ready-fd="$SIGNAL_FD" \
-          "$(cat "$PIDFILE")" tap0 2>/dev/null 1>/dev/null &
+          "$CHILD_PID" tap0 2>/dev/null 1>/dev/null &
 
       SLIRP_PID=$!
       wait "$TIMEOUT_PID"
