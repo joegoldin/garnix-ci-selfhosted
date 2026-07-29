@@ -47,6 +47,7 @@ export const BuildLog = ({ build }: { build: BuildWithRelatedBuilds }) => {
       logStream={logStream}
       defaultLogGroupName={build.package}
       failed={build.status === "Failure"}
+      terminal={build.status !== "Pending" && build.status !== "Running"}
     />
   );
 };
@@ -55,6 +56,12 @@ const LogViewer = (props: {
   logStream: LogStream;
   defaultLogGroupName: string;
   failed?: boolean;
+  // The resource has reached a terminal status, so nothing can still be
+  // producing output — no phase may render as live, whatever the log
+  // stream's state. A build killed mid-phase never writes the phase's
+  // closing lines, and a stalled poller never reports itself finished;
+  // either would otherwise leave a green dot on a cancelled build.
+  terminal?: boolean;
 }) => {
   const { logs } = props.logStream;
   const [openLog, setOpenLog] = React.useState<string | undefined>();
@@ -75,7 +82,9 @@ const LogViewer = (props: {
         // is still live; every earlier group has already finished. Once the
         // whole stream is finished, every group has too.
         const isLive =
-          props.logStream.loading && logGroupName === lastLogGroupName;
+          !props.terminal &&
+          props.logStream.loading &&
+          logGroupName === lastLogGroupName;
         // FOD checks (and similar) annotate a skipped phase in the group name,
         // e.g. "<drv> (skipped: source unavailable)". Label those "skipped"
         // rather than "finished" (same gray finished styling).

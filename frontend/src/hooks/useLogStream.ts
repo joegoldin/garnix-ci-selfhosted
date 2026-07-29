@@ -1,7 +1,7 @@
 import React from "react";
 import { getLogs } from "@/services/logs";
 import { wait } from "@/utils";
-import { fromSecs, double } from "@/utils/duration";
+import { fromSecs, double, minDuration } from "@/utils/duration";
 
 export type LogStream = {
   loading: boolean;
@@ -31,6 +31,12 @@ export const useLogStream = (
         const response = await getLogs(resourceType, resourceId, after);
         if (!isMounted.current) return;
         if (response.ok) {
+          // A success ends the backoff era: without this reset, a stretch of
+          // failures (a laptop asleep overnight, a flaky network) leaves the
+          // interval doubled into hours, and a page that recovers still polls
+          // essentially never — showing a phase as "live" long after the
+          // build reached a terminal status.
+          backoffInterval = fromSecs(1);
           const { logs, finished, max_page_size } = response.data;
           after = logs[logs.length - 1]?.timestamp ?? after;
           setLogLines((l) => {
@@ -67,7 +73,9 @@ export const useLogStream = (
             await wait(pollInterval);
           }
         } else {
-          backoffInterval = double(backoffInterval);
+          // Capped: unbounded doubling turns a transient outage into a
+          // permanently dormant poller.
+          backoffInterval = minDuration(double(backoffInterval), fromSecs(30));
           await wait(backoffInterval);
         }
         if (!isMounted.current) return;

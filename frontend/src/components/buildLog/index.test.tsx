@@ -39,6 +39,32 @@ describe("build log phase status", () => {
     expect(screen.queryByText("✓ finished")).not.toBeInTheDocument();
   });
 
+  it("never marks a phase live once the build has a terminal status", () => {
+    // A build cancelled mid-phase leaves its log stream without closing
+    // lines, and a stalled poller can report loading forever. The build's
+    // own status is authoritative: Cancelled means nothing is running.
+    mockedUseLogStream.mockReturnValue({
+      loading: true,
+      logs: [["zen-browser (buildPhase)", lines("compiling...")]],
+    });
+
+    render(
+      <BuildLog
+        build={
+          {
+            id: "build-id",
+            package: "zen-browser",
+            status: "Cancelled",
+            original_build: undefined,
+          } as never
+        }
+      />,
+    );
+
+    expect(screen.queryByText("live")).not.toBeInTheDocument();
+    expect(screen.getByText("✓ finished")).toBeInTheDocument();
+  });
+
   it("uses an encoded FOD failure as status instead of title text", () => {
     mockedUseLogStream.mockReturnValue({
       loading: false,

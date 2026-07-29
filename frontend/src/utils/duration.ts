@@ -29,6 +29,10 @@ export function toMillis(d: Duration): number {
   return d[SECONDS] * 1000;
 }
 
+export function minDuration(a: Duration, b: Duration): Duration {
+  return toSecs(a) <= toSecs(b) ? a : b;
+}
+
 export function double(d: Duration): Duration {
   return { [SECONDS]: d[SECONDS] * 2 };
 }
