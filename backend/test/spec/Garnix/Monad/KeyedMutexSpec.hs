@@ -34,8 +34,10 @@ spec = do
             modifyMVar_ maxSeen (pure . max n')
             pure n'
           leave = modifyMVar_ current (pure . subtract 1)
-      handles <- forM [1 .. 10 :: Int] $ \_ ->
-        async $ withKeyedMutex mutex ("k" :: Text) $ do
+      handles <- replicateM 10
+        $ async
+        $ withKeyedMutex mutex ("k" :: Text)
+        $ do
           enter
           threadDelay (fromMilliSeconds @Int 15)
           leave

@@ -140,7 +140,7 @@ spec = do
                 & repoName .~ repoName'
                 & branch ?~ "feature"
                 & gitCommit .~ "finished-commit-sha"
-                & status .~ Just Success
+                & status ?~ Success
           )
 
       newerThan <- liftIO getCurrentTime
