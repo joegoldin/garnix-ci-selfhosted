@@ -13,9 +13,12 @@ import Data.Map.Strict qualified as Map
 import Garnix.Prelude
 import Garnix.Types (NetRcFile (..), NixConfig (..))
 
+-- Extends the host's experimental features rather than replacing them, so a
+-- feature the operator enables in nix.conf (dynamic-derivations, say) still
+-- applies when garnix evaluates and builds.
 defaultNixConfig :: NixConfig
 defaultNixConfig =
-  NixConfig $ Map.insert "experimental-features" (unwords ["nix-command", "flakes", "pipe-operators"]) mempty
+  NixConfig $ Map.insert "extra-experimental-features" (unwords ["nix-command", "flakes", "pipe-operators"]) mempty
 
 fromNetRcFile :: NetRcFile -> NixConfig
 fromNetRcFile file = NixConfig $ Map.insert "netrc-file" (getNetRcFile file) mempty
