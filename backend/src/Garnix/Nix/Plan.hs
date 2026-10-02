@@ -7,6 +7,7 @@ import Data.Attoparsec.Text.Lazy hiding (take)
 import Data.ByteString (ByteString)
 import Data.Char
 import Data.Text qualified as T
+import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.IO (readFile)
 import Data.Tuple.Extra
 import Garnix.Monad
@@ -24,13 +25,18 @@ mapToDrvPaths paths = map DrvPath <$> mapToStorePaths paths
 -- | The output paths a .drv file names. A floating content-addressed or
 -- deferred derivation (one depending on a dynamic derivation's output) has
 -- none until it is built: its outputs are written with an empty path, and
--- are left out here rather than failing the plan.
+-- are left out here rather than failing the plan. A derivation that depends
+-- on a dynamic derivation's output is written in the versioned
+-- @DrvWithVersion("xp-dyn-drv", ...)@ form, which nix-derivation cannot
+-- parse; it is always deferred, so it names no paths either.
 getDrvOutputPaths :: DrvPath -> M [StorePath]
 getDrvOutputPaths drvFile = do
   drvText <- liftIO $ readFile $ cs drvFile
-  case parse Nix.Derivation.parseDerivation drvText of
-    Fail _ _ err -> throw $ FailedToParseDrvFile (cs drvFile) $ cs err
-    Done _ parsed -> mapToStorePaths $ filter (not . null) $ map Nix.Derivation.path $ toList $ Nix.Derivation.outputs parsed
+  if "DrvWithVersion(" `TL.isPrefixOf` drvText
+    then pure []
+    else case parse Nix.Derivation.parseDerivation drvText of
+      Fail _ _ err -> throw $ FailedToParseDrvFile (cs drvFile) $ cs err
+      Done _ parsed -> mapToStorePaths $ filter (not . null) $ map Nix.Derivation.path $ toList $ Nix.Derivation.outputs parsed
 
 getPlanOf :: ByteString -> M Plan
 getPlanOf = mockable #getBuildPlanMock $ \input -> do
