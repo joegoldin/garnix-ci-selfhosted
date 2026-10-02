@@ -158,7 +158,7 @@ spec = do
                 & nixConfDefaults
             pure $ (output ^?! key (fromString $ cs storePath) . key "deriver" . _String)
               & DrvPath . fromRight . Nix.parseStorePath
-          let evaluationResult = EvaluationResult drvPath [storePath] (Nix.BuildOutputs ("out" ~> storePath))
+          let evaluationResult = EvaluationResult drvPath [storePath] (Nix.BuildOutputs ("out" ~> storePath)) []
           upload mempty "owner" "repo" evaluationResult (RepoIsPublic True)
           paths <- listBucket "garage-public"
           paths `shouldBeM` []
@@ -227,7 +227,7 @@ spec = do
               & nixConfDefaults
           (parentDrvPath, parentStorePath) <- getFlakePackageDrvAndStorePath "parent"
           (_, goodStorePath) <- getFlakePackageDrvAndStorePath "good"
-          let evalResult = EvaluationResult parentDrvPath [parentStorePath, goodStorePath] $ Nix.BuildOutputs mempty
+          let evalResult = EvaluationResult parentDrvPath [parentStorePath, goodStorePath] (Nix.BuildOutputs mempty) []
           upload mempty "owner" "repo" evalResult (RepoIsPublic True)
           paths <- listBucket "garage-public"
           sort (fmap (T.drop 32 . (^. _ObjectKey)) paths)
@@ -609,7 +609,7 @@ localTestBuild mkFlake = do
         ]
       & nixConfDefaults
     (drvPath, storePath) <- getFlakePackageDrvAndStorePath "foo"
-    pure (EvaluationResult drvPath [storePath] (Nix.BuildOutputs ("out" ~> storePath)), storePath)
+    pure (EvaluationResult drvPath [storePath] (Nix.BuildOutputs ("out" ~> storePath)) [], storePath)
 
 getFlakePackageDrvAndStorePath :: Text -> M (DrvPath, StorePath)
 getFlakePackageDrvAndStorePath packageName = do

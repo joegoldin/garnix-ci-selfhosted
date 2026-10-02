@@ -16,6 +16,11 @@ makeFields ''AppBuildDetails
 data EvaluationResult = EvaluationResult
   { derivation :: Nix.DrvPath,
     toUpload :: [Nix.StorePath],
-    outputs :: Nix.BuildOutputs
+    outputs :: Nix.BuildOutputs,
+    -- | Outputs whose store path nix cannot know before building: those of a
+    -- derivation depending on a dynamic derivation's output
+    -- (builtins.outputOf) or on a floating content-addressed one. They are
+    -- resolved once the build has realised them.
+    unresolvedOutputs :: [Text]
   }
   deriving stock (Show, Generic, Eq)

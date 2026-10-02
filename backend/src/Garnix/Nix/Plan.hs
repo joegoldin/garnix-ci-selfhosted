@@ -21,12 +21,16 @@ mapToStorePaths paths = forM paths $ either (throw . OtherError) pure . parseSto
 mapToDrvPaths :: [Text] -> M [DrvPath]
 mapToDrvPaths paths = map DrvPath <$> mapToStorePaths paths
 
+-- | The output paths a .drv file names. A floating content-addressed or
+-- deferred derivation (one depending on a dynamic derivation's output) has
+-- none until it is built: its outputs are written with an empty path, and
+-- are left out here rather than failing the plan.
 getDrvOutputPaths :: DrvPath -> M [StorePath]
 getDrvOutputPaths drvFile = do
   drvText <- liftIO $ readFile $ cs drvFile
   case parse Nix.Derivation.parseDerivation drvText of
     Fail _ _ err -> throw $ FailedToParseDrvFile (cs drvFile) $ cs err
-    Done _ parsed -> mapToStorePaths $ map Nix.Derivation.path $ toList $ Nix.Derivation.outputs parsed
+    Done _ parsed -> mapToStorePaths $ filter (not . null) $ map Nix.Derivation.path $ toList $ Nix.Derivation.outputs parsed
 
 getPlanOf :: ByteString -> M Plan
 getPlanOf = mockable #getBuildPlanMock $ \input -> do

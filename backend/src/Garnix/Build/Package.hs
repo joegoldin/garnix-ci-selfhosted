@@ -5,6 +5,7 @@ import Control.Lens
 import Cradle
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (parseMaybe)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Data.UUID (UUID)
@@ -23,6 +24,7 @@ import Garnix.Monad.Metrics
 import Garnix.Monad.Pool (withPoolM)
 import Garnix.Monad.SubProcess
 import Garnix.Nix.Types (DrvPath)
+import Garnix.Nix.Types qualified as Nix
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude
 import Garnix.S3Cache qualified as S3Cache
@@ -228,7 +230,9 @@ buildPkg = curry7
         setBuildWaitStage tracker (build ^. id) "Checking fixed-output derivations"
         FodCheck.fodCheck fodChecker drvPath'
         finishedBuild <-
-          if null $ evaluationResult ^. #toUpload
+          -- An unresolved output can only be known by building, so it never
+          -- counts as already built.
+          if null (evaluationResult ^. #toUpload) && null (evaluationResult ^. #unresolvedOutputs)
             then do
               log Informational $ "No derivations to upload for " <> cs drvPath'
               DB.setBuildUploaded (build ^. id)
@@ -241,14 +245,33 @@ buildPkg = curry7
               status' <- withAsync builder $ \q -> do
                 abortOnCancellation evaluatedBuild q
               log Informational "buildPkg: build finished, checking status"
+              -- Outputs only the build could fix are known now: record them,
+              -- and upload their closure, which the evaluation-time plan could
+              -- not name.
+              uploadResult <-
+                if status' == Success && not (null $ evaluationResult ^. #unresolvedOutputs)
+                  then
+                    resolveOutputs drvPath' >>= \case
+                      Right resolved -> do
+                        let outputs' = Nix.BuildOutputs $ Nix.getBuildOutputs (evaluationResult ^. #outputs) <> Nix.getBuildOutputs resolved
+                        DB.checkpointBuildEvaluation (build ^. id) drvPath' outputs'
+                        pure $ evaluationResult
+                          & #outputs .~ outputs'
+                          & #toUpload %~ (<> Map.elems (Nix.getBuildOutputs resolved))
+                          & #unresolvedOutputs .~ []
+                      Left err -> do
+                        log Warning $ "could not resolve outputs of " <> cs drvPath' <> ": " <> err
+                        pure evaluationResult
+                  else pure evaluationResult
               forkM $ do
-                S3Cache.upload runReporter (build ^. repoUser) (build ^. repoName) evaluationResult (build ^. repoIsPublic)
+                S3Cache.upload runReporter (build ^. repoUser) (build ^. repoName) uploadResult (build ^. repoIsPublic)
                 DB.setBuildUploaded (build ^. id)
               case status' of
                 Failure -> log Warning "build failed"
                 Cancelled -> log Notice "build cancelled"
                 _ -> pure ()
               pure $ evaluatedBuild
+                & outputPaths ?~ BuildOutputsPgColumn (uploadResult ^. #outputs)
                 & status ?~ status'
                 & alreadyBuilt ?~ False
         buildEnd <- liftIO getCurrentTime

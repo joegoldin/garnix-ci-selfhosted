@@ -10,6 +10,7 @@ module Garnix.Build.Evaluation
     NumberOfParsedResults (..),
     EvaluationResult (..),
     EvaluateError (..),
+    resolveOutputs,
     _TimeoutReached,
     _NixEvaluationError,
     _ParseError,
@@ -24,6 +25,8 @@ import Data.Aeson qualified as JSON
 import Data.Aeson.Types qualified as JSON
 import Data.ByteString (ByteString)
 import Data.Either.Extra (mapLeft)
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 import Garnix.Async
 import Garnix.Build.Types (EvaluationResult (..))
 import Garnix.Duration
@@ -65,9 +68,11 @@ data EvaluateError
 
 makePrisms ''EvaluateError
 
+-- | A derivation's known outputs, and the names of those nix reports as null
+-- because their paths are only fixed by building (see 'unresolvedOutputs').
 data NixBuildPackage
   = SourceOutput Text
-  | Derivation Nix.DrvPath Nix.BuildOutputs
+  | Derivation Nix.DrvPath Nix.BuildOutputs [Text]
 
 instance FromJSON NixBuildPackage where
   parseJSON =
@@ -75,8 +80,10 @@ instance FromJSON NixBuildPackage where
       JSON.String s -> pure $ SourceOutput $ cs s
       json -> flip (JSON.withObject "nix evaluate attribute") json $ \o -> do
         drvPath <- o .: "drvPath" >>= parseStorePath
-        outputs <- o .: "outputs" >>= mapM parseStorePath
-        pure $ Derivation (Nix.DrvPath drvPath) (Nix.BuildOutputs outputs)
+        outputs :: Map.Map Text JSON.Value <- o .: "outputs"
+        known <- mapM parseStorePath $ Map.filter (/= JSON.Null) outputs
+        let unresolved = Map.keys $ Map.filter (== JSON.Null) outputs
+        pure $ Derivation (Nix.DrvPath drvPath) (Nix.BuildOutputs known) unresolved
     where
       parseStorePath :: JSON.Value -> JSON.Parser Nix.StorePath
       parseStorePath v = do
@@ -120,13 +127,13 @@ evaluateAttribute repoConfig plan cacheDir workingDir build attr = withBubbling 
                   Left err -> pure $ Left $ ParseError (ParsingError err) (Stdout stdout) (Stderr stderr)
                   Right [result] -> case result of
                     SourceOutput src -> pure $ Left $ AttributeIsSourceOutput src
-                    Derivation drvPath outputs -> do
+                    Derivation drvPath outputs unresolved -> do
                       plan <- Nix.getPlanOf stderr
-                      pure $ Right $ EvaluationResult drvPath (Nix.planOutputs plan) outputs
+                      pure $ Right $ EvaluationResult drvPath (Nix.planOutputs plan) outputs unresolved
                   Right xs -> pure $ Left $ UnexpectedNumberOfParsedResults (NumberOfParsedResults $ length xs) (Stdout stdout)
               Just drvPath -> do
                 plan <- Nix.getPlanOf stderr
-                pure $ Right $ EvaluationResult drvPath (Nix.planOutputs plan) (Nix.BuildOutputs mempty)
+                pure $ Right $ EvaluationResult drvPath (Nix.planOutputs plan) (Nix.BuildOutputs mempty) []
   bubble $ fromMaybe (Left TimeoutReached) evalRes
   where
     maxEvalMem :: Memory
@@ -214,3 +221,22 @@ getAppDrvPath repoConfig build workingDir cacheDir attr = do
           case Nix.parseStorePath path of
             Left err -> JSON.parseFail $ cs err
             Right path -> pure $ Nix.DrvPath path
+
+-- | The outputs of an already-built derivation whose paths evaluation could
+-- not know ('unresolvedOutputs'). Once nix has realised them, the same
+-- dry-run query that reported them as null reports their paths.
+resolveOutputs :: Nix.DrvPath -> M (Either Text Nix.BuildOutputs)
+resolveOutputs drvPath = do
+  nixConfig <- view #userNixConfig
+  (exitCode, StdoutRaw stdout, StderrRaw stderr) <-
+    run
+      $ cmd "nix"
+      & addArgs ["build", cs (Nix.getStorePath (Nix.getDrvPath drvPath)) <> "^*", "--dry-run", "--json" :: Text]
+      & addNixConfigEnvironment nixConfig
+  pure $ case exitCode of
+    ExitFailure _ -> Left $ "resolving outputs failed: " <> cs stderr
+    ExitSuccess -> case JSON.eitherDecodeStrict' @[NixBuildPackage] stdout of
+      Left err -> Left $ "parsing resolved outputs failed: " <> cs err
+      Right [Derivation _ outputs []] -> Right outputs
+      Right [Derivation _ _ unresolved] -> Left $ "outputs still unresolved after building: " <> T.intercalate ", " unresolved
+      Right _ -> Left $ "unexpected resolved outputs: " <> cs stdout
