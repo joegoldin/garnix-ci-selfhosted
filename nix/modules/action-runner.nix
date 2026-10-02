@@ -107,6 +107,10 @@ let
            `# sandbox execs /bin/sh -c and action shebangs use /usr/bin/env.` \
            --ro-bind /bin/sh /bin/sh \
            --ro-bind-try /usr/bin/env /usr/bin/env \
+           `# The FHS dynamic loader (nix-ld on a host that enables it), so` \
+           `# prebuilt binaries an action downloads, such as a toolchain` \
+           `# archive, can start; without it they fail with ENOENT.` \
+           --ro-bind-try /lib64 /lib64 \
            --tmpfs /etc \
            --ro-bind-try /etc/hosts /etc/hosts \
            --ro-bind "$HOSTNAMEFILE" /etc/hostname \
