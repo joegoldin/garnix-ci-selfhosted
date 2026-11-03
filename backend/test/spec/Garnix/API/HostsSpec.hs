@@ -326,6 +326,33 @@ spec = do
           h -> liftIO $ expectationFailure $ "Expected exactly one host. Got: " <> cs (show h)
         pure $ defaultGolden "HostSpec/reflects-the-latest-deployed-versions" $ cs $ encodePretty finalHosts
 
+      it "routes duplicate deployments to the latest ready guest" $ do
+        user <- testUser
+        now <- liftIO getCurrentTime
+        void $ createSimpleServer user ((ipv4Addr .~ "11.111.111.2") . (readyAt ?~ now))
+        void $ createSimpleServer user ((ipv4Addr .~ "11.111.111.1") . (readyAt ?~ subTime (fromMinutes @Int 20) now))
+        hosts <- getHostsForTraefik
+        (toJSON hosts ^.. key "http" . key "services" . members . key "loadBalancer" . key "servers" . values . key "url" . _String)
+          `shouldBeM` ["http://11.111.111.2"]
+
+      it "breaks equal readiness ties by server id rather than row update order" $ do
+        user <- testUser
+        now <- liftIO getCurrentTime
+        older <- createSimpleServer user ((ipv4Addr .~ "11.111.111.1") . (readyAt ?~ now))
+        void $ createSimpleServer user ((ipv4Addr .~ "11.111.111.2") . (readyAt ?~ now))
+        DB.updateServerPostDeploy older
+        hosts <- getHostsForTraefik
+        (toJSON hosts ^.. key "http" . key "services" . members . key "loadBalancer" . key "servers" . values . key "url" . _String)
+          `shouldBeM` ["http://11.111.111.2"]
+
+      it "does not route to a newer guest until it is ready" $ do
+        user <- testUser
+        void $ createSimpleServer user (ipv4Addr .~ "11.111.111.1")
+        void $ createSimpleServer user ((ipv4Addr .~ "11.111.111.2") . (readyAt .~ Nothing))
+        hosts <- getHostsForTraefik
+        (toJSON hosts ^.. key "http" . key "services" . members . key "loadBalancer" . key "servers" . values . key "url" . _String)
+          `shouldBeM` ["http://11.111.111.1"]
+
       it "supports exposing more than one configuration per repo" $ do
         user <- testUser
         void $ createServer (GhRepoOwner $ GhLogin "owner") (GhRepoName "repo") (Branch "main") Nothing (PackageName "nginx") Nothing user ((ipv4Addr .~ "11.111.111.1") . (ipv6Addr .~ "::"))

@@ -2488,6 +2488,8 @@ getShutdownCandidates = do
         AND servers.ended_at IS NULL
       |]
 
+-- Traefik's hostname maps are last-wins. Retained older guests must come first,
+-- so the latest ready deployment wins, with a stable tie-break for equal times.
 getAllRunningHosts :: M [Host]
 getAllRunningHosts = do
   pgQueryPrism
@@ -2512,6 +2514,7 @@ getAllRunningHosts = do
       WHERE servers.ipv4 IS NOT NULL
       AND servers.ready_at IS NOT NULL
       AND servers.ended_at IS NULL
+      ORDER BY servers.ready_at ASC, servers.id ASC
     |]
 
 -- | How many recent resource samples we retain per server (a small rolling
