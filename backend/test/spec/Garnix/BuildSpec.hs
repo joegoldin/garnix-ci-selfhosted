@@ -10,6 +10,7 @@ import Cradle
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens (key)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromJust)
 import Data.Semigroup
 import Data.String.Interpolate (i)
@@ -43,13 +44,41 @@ import Garnix.YamlConfig
 import Network.HTTP.Types (ok200, status200)
 import Network.HTTP.Types.Header (hContentType)
 import Network.Wai (Application, getRequestBodyChunk, responseLBS)
+import Network.Wai.Application.Static (defaultFileServerSettings, staticApp)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Network.Wai.Handler.Warp qualified as Warp
 import System.Directory (copyFile, createDirectoryIfMissing)
+import System.IO.Temp (withSystemTempDirectory)
 import System.Random
 import Test.HUnit
 import Test.Hspec hiding (shouldReturn)
 import Text.Regex.PCRE.Light (compile, dollar_endonly)
+
+-- Exercise fetchClosure against actual uploaded intermediates, without depending
+-- on public-cache availability. Keep signature verification enabled for the fixture.
+withIncrementalCache :: M a -> M a
+withIncrementalCache action = withSystemTempDirectory "incremental-cache" $ \directory -> do
+  let keyFile = directory </> "cache-key"
+      publicKeyFile = directory </> "cache-key.pub"
+      cacheDirectory = directory </> "cache"
+      cache = "file://" <> cs cacheDirectory :: Text
+  run_
+    $ cmd "nix-store"
+    & addArgs ["--generate-binary-cache-key", "incremental-spec", cs keyFile, cs publicKeyFile :: Text]
+  publicKey <- T.strip <$> liftIO (T.readFile publicKeyFile)
+  let trustFixture (NixConfig config) = NixConfig $ Map.insert "extra-trusted-public-keys" (cs publicKey) config
+      upload (_, _, _, evaluation, _) =
+        unless (null $ evaluation ^. #toUpload)
+          $ run_
+          $ cmd "nix"
+          & addArgs (["copy", "--to", cache <> "?secret-key=" <> cs keyFile] <> map cs (evaluation ^. #toUpload))
+          & nixConfDefaults
+  liftIO $ createDirectoryIfMissing True cacheDirectory
+  -- fetchClosure supports HTTP(S), not file://; serve only the cache, not its key.
+  liftBaseOp (testWithApplication (pure $ staticApp $ defaultFileServerSettings cacheDirectory)) $ \port ->
+    local (#cacheUrl .~ ("http://127.0.0.1:" <> show port))
+      $ local (#userNixConfig %~ trustFixture)
+      $ withMock #s3CacheUploadMock upload action
 
 spec :: Spec
 spec = do
@@ -521,7 +550,7 @@ spec = do
             result <- try $ testHandleCommit commitInfo
             (result & _Left %~ err) `shouldBeM` Left (OtherError "'../../../etc/passwd' is not a path within the repo")
 
-      context "incremental builds" $ do
+      context "incremental builds" $ aroundM_ withIncrementalCache $ do
         let normalLog = [regex|inc> Starting\ninc> Finished\n|]
             incrementalLog = [regex|inc> Starting\ninc> hi\ninc> Finished\n|]
             mkFlake :: M Text
