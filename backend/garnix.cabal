@@ -816,6 +816,7 @@ test-suite spec
       Garnix.Monad.PoolSpec
       Garnix.Monad.SubProcessSpec
       Garnix.MonadSpec
+      Garnix.Nix.PlanSpec
       Garnix.Nix.StorePathSpec
       Garnix.PreludeSpec
       Garnix.ProcessLogsSpec

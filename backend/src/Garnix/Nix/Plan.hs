@@ -1,20 +1,23 @@
 module Garnix.Nix.Plan
   ( getPlanOf,
+    _parsePlanOutputs,
   )
 where
 
-import Data.Attoparsec.Text.Lazy hiding (take)
+import Cradle
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Types qualified as Aeson
 import Data.ByteString (ByteString)
 import Data.Char
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Text.Lazy qualified as TL
-import Data.Text.Lazy.IO (readFile)
 import Data.Tuple.Extra
 import Garnix.Monad
+import Garnix.Nix.StorePath (unwrapDerivations)
 import Garnix.Nix.Types
-import Garnix.Prelude hiding (readFile)
+import Garnix.NixConfig (addNixConfigEnvironment)
+import Garnix.Prelude
 import Garnix.Types hiding (head)
-import Nix.Derivation qualified
 
 mapToStorePaths :: (ConvertibleStrings a Text) => [a] -> M [StorePath]
 mapToStorePaths paths = forM paths $ either (throw . OtherError) pure . parseStorePath
@@ -22,21 +25,42 @@ mapToStorePaths paths = forM paths $ either (throw . OtherError) pure . parseSto
 mapToDrvPaths :: [Text] -> M [DrvPath]
 mapToDrvPaths paths = map DrvPath <$> mapToStorePaths paths
 
--- | The output paths a .drv file names. A floating content-addressed or
--- deferred derivation (one depending on a dynamic derivation's output) has
--- none until it is built: its outputs are written with an empty path, and
--- are left out here rather than failing the plan. A derivation that depends
--- on a dynamic derivation's output is written in the versioned
--- @DrvWithVersion("xp-dyn-drv", ...)@ form, which nix-derivation cannot
--- parse; it is always deferred, so it names no paths either.
-getDrvOutputPaths :: DrvPath -> M [StorePath]
-getDrvOutputPaths drvFile = do
-  drvText <- liftIO $ readFile $ cs drvFile
-  if "DrvWithVersion(" `TL.isPrefixOf` drvText
-    then pure []
-    else case parse Nix.Derivation.parseDerivation drvText of
-      Fail _ _ err -> throw $ FailedToParseDrvFile (cs drvFile) $ cs err
-      Done _ parsed -> mapToStorePaths $ filter (not . null) $ map Nix.Derivation.path $ toList $ Nix.Derivation.outputs parsed
+-- Nix understands deferred, floating CA and versioned dynamic derivations;
+-- nix-derivation rejects even a plain Derive with an empty output path.
+-- Read the whole plan in one process rather than launching Nix per derivation.
+getDrvOutputPaths :: [DrvPath] -> M [(DrvPath, [StorePath])]
+getDrvOutputPaths [] = pure []
+getDrvOutputPaths drvPaths = do
+  nixConfig <- view #userNixConfig
+  (StdoutTrimmed output, StderrRaw _, exit) <-
+    run
+      $ cmd "nix"
+      & addArgs (["derivation", "show"] <> map cs drvPaths :: [Text])
+      & addNixConfigEnvironment nixConfig
+  case exit of
+    ExitSuccess -> do
+      paths <- aesonDecode "planned derivation outputs" _parsePlanOutputs output
+      forM drvPaths $ \drv -> case Map.lookup drv paths of
+        Just outputs -> pure (drv, outputs)
+        Nothing -> throw $ OtherError $ "Missing planned derivation in Nix output: " <> cs drv
+    ExitFailure _ -> throw $ OtherError "Could not read planned derivations with nix derivation show"
+
+_parsePlanOutputs :: Aeson.Value -> Aeson.Parser (Map.Map DrvPath [StorePath])
+_parsePlanOutputs value = do
+  derivations :: Map.Map Text Aeson.Value <- parseJSON $ unwrapDerivations value
+  Map.fromList
+    <$> forM
+      (Map.toList derivations)
+      ( \(drv, definition) -> do
+          drvPath <- either (fail . cs) pure $ parseDrvPath $ absolute drv
+          outputs :: Map.Map Text Aeson.Value <- Aeson.withObject "derivation" (Aeson..: "outputs") definition
+          paths <- traverse (Aeson.withObject "output" (Aeson..:? "path")) outputs
+          known <- forM (filter (not . T.null) $ catMaybes $ Map.elems paths) $ \path ->
+            either (fail . cs) pure $ parseStorePath $ absolute path
+          pure (drvPath, known)
+      )
+  where
+    absolute path = if "/" `T.isPrefixOf` path then path else "/nix/store/" <> path
 
 getPlanOf :: ByteString -> M Plan
 getPlanOf = mockable #getBuildPlanMock $ \input -> do
@@ -51,7 +75,7 @@ getPlanOf = mockable #getBuildPlanMock $ \input -> do
       $ input
   when (not (null remaining) && not ("will be fetched" `T.isInfixOf` head remaining))
     $ log Critical "Expected `nix build --dry-run` to output a list of derivations to be built followed by optionally a list of derivations to be fetched"
-  outputHashes <- forM toBuild $ \drvPath -> (drvPath,) <$> getDrvOutputPaths drvPath
+  outputHashes <- getDrvOutputPaths toBuild
   pure $ Plan outputHashes
 
 isStartOfDerivationPaths :: Text -> Bool
