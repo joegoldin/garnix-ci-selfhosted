@@ -6,10 +6,12 @@ import Control.Concurrent.Extra (newEmptyMVar, putMVar)
 import Control.Exception (ErrorCall (ErrorCall), throwIO)
 import Control.Lens
 import Control.Lens.Regex.Text
+import Control.Monad.Trans.Control (liftBaseOp_)
 import Cradle
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens (key)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromJust)
 import Data.Semigroup
@@ -18,16 +20,20 @@ import Data.String.Interpolate.Util (unindent)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Data.Yaml (encode)
+import GHC.Conc (BlockReason (BlockedOnMVar), ThreadStatus (ThreadBlocked), threadStatus)
 import GHC.IO.Unsafe (unsafePerformIO)
 import Garnix.API.Builds
 import Garnix.Build (buildFlake)
+import Garnix.Build.Evaluation (EvaluateError (..), Stderr (..), evaluateAttribute)
 import Garnix.Build.Package (evaluationMemoryFailureMessage)
 import Garnix.Build.Types (derivation)
 import Garnix.BuildLogs.Types (LogLine (LogLine))
 import Garnix.DB qualified as DB
 import Garnix.Duration
+import Garnix.Entitlements (defaultProductPlan)
 import Garnix.Monad
 import Garnix.Monad.Async (resolve)
+import Garnix.Monad.Pool qualified as Pool
 import Garnix.Nix.Types qualified as Nix
 import Garnix.NixConfig (nixConfDefaults)
 import Garnix.Orchestrator
@@ -48,10 +54,12 @@ import Network.Wai.Application.Static (defaultFileServerSettings, staticApp)
 import Network.Wai.Handler.Warp (testWithApplication)
 import Network.Wai.Handler.Warp qualified as Warp
 import System.Directory (copyFile, createDirectoryIfMissing)
+import System.Environment (getEnv)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Random
 import Test.HUnit
 import Test.Hspec hiding (shouldReturn)
+import Test.Mockery.Environment (withModifiedEnvironment)
 import Text.Regex.PCRE.Light (compile, dollar_endonly)
 
 -- Exercise fetchClosure against actual uploaded intermediates, without depending
@@ -95,6 +103,141 @@ spec = do
         (fromGigabytes 32)
         "prlimit terminated by signal 11"
         `shouldBe` Nothing
+
+  inM $ describe "package evaluation errors" $ do
+    forM_ [("package", TypePackage), ("app", TypeApp)] $ \(kind, packageType') ->
+      it ("preserves a warning-only evaluator's exit code for a " <> kind)
+        $ withSystemTempDirectory "garnix-evaluation-exit"
+        $ \directory -> do
+          let executable = directory </> "nix"
+          liftIO $ T.writeFile executable "#!/bin/sh\nprintf '%s\\n' 'warning: fixture only' >&2\nexit 137\n"
+          run_ $ cmd "chmod" & addArgs ["+x", executable]
+          path <- liftIO $ getEnv "PATH"
+          build <- testBuild (packageType .~ packageType')
+          result <-
+            liftBaseOp_ (withModifiedEnvironment [("PATH", directory <> ":" <> path)])
+              $ evaluateAttribute
+                defaultRepoConfig
+                (defaultProductPlan & packageEvaluationTimeout .~ 5)
+                (directory </> "cache")
+                directory
+                build
+                ".#packages.x86_64-linux.fixture"
+          let checkStderr stderr = do
+                cs stderr `shouldContainM` "Nix evaluation exited with code 137"
+                cs stderr `shouldContainM` "warning: fixture only"
+          case (packageType', result) of
+            (TypePackage, Left (NixEvaluationError (Stderr stderr) _)) -> checkStderr stderr
+            (TypeApp, Left (AppEvalParseError _ (Stderr stderr))) -> checkStderr stderr
+            _ -> liftIO $ expectationFailure "expected the evaluator's nonzero exit to be reported"
+
+  inM $ describe "package evaluation credentials" $ do
+    it "refreshes authorized GitHub input credentials after waiting for an evaluation slot"
+      $ withSystemTempDirectory "garnix-evaluation-token"
+      $ \directory -> do
+        let executable = directory </> "nix"
+        liftIO
+          $ T.writeFile executable
+          $ T.unlines
+            [ "#!/bin/sh",
+              "case \"$NIX_CONFIG\" in",
+              "  *github.com=fresh-fixture-token*example.org=other-fixture-token*) echo 'fresh token observed' >&2; exit 42 ;;",
+              "  *) echo 'stale token observed' >&2; exit 41 ;;",
+              "esac"
+            ]
+        run_ $ cmd "chmod" & addArgs ["+x", executable]
+        path <- liftIO $ getEnv "PATH"
+        build <- testBuild identity
+        github <- view #githubInterface
+        metrics <- view #metrics
+        pool <- Pool.newPool 1 metrics #evalQueueWaitTime #evalQueueLen
+        slotHeld <- liftIO newEmptyMVar
+        releaseSlot <- liftIO newEmptyMVar
+        currentToken <- liftIO $ newIORef $ GhToken "stale-fixture-token"
+        let refreshedGithub =
+              github
+                { _githubInterfaceGetGarnixInstallationId = \_ _ -> pure $ Just 1,
+                  _githubInterfaceGetInstallation = \_ -> pure defaultInstallationAuth,
+                  _githubInterfaceGetAccessToken = \_ -> liftIO $ readIORef currentToken
+                }
+            authorizedConfig =
+              NixConfig
+                $ Map.fromList
+                  [("access-tokens", "github.com=stale-fixture-token example.org=other-fixture-token")]
+        result <-
+          local (#githubInterface .~ refreshedGithub)
+            $ local (#userNixConfig .~ authorizedConfig)
+            $ liftBaseOp_ (withModifiedEnvironment [("PATH", directory <> ":" <> path)])
+            $ local (#nixEvalPool .~ pool)
+            $ Async.withAsync
+              ( Pool.withPool pool (build ^. repoUser, build ^. repoName)
+                  $ liftIO
+                  $ putMVar slotHeld ()
+                  >> readMVar releaseSlot
+              )
+            $ \holder -> do
+              liftIO $ readMVar slotHeld
+              Async.withAsync
+                ( evaluateAttribute
+                    defaultRepoConfig
+                    (defaultProductPlan & packageEvaluationTimeout .~ 5)
+                    (directory </> "cache")
+                    directory
+                    build
+                    ".#packages.x86_64-linux.fixture"
+                )
+                $ \evaluation -> do
+                  waitFor (fromSeconds @Int 5)
+                    $ liftIO (threadStatus $ Async.asyncThreadId evaluation)
+                    `shouldReturnM` ThreadBlocked BlockedOnMVar
+                  liftIO $ writeIORef currentToken $ GhToken "fresh-fixture-token"
+                  liftIO $ putMVar releaseSlot ()
+                  Async.wait holder
+                  Async.wait evaluation
+        case result of
+          Left (NixEvaluationError (Stderr stderr) _) ->
+            cs stderr `shouldContainM` "fresh token observed"
+          _ -> liftIO $ expectationFailure "expected the fixture evaluator to report which credentials it received"
+
+    it "does not mint GitHub input tokens for Gitea or unauthenticated input contexts"
+      $ withSystemTempDirectory "garnix-evaluation-no-token"
+      $ \directory -> do
+        let executable = directory </> "nix"
+        liftIO $ T.writeFile executable "#!/bin/sh\necho 'unchanged input credentials' >&2\nexit 137\n"
+        run_ $ cmd "chmod" & addArgs ["+x", executable]
+        path <- liftIO $ getEnv "PATH"
+        github <- view #githubInterface
+        let noTokenGithub =
+              github
+                { _githubInterfaceGetGarnixInstallationId = \_ _ -> throw $ OtherError "unexpected installation lookup",
+                  _githubInterfaceGetInstallation = \_ -> throw $ OtherError "unexpected installation auth",
+                  _githubInterfaceGetAccessToken = \_ -> throw $ OtherError "unexpected token refresh"
+                }
+            withGithubToken = NixConfig $ Map.singleton "access-tokens" "github.com=fixture-token"
+        let contexts =
+              [ (ForgeGitea, withGithubToken),
+                (ForgeGithub, NixConfig mempty),
+                (ForgeGithub, NixConfig $ Map.singleton "access-tokens" "example.org=other-fixture-token"),
+                (ForgeGithub, NixConfig $ Map.singleton "access-tokens" "github.com=")
+              ]
+        forM_ contexts $ \(forge', config) -> do
+          -- testBuild's INSERT defaults the forge to GitHub.
+          build <- (forge .~ forge') <$> testBuild identity
+          result <-
+            local (#githubInterface .~ noTokenGithub)
+              $ local (#userNixConfig .~ config)
+              $ liftBaseOp_ (withModifiedEnvironment [("PATH", directory <> ":" <> path)])
+              $ evaluateAttribute
+                defaultRepoConfig
+                (defaultProductPlan & packageEvaluationTimeout .~ 5)
+                (directory </> "cache")
+                directory
+                build
+                ".#packages.x86_64-linux.fixture"
+          case result of
+            Left (NixEvaluationError (Stderr stderr) _) ->
+              cs stderr `shouldContainM` "unchanged input credentials"
+            _ -> liftIO $ expectationFailure "expected unchanged input credentials without a GitHub token request"
 
   describe "builds" $ do
     inM . aroundM_ suppressLogsWhenPassing . beforeM_ truncateDBM $ do
@@ -479,6 +622,34 @@ spec = do
             _result <- try $ testHandleCommit commitInfo
             call <- fromSingleton . map (_1 .~ ()) <$> getMockCalls #s3CacheUploadMock
             sort ((^.. _4 . #toUpload . each . to Nix.getName) call) `shouldBeM` ["good", "parent"]
+
+      it "pins evaluated derivations before FOD checks" $ do
+        randomness :: Int <- randomIO
+        deletionResults <- liftIO $ newMVar []
+        let flake =
+              cs
+                [i|
+              { outputs = _: {
+                  packages.x86_64-linux.output = derivation {
+                    name = "evaluation-root";
+                    builder = "/bin/sh";
+                    system = "x86_64-linux";
+                    args = [ "-c" "echo #{randomness} > $out" ];
+                  };
+                };
+              }
+            |]
+            checkRoot (_, drv) = do
+              (exit :: ExitCode, StderrRaw stderr, StdoutRaw _) <-
+                run $ cmd "nix" & addArgs ["store", "delete", cs drv :: Text] & nixConfDefaults
+              liftIO $ modifyMVar_ deletionResults $ pure . ((exit, stderr) :)
+        GH.withFakeGithubInterface $ \ghState ->
+          withMock #fodCheckMock checkRoot
+            $ GH.withLocalRepo ghState "owner" "repo" identity defaultCommitInfo (GH.simpleSetup flake) testHandleCommit
+        -- Assertions inside the build would be swallowed by its failure handler.
+        (exit, stderr) <- fromSingleton <$> liftIO (readMVar deletionResults)
+        exit `shouldSatisfyM` (/= ExitSuccess)
+        cs stderr `shouldContainM` "Cannot delete path"
 
       it "pins its packages until upload is finished" $ do
         random :: Int <- randomIO

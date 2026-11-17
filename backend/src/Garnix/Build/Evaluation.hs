@@ -27,6 +27,7 @@ import Data.ByteString (ByteString)
 import Data.Either.Extra (mapLeft)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.UUID (UUID)
 import Garnix.Async
 import Garnix.Build.Types (EvaluationResult (..))
 import Garnix.Duration
@@ -35,12 +36,15 @@ import Garnix.Monad
 import Garnix.Monad.Bubbling
 import Garnix.Monad.Metrics
 import Garnix.Monad.Pool (withPoolM)
+import Garnix.Monad.SubProcess (runSubProcess_)
 import Garnix.Nix.Plan qualified as Nix
 import Garnix.Nix.Types qualified as Nix
 import Garnix.NixConfig (addNixConfigEnvironment)
 import Garnix.Prelude
 import Garnix.Sandbox
 import Garnix.Types as Types
+import GitHub.Data.Id (Id (..))
+import System.Random (randomIO)
 
 newtype Stdout = Stdout ByteString
   deriving newtype (Show)
@@ -107,6 +111,7 @@ evaluateAttribute repoConfig plan cacheDir workingDir build attr = withBubbling 
       $ logDuration "nix eval for drvPath"
       $ withTextSpan ("phase", "eval")
       $ timeout (fromMinutes $ plan ^. packageEvaluationTimeout)
+      $ withFreshInputToken
       $ do
         mDrvPath <-
           if build ^. packageType == TypeApp
@@ -114,11 +119,11 @@ evaluateAttribute repoConfig plan cacheDir workingDir build attr = withBubbling 
             else pure Nothing
         result <- runNixEval (maybe attr cs mDrvPath)
         case result of
-          (ExitFailure _, _, StderrRaw stderr) ->
+          (ExitFailure code, _, StderrRaw stderr) ->
             pure
               $ Left
               $ NixEvaluationError
-                (Stderr stderr)
+                (evaluationStderr code stderr)
                 (RanCommand $ cs $ "prlimit --as=" <> show (toBytes maxEvalMem) <> " nix build " <> attr <> " --dry-run --json")
           (ExitSuccess, StdoutRaw stdout, StderrRaw stderr) ->
             case mDrvPath of
@@ -128,16 +133,56 @@ evaluateAttribute repoConfig plan cacheDir workingDir build attr = withBubbling 
                   Right [result] -> case result of
                     SourceOutput src -> pure $ Left $ AttributeIsSourceOutput src
                     Derivation drvPath outputs unresolved -> do
+                      pinDerivation drvPath
                       plan <- Nix.getPlanOf stderr
                       pure $ Right $ EvaluationResult drvPath (Nix.planOutputs plan) outputs unresolved
                   Right xs -> pure $ Left $ UnexpectedNumberOfParsedResults (NumberOfParsedResults $ length xs) (Stdout stdout)
               Just drvPath -> do
+                pinDerivation drvPath
                 plan <- Nix.getPlanOf stderr
                 pure $ Right $ EvaluationResult drvPath (Nix.planOutputs plan) (Nix.BuildOutputs mempty) []
   bubble $ fromMaybe (Left TimeoutReached) evalRes
   where
     maxEvalMem :: Memory
     maxEvalMem = repoConfig ^. maxEvalMemory
+
+    -- Authorization was checked before queuing, but its token can expire while
+    -- this package waits. Refresh that grant, never create one for a new context.
+    withFreshInputToken :: M a -> M a
+    withFreshInputToken action = do
+      NixConfig settings <- view #userNixConfig
+      let tokens = maybe [] words $ Map.lookup "access-tokens" settings
+          isGithubEntry = isPrefixOf "github.com="
+          hasGithubToken token = isGithubEntry token && token /= "github.com="
+      if build ^. forge == ForgeGithub && any hasGithubToken tokens
+        then do
+          let owner = build ^. repoUser
+              repo = build ^. repoName
+          installationId <-
+            getGarnixInstallationId owner repo
+              >>= maybe (throw $ GarnixAppUnauthorized owner repo) pure
+          auth <- getInstallation $ Id $ fromInteger installationId
+          freshToken <- getAccessToken auth
+          let replace token
+                | isGithubEntry token = "github.com=" <> cs (getGhToken freshToken)
+                | otherwise = token
+              refreshed = NixConfig $ Map.insert "access-tokens" (unwords $ map replace tokens) settings
+          local (#userNixConfig .~ refreshed) action
+        else action
+
+    -- The dry-run process's temporary roots disappear when it exits. Keep the
+    -- derivation alive through FOD checking, realization and asynchronous uploads;
+    -- the checkout is released only after its forked work has finished.
+    pinDerivation :: Nix.DrvPath -> M ()
+    pinDerivation drvPath = do
+      uuid :: UUID <- randomIO
+      nixConfig <- view #userNixConfig
+      runSubProcess_
+        $ cmd "nix"
+        & addArgs ["build", cs drvPath, "--out-link", cs (workingDir </> (".garnix-evaluated-" <> cs (show uuid))) :: Text]
+        & addNixConfigEnvironment nixConfig
+        & setWorkingDir workingDir
+        & silenceStdout
 
     runNixEval :: Text -> M (ExitCode, StdoutRaw, StderrRaw)
     runNixEval attr' = do
@@ -176,6 +221,10 @@ evaluateAttribute repoConfig plan cacheDir workingDir build attr = withBubbling 
           & pure
           & inNixSandbox extraSandboxPaths (Just cacheDir)
 
+evaluationStderr :: Int -> ByteString -> Stderr
+evaluationStderr code stderr =
+  Stderr $ cs ("Nix evaluation exited with code " <> show code <> "\n") <> stderr
+
 getAppDrvPath :: RepoConfig -> Build -> FilePath -> FilePath -> Text -> M (Either (Stdout, Stderr) (Maybe Nix.DrvPath))
 getAppDrvPath repoConfig build workingDir cacheDir attr = do
   let appDerivation = "a: [{ context = builtins.attrNames (builtins.getContext a.program); }]"
@@ -200,7 +249,7 @@ getAppDrvPath repoConfig build workingDir cacheDir attr = do
       & pure
       & inNixSandbox [] (Just cacheDir)
   pure $ case exitCode of
-    ExitFailure _ -> Left (Stdout stdout, Stderr stderr)
+    ExitFailure code -> Left (Stdout stdout, evaluationStderr code stderr)
     ExitSuccess -> Right $ parseNixEvalOutput stdout
   where
     parseNixEvalOutput :: ByteString -> Maybe Nix.DrvPath

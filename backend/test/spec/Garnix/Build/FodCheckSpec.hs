@@ -60,16 +60,17 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
             withFodChecker mempty commitInfo plan $ \fodChecker -> do
               void fodChecker `shouldSatisfyM` isJust
 
-    it "creates one FOD run when a recovered commit resumes multiple builds" $ do
+    it "creates one FOD run when a recovered commit resumes multiple builds" $ shouldTerminate (fromSeconds @Int 30) $ do
       GH.withFakeGithubInterface $ \ghState -> do
         void $ DB.newUser "owner" "owner@example.com" FreeSubscription True
         let flake = "{ outputs = { self }: {}; }"
             config = "fodChecks: true"
             publicCommit = defaultCommitInfo & repoPublicity .~ RepoIsPublic True
         GH.withLocalRepo ghState "owner" "repo" identity publicCommit (GH.setupWithConfig flake (Just config)) $ \commitInfo -> do
-          let orphan packageName =
+          let fixtureBuild kind packageName =
                 testBuild
-                  ( (package .~ packageName)
+                  ( (packageType .~ kind)
+                      . (package .~ packageName)
                       . (gitCommit .~ (commitInfo ^. commit))
                       . (branch .~ (commitInfo ^. branch))
                       . (repoUser .~ "owner")
@@ -81,8 +82,10 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
                       . (endTime .~ Nothing)
                       . (drvPath ?~ "/nix/store/00000000000000000000000000000000-recovered.drv")
                   )
-          firstBuild <- orphan "first"
-          secondBuild <- orphan "second"
+          registration <- fixtureBuild TypeOverall buildStarting
+          DB.reportBuildResultDB $ registration & status ?~ Success
+          firstBuild <- fixtureBuild TypePackage "first"
+          secondBuild <- fixtureBuild TypePackage "second"
           map
             (map (^. package))
             ( Orchestrator.groupResumableBuilds
@@ -109,7 +112,7 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
           map (^. status) (filter ((== "FOD checks") . (^. name)) runs)
             `shouldBeM` [Just Success]
 
-    it "restarts multiple failed builds once with one FOD coordinator" $ do
+    it "restarts multiple failed builds once with one FOD coordinator" $ shouldTerminate (fromSeconds @Int 30) $ do
       GH.withFakeGithubInterface $ \ghState -> do
         void $ DB.newUser "owner" "owner@example.com" FreeSubscription True
         user <- DB.getUser "owner"
@@ -117,9 +120,10 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
             config = "fodChecks: true"
             publicCommit = defaultCommitInfo & repoPublicity .~ RepoIsPublic True
         GH.withLocalRepo ghState "owner" "repo" identity publicCommit (GH.setupWithConfig flake (Just config)) $ \commitInfo -> do
-          let failed packageName =
+          let fixtureBuild kind packageName =
                 testBuild
-                  ( (package .~ packageName)
+                  ( (packageType .~ kind)
+                      . (package .~ packageName)
                       . (gitCommit .~ (commitInfo ^. commit))
                       . (branch .~ (commitInfo ^. branch))
                       . (repoUser .~ "owner")
@@ -130,8 +134,12 @@ spec = inM $ aroundM_ (withUnmock #fodCheckMock . setUpXdgCacheDir . suppressLog
                       . (status ?~ Failure)
                       . (drvPath ?~ "/nix/store/00000000000000000000000000000000-restart.drv")
                   )
-          void $ failed "first"
-          void $ failed "second"
+          -- Deployment discovery also waits for the completed registration row
+          -- that normal build setup creates before scheduling package builds.
+          registration <- fixtureBuild TypeOverall buildStarting
+          DB.reportBuildResultDB $ registration & status ?~ Success
+          void $ fixtureBuild TypePackage "first"
+          void $ fixtureBuild TypePackage "second"
           testCommit
             $ (repoOwner .~ "owner")
             . (repoName .~ "repo")
