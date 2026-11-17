@@ -656,9 +656,16 @@ makeNewBuildForBuildId reqUser buildId evalHost = do
 -- server's work.
 cancelOrphanedWork :: M (Int, Int)
 cancelOrphanedWork = do
+  (builds, runs) <- cancelOrphanedWorkWithIds
+  pure (length builds, length runs)
+
+-- Return exactly the rows changed, so recovery can report their cancellation
+-- without racing a separate pending-work query.
+cancelOrphanedWorkWithIds :: M ([BuildId], [RunId])
+cancelOrphanedWorkWithIds = do
   now <- liftIO getCurrentTime
   orphanedBuilds <-
-    pgExec
+    pgQuery
       [pgSQL|
         UPDATE builds AS b
         SET status = ${Just Cancelled}, end_time = ${now}
@@ -674,13 +681,15 @@ cancelOrphanedWork = do
                 AND c.status = ${Evaluating}
             )
           )
+        RETURNING b.id
       |]
   orphanedRuns <-
-    pgExec
+    pgQuery
       [pgSQL|
         UPDATE runs
         SET status = ${Just Cancelled}, end_time = ${now}
         WHERE status IS NULL
+        RETURNING id
       |]
   pure (orphanedBuilds, orphanedRuns)
 
@@ -1394,6 +1403,18 @@ getRuns repoOwner repoName commitHash = do
               _runRunStartedAt = runStartedAt
             }
       )
+
+-- A run's GitHub check must survive reporter reconstruction after restart.
+getRunGithubRunId :: RunId -> M (Maybe GhRunId)
+getRunGithubRunId runId = do
+  rows <- pgQuery [pgSQL| SELECT github_run_id FROM runs WHERE id = ${runId} |]
+  case rows of
+    [runId'] -> pure runId'
+    _ -> throw $ OtherError "Missing run when looking up its GitHub check"
+
+setRunGithubRunId :: RunId -> GhRunId -> M ()
+setRunGithubRunId runId githubRunId =
+  void $ pgExec [pgSQL| UPDATE runs SET github_run_id = ${githubRunId} WHERE id = ${runId} |]
 
 getRun :: RunId -> M (Maybe Run)
 getRun runId = do

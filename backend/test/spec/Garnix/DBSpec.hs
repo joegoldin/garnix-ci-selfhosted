@@ -1,17 +1,23 @@
 module Garnix.DBSpec (spec) where
 
 import Control.Concurrent.Async.Lifted (replicateConcurrently)
+import Control.Concurrent.Lifted (newEmptyMVar, putMVar, readMVar, tryPutMVar)
 import Control.Exception qualified as E
+import Control.Exception.Safe qualified as Safe
 import Control.Monad.Trans.Control (liftBaseDiscard)
 import Data.Set qualified as Set
 import Database.PostgreSQL.Typed
 import Database.PostgreSQL.Typed qualified as PSQL
 import Garnix.DB qualified as DB
-import Garnix.Monad (M, throw)
+import Garnix.Duration (fromSeconds)
+import Garnix.Monad (GithubInterface (..), M, ReportType (..), RunReportStatus (..), createNewRun, ghRunId, throw)
 import Garnix.Nix.Types (DrvPath (..), StoreHash (..), StorePath (..))
+import Garnix.Orchestrator qualified as Orchestrator
 import Garnix.Prelude
-import Garnix.TestHelpers (addTestServer, defaultCommitInfo, testBuild, truncateDBM)
-import Garnix.TestHelpers.Monad (beforeM_, inM, shouldBeM, shouldReturnM)
+import Garnix.Reporters.GithubReporter (mkGithubReporter)
+import Garnix.TestHelpers (addTestServer, defaultCommitInfo, testBuild, truncateDBM, waitFor)
+import Garnix.TestHelpers.GithubInterface qualified as GH
+import Garnix.TestHelpers.Monad (beforeM_, inM, shouldBeM, shouldReturnM, shouldTerminate)
 import Garnix.Types hiding (context, head)
 import System.Environment (getEnv)
 import System.IO.Silently (hSilence)
@@ -321,6 +327,56 @@ spec = do
   -- lists, so nothing forces it in); clear it explicitly so the counts below
   -- are exact.
   describe "orphaned build/run resumability" $ inM $ beforeM_ truncateDBM $ do
+    it "completes the original forge checks when startup cancels orphaned work" $ shouldTerminate (fromSeconds @Int 10) $ GH.withFakeGithubInterface $ \ghState -> do
+      void $ DB.pgExec [pgSQL| TRUNCATE runs |]
+      GH.mkRepo ghState "test-owner" "test-repo" identity
+      DB.newCommit "test-owner" "test-repo" "aaaaaa"
+      DB.setCommitStatus "test-owner" "test-repo" "aaaaaa" Evaluated
+      let commitInfo =
+            defaultCommitInfo
+              & repoInfo
+              . ghRepoOwner
+              .~ "test-owner"
+              & repoInfo
+              . ghRepoName
+              .~ "test-repo"
+              & commit
+              .~ "aaaaaa"
+          reporter = mkGithubReporter (commitInfo ^. repoInfo) (commitInfo ^. commit)
+      overall <- testBuild ((status .~ Nothing) . (packageType .~ TypeOverall))
+      package <- testBuild ((status .~ Nothing) . (package .~ "resumable"))
+      overallReporter <- createNewRun reporter (ReportBuild "Evaluate flake.nix" overall)
+      DB.reportBuildResultDB (overall & githubRunId .~ Garnix.Monad.ghRunId overallReporter)
+      run <- DB.newRun "action backend_specs" commitInfo
+      void $ createNewRun reporter (ReportRun run)
+
+      started <- newEmptyMVar
+      release <- newEmptyMVar
+      github <- view #githubInterface
+      let blockedGithub =
+            github
+              { _githubInterfaceUpdateBuildReport = \runId report repo -> do
+                  void $ tryPutMVar started ()
+                  readMVar release
+                  _githubInterfaceUpdateBuildReport github runId report repo
+              }
+      Safe.finally
+        ( do
+            -- Recovery must return even while the forge request is blocked.
+            local (#githubInterface .~ blockedGithub)
+              $ Orchestrator.cancelOrphanedWork
+              `shouldReturnM` (1, 1)
+            readMVar started
+            cancelledRun <- DB.getRun (run ^. id)
+            fmap (^. status) cancelledRun `shouldBeM` Just (Just Cancelled)
+            DB.getBuild (package ^. id) `shouldReturnM` package
+        )
+        (putMVar release ())
+      waitFor (fromSeconds @Int 5) $ do
+        reports <- GH.getReports ghState
+        map (map ((^. status) . snd)) reports
+          `shouldBeM` replicate 2 [RunReportStatusInProgress, RunReportStatusCancelled]
+
     it "restarts setup if the backend stopped before creating the commit row" $ do
       void $ DB.pgExec [pgSQL| TRUNCATE runs |]
       overall <- testBuild ((status .~ Nothing) . (packageType .~ TypeOverall) . (package .~ "overall"))

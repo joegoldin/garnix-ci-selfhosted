@@ -5,6 +5,7 @@ import Control.Debounce
 import Control.Retry (exponentialBackoff, limitRetries)
 import Data.Text qualified as T
 import Garnix.BuildLogs.Types (LogLine (..))
+import Garnix.DB qualified as DB
 import Garnix.Duration
 import Garnix.Monad
 import Garnix.Prelude
@@ -19,7 +20,18 @@ mkGithubReporter repoInfo commit =
         let name = reportName reportType
         url <- getRelativeUrl reportType
         let initialReport = mkReport name url commit "" RunReportStatusInProgress
-        ghRunId <- newBuildReport repoInfo initialReport
+        existingRunId <- case reportType of
+          ReportBuild _ build -> pure $ build ^. githubRunId
+          ReportRun run -> DB.getRunGithubRunId (run ^. id)
+          MetaCheck -> pure Nothing
+        ghRunId <- case existingRunId of
+          Just runId -> pure runId
+          Nothing -> do
+            runId <- newBuildReport repoInfo initialReport
+            case reportType of
+              ReportRun run -> DB.setRunGithubRunId (run ^. id) runId
+              _ -> pure ()
+            pure runId
         logsMVar <- newMVar (RunReportStatusInProgress, Nothing)
         lastSentLogsMVar <- newMVar Nothing
         let addNewline t = if "\n" `T.isSuffixOf` t then t else t <> "\n"

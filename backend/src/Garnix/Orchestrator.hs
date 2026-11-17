@@ -12,6 +12,7 @@ module Garnix.Orchestrator
     listRepoBranches,
     triggerBranchBuild,
     statusReporterForCommit,
+    cancelOrphanedWork,
     RerunEvent (..),
     groupResumableBuilds,
   )
@@ -22,14 +23,14 @@ import Garnix.Async (Promise)
 import Garnix.Build (buildFlake, rerunBuild, rerunBuilds, sameRerunScope)
 import Garnix.Build.Checkout qualified as Build.Checkout
 import Garnix.Build.Helpers (withInternalCacheToken)
-import Garnix.Build.Reporting (reportBuildCancelledToForge)
+import Garnix.Build.Reporting (reportBuildCancelledToForge, reportRunCancelledToForge)
 import Garnix.DB qualified as DB
 import Garnix.GiteaInterface (requireGiteaConfig)
 import Garnix.GithubInterface (listBranchesGithub)
 import Garnix.Hosting.Deploy (rolloutNewServerVersion)
 import Garnix.Monad
 import Garnix.Monad.Async (emptyPromise, resolve, spawn)
-import Garnix.Monad.Concurrency (forkM)
+import Garnix.Monad.Concurrency (forkDetachedM, forkM)
 import Garnix.Prelude
 import Garnix.Reporters.GiteaReporter (mkGiteaReporter)
 import Garnix.Reporters.GithubReporter (mkGithubReporter)
@@ -143,6 +144,28 @@ repoInfoAndReporter forge' owner repo commit = do
 statusReporterForCommit :: (HasCallStack) => Forge -> GhRepoOwner -> GhRepoName -> CommitHash -> M Reporter
 statusReporterForCommit forge' owner repo commit =
   snd <$> repoInfoAndReporter forge' owner repo commit
+
+cancelOrphanedWork :: M (Int, Int)
+cancelOrphanedWork = do
+  (buildIds, runIds) <- DB.cancelOrphanedWorkWithIds
+  -- A forge outage must not delay serving requests or resuming package builds.
+  forkDetachedM $ do
+    forM_ buildIds $ \buildId -> ignoringAllErrors $ do
+      build <- DB.getBuild buildId
+      reporter <- statusReporterForCommit (build ^. forge) (build ^. repoUser) (build ^. repoName) (build ^. gitCommit)
+      reportBuildCancelledToForge reporter build
+    forM_ runIds $ \runId -> ignoringAllErrors $ do
+      DB.getRun runId
+        >>= traverse_
+          ( \run -> do
+              builds <- DB.getBuildsByCommit (run ^. repoUser) (run ^. repoName) (run ^. gitCommit)
+              case builds of
+                [] -> throw $ OtherError "Missing build manifest for orphaned run"
+                build : _ -> do
+                  reporter <- statusReporterForCommit (build ^. forge) (run ^. repoUser) (run ^. repoName) (run ^. gitCommit)
+                  reportRunCancelledToForge reporter run
+          )
+  pure (length buildIds, length runIds)
 
 -- | Reconstruct the CommitInfo + status reporter for an existing build row,
 -- forge-aware. Used by the restart endpoints, which unlike the webhook
